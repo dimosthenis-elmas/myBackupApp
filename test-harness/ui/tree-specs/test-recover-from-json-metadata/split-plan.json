@@ -1,0 +1,3 @@
+[
+  { "path": "large-files/oversized-file.bin", "volumeSizeMiB": 500 }
+]

@@ -1,0 +1,59 @@
+# See http://help.github.com/ignore-files/ for more about ignoring files.
+
+# app runtime data (default cacheDataDirectoryPath from appData/config.json - the app's own scratch/temp
+# directory for large-file splitting; contents are disposable by design, but only stayed untracked by git so far
+# by coincidence of being empty - if you change cacheDataDirectoryPath, add a matching rule for the new name)
+/appData/tempFilesCanBeDeleted
+
+# compiled output
+/dist
+/tmp
+/out-tsc
+/app-builds
+/release
+main.js
+src/**/*.js
+*.js.map
+/app/workers/*.js
+/app/node_my_cpp_addons/**/*/build/
+
+# dependencies
+node_modules
+
+# IDEs and editors
+.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# misc
+/.angular/cache
+/.sass-cache
+/connect.lock
+/coverage
+/libpeerconnection.log
+npm-debug.log
+testem.log
+/typings
+
+# test-harness generated fixtures (see test-harness/README.md) - never the scripts themselves
+/test-harness/optical-backup-test-fixtures*
+/test-harness/generated-fixtures
+/test-harness/**/*.manifest.json
+
+# System Files
+.DS_Store
+Thumbs.db
+
+# Angular CLI / Nx build cache
+.nx

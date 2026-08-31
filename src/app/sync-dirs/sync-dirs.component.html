@@ -1,0 +1,49 @@
+<br>
+<mat-card appearance="raised">
+    <div style="display: flex; flex-direction: column;">
+        <div style="display: flex; flex-direction: row; flex:1;" *ngIf="!showCommitedOperationsLogs">
+            <div class="flex-centered">
+                <!-- <mat-icon svgIcon="pc" class="home-icons"></mat-icon>-->
+                <span class="material-symbols-outlined" style="font-size:50px;">
+                    folder_check
+                </span>            
+                <button mat-flat-button color="primary" class="file-chooser-btn" (click)="getSource()">Path to the template directory</button>
+                <mat-chip-set *ngIf="backup.sourcePath">
+                    <mat-chip>{{backup.sourcePath}}</mat-chip>
+                </mat-chip-set>
+            </div>
+            <div class="flex-centered">
+                <span style="font-size:50px;">
+                    =
+                </span>  
+            </div>
+            <div class="flex-centered">
+                <!--<mat-icon svgIcon="storage" class="home-icons"></mat-icon>-->
+                <mat-icon class="home-icons">rule_folder</mat-icon>
+                <button mat-flat-button color="primary" class="file-chooser-btn" (click)="getTarget()">Path to the directory to be synchronized with the template</button>
+                <mat-chip-set *ngIf="backup.targetPath">
+                    <mat-chip>{{backup.targetPath}}</mat-chip>
+                </mat-chip-set>
+            </div>
+        </div>
+        <br>
+        <div style="margin:2vh" *ngIf="showCommitedOperationsLogs">
+            <div  *ngIf="showProgressBar_">
+              <mat-progress-bar *ngIf="workIsInProgess_" mode="indeterminate"></mat-progress-bar>
+              <mat-progress-bar *ngIf="workFinished_" mode="determinate" value="100" ></mat-progress-bar>
+            </div>
+            <br>
+            <app-scrollable-list></app-scrollable-list>
+        </div>
+        <div class="container2">
+            <mat-divider></mat-divider>
+            <br>
+            <br>
+            <button *ngIf="!showCommitedOperationsLogs" mat-flat-button color="primary" (click)="syncDirs()">Next</button>
+            <button *ngIf="showCommitedOperationsLogs && !finishedDirSync" mat-flat-button color="primary" (click)="cancelDirSyncCommit()">Cancel</button>
+            <br>
+            <br>
+        </div>
+    </div>
+</mat-card>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&icon_names=folder_check" />

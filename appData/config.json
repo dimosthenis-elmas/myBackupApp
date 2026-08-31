@@ -1,0 +1,9 @@
+{
+    "imgBurnExecutablePath": "C:\\Program Files (x86)\\ImgBurn\\ImgBurn.exe",
+    "maxOpticalMediumRepletionRatio": 0.95,
+	"defaultSourcePath": "",
+    "defaultTargetPath": "",
+    "cacheDataDirectoryPath": "tempFilesCanBeDeleted\\",
+    "_7zipExecutablePath": "C:\\Program Files\\7-Zip\\7z.exe",
+    "setupAcknowledged": true
+}

@@ -1,0 +1,11 @@
+<h2 mat-dialog-title>{{title}}</h2>
+<mat-dialog-content class="mat-typography" #scrollMe>
+  {{message}}
+</mat-dialog-content>
+<mat-dialog-actions *ngIf="actionsNum == 2" align="end">
+  <button mat-button [mat-dialog-close]="action1" (click)="action1Callback()">{{action1Label}}</button>
+  <button mat-button [mat-dialog-close]="action2" cdkFocusInitial (click)="action2Callback()">{{action2Label}}</button>
+</mat-dialog-actions>
+<mat-dialog-actions *ngIf="actionsNum == 1" align="center">
+  <button mat-button [mat-dialog-close]="action1" (click)="action1Callback()">{{action1Label}}</button>
+</mat-dialog-actions>

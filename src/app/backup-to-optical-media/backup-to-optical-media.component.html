@@ -1,0 +1,85 @@
+<br>
+<div *ngIf="step=='step_1'">
+  <mat-card appearance="raised">
+    <div style="display: flex; flex-direction: column;">
+        <div style="display: flex; flex-direction: row; flex:1;">
+            <div style="display:flex; flex-direction: column; flex: 1; align-items: center;">
+                <div>
+                  <mat-icon class="home-icons">storage</mat-icon>
+                </div>
+                <button mat-flat-button color="primary" class="file-chooser-btn" (click)="getSource()">Path to backup</button>
+                <mat-chip-set *ngIf="backup.sourcePath">
+                    <mat-chip>{{backup.sourcePath}}</mat-chip>
+                </mat-chip-set>
+            </div>
+            <div style="align-self: center;">
+              <mat-icon class="home-icons">forward</mat-icon>
+            </div>
+            <div class="flex-centered">
+              <div style="display:flex; flex-direction: column; flex: 1; align-items: center;">
+                <div>
+                  <mat-icon class="home-icons">album</mat-icon>
+                </div>
+                <mat-form-field>
+                  <mat-label class="dropdown-label">Optical medium type</mat-label>
+                  <mat-select [(ngModel)]="selected_optical_medium" name="optical_media_choices">
+                      @for (medium of optical_media_choices; track medium) {
+                          <mat-option [value]="medium">{{medium.viewValue}}</mat-option>
+                      }
+                      </mat-select>
+                  </mat-form-field>
+              </div>
+            </div>
+        </div>
+        <br>
+        <div style="display: flex; flex-direction: column; align-items: center;">
+          <mat-form-field style="width: 350px;">
+            <mat-label>Cold storage collection name</mat-label>
+            <input matInput [(ngModel)]="coldStorageCollectionName" name="coldStorageCollectionName" placeholder="e.g. My Backup">
+            <mat-hint>Burned onto each disc's label as "{{coldStorageCollectionName || '...'}} Disc N"</mat-hint>
+          </mat-form-field>
+        </div>
+        <br>
+        <div>
+            <mat-divider></mat-divider>
+            <br>
+            <mat-card-actions align="start">
+                <button mat-flat-button color="primary" (click)="WriteToOpticalMediaProceed();">Next</button>
+            </mat-card-actions>
+            <br>
+            <br>
+        </div>
+    </div>
+</mat-card>
+</div>
+
+<div *ngIf="step=='step_2'">
+<h2>Burn backup to optical media</h2>
+<br>
+<br>
+<mat-stepper orientation="vertical" [linear]="isLinear" #stepper>
+  @for (disk of _disks; track disk){
+  <mat-step [stepControl]="firstFormGroup">
+    <br>
+    <div>
+      <h3>Select the files you want to burn to the optical disc</h3>
+    </div>
+    <br>
+    <mat-checkbox [checked]="allFilesSelected" (change)="selectAllFiles(disk, $event.checked);"
+       (click)="$event.stopPropagation()">
+       Select all
+    </mat-checkbox>
+    <files-tree #cmp></files-tree>
+    <form [formGroup]="firstFormGroup">
+      <ng-template matStepLabel>Optical disk {{disk + 1}}</ng-template>
+      <br>
+      <br>
+      <div>
+        <button mat-flat-button color="primary" mat-button (click)="sendToImgBurn(disk)">Send to ImgBurn</button>
+      </div>
+    </form>
+  </mat-step>
+  }
+</mat-stepper>
+
+</div>

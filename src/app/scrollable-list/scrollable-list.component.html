@@ -1,0 +1,19 @@
+<!--
+<div class="mat-app-background">
+    <cdk-virtual-scroll-viewport itemSize="30" class="example-viewport">
+        <div *cdkVirtualFor="let item of dataSource" class="example-item">{{item || 'Loading...'}}</div>
+    </cdk-virtual-scroll-viewport>
+</div>
+-->
+<div class="container">
+    
+    <cdk-virtual-scroll-viewport itemSize="30" class="example-viewport scollbar" [style.height]="'300px'">
+        <div *cdkVirtualFor="let item of dataSource" class="example-item">{{item}}</div>
+    </cdk-virtual-scroll-viewport>
+    
+    <!--
+    <cdk-virtual-scroll-viewport itemSize="50" class="example-viewport" [style.height]="'300px'">
+        <div *cdkVirtualFor="let item of dataSource" class="example-item">{{item}}</div>
+    </cdk-virtual-scroll-viewport>
+    -->
+</div>

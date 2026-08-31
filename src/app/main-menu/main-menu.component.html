@@ -1,0 +1,49 @@
+<div class="grid-container center-screen">
+    <div style="display: flex; flex-direction: column;">
+        <div>
+            <button mat-flat-button color="white" style="width: fit-content; height:fit-content;" class="file-chooser-btn" (click)="goToIncrementalBackupPage()">
+                <img src="./assets/incremental backup.gif" alt="">
+            </button>
+        </div>
+        <br>
+        <h2>Cumulative backup</h2>
+    </div>
+    <div style="display: flex; flex-direction: column;">
+        <div>
+            <button mat-flat-button color="white" style="width: fit-content; height:fit-content;" class="file-chooser-btn" (click)="goToSyncDirsPage()">
+                <img src="./assets/sync dirs.gif" alt="">
+            </button>
+        </div>
+        <br>
+        <h2>Synchronize directories</h2>
+    </div>
+    <div style="display: flex; flex-direction: column;">
+        <div>
+            <button mat-flat-button color="white" style="width: fit-content; height:fit-content;" class="file-chooser-btn" (click)="goToBackupToOpticalMediaPage()">
+                <img src="./assets/backup to cd.gif" alt="">
+            </button>
+        </div>
+        <br>
+        <h2>Backup to optical media</h2>
+    </div>
+    <div style="display: flex; flex-direction: column;">
+        <div>
+            <button mat-flat-button color="white" style="width: fit-content; height:fit-content;" class="file-chooser-btn" (click)="goToRecoverDataFromOpticalMediaBackup()">
+                <img src="./assets/recover data from cd.gif" alt="">
+            </button>
+        </div>
+        <br>
+        <h2>Recover data from optical media backup</h2>
+    </div>
+    <div style="display: flex; flex-direction: column;">
+        <div>
+            <button mat-flat-button color="white" style="width: fit-content; height:fit-content;" class="file-chooser-btn" (click)="goToAddFilesToColdStorage()">
+                <img src="./assets/add-files-to-optical-media-cold-storage.gif" alt="">
+            </button>
+        </div>
+        <br>
+        <h2>Add missing files to optical media cold storage</h2>
+    </div>
+</div>
+
+

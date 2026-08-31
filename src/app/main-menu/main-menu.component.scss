@@ -1,0 +1,14 @@
+.center-screen {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    min-height: 100vh;
+}
+
+
+.grid-container {
+display: grid;
+grid-template-columns: 1fr 1fr;
+grid-gap: 20px;
+}

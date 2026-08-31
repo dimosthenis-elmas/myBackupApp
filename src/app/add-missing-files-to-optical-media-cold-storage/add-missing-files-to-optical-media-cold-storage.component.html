@@ -1,0 +1,131 @@
+<div>
+    <mat-card appearance="raised">
+        <div style="display: flex; flex-direction: column;" *ngIf="step=='step_1'">
+                <div style="display: flex; flex-direction: column; flex:1;">
+                    <div style="align-self: center;">
+                        <div style="display: flex; flex-direction: row; flex:1; justify-content: center;">
+                            <mat-icon class="home-icons">storage</mat-icon>
+                        </div>                  
+                        <button mat-flat-button color="primary" class="file-chooser-btn" (click)="getDir()">Select the location of your files (Master)</button>
+                        <mat-chip-set *ngIf="backup.targetPath">
+                            <mat-chip>{{backup.targetPath}}</mat-chip>
+                        </mat-chip-set>
+                    </div>
+                    <br>
+                    <div class="flex-centered">
+                        <div style="display:flex; flex-direction: column; flex: 1; align-items: center;">
+                        <div>
+                            <mat-icon class="home-icons">album</mat-icon>
+                        </div>
+                        <mat-form-field>
+                            <mat-label class="dropdown-label">Optical medium type</mat-label>
+                            <mat-select [(ngModel)]="selected_optical_medium" name="optical_media_choices">
+                                @for (medium of optical_media_choices; track medium) {
+                                    <mat-option [value]="medium">{{medium.viewValue}}</mat-option>
+                                }
+                            </mat-select>
+                        </mat-form-field>
+                        </div>
+                    </div>
+                    <br>
+                    <div style="align-self: center;">
+                        <mat-checkbox [(ngModel)]="useExternalMetadata" class="example-margin">Provide cold storage files metadata by importing a JSON file.</mat-checkbox>
+                        <div *ngIf="useExternalMetadata">
+                            <button mat-flat-button color="primary" class="file-chooser-btn" (click)="getJSON()">Select JSON file</button>
+                            <mat-chip-set *ngIf="externalMetadataJSONpath">
+                            <mat-chip>{{externalMetadataJSONpath}}</mat-chip>
+                        </mat-chip-set>
+                        <div *ngIf="loadingExternalMetadataJSON">Reading and validating the JSON file...</div>
+                        </div>
+                        <div *ngIf="!useExternalMetadata">
+                            <mat-form-field style="width: 350px;" subscriptSizing="dynamic">
+                                <mat-label>Total number of discs currently in this cold storage</mat-label>
+                                <input matInput type="number" min="1" step="1" [(ngModel)]="existingColdStorageDiscCount" name="existingColdStorageDiscCount">
+                                <mat-hint>Since you're not providing a JSON, the app has no reliable way to know how many discs already exist (you can stop inserting discs at any point below) - so it needs you to confirm the real total yourself, to correctly number any new discs.</mat-hint>
+                            </mat-form-field>
+                        </div>
+                        <div>
+                            Note for this checkbox: For this application to determine the new files, i.e. files missing from your cold storage but present in your 'master'
+                            (as in a cumulative backup fashion) we need to read all the metadata (path, file size etc.) for all the files in each one
+                            of the optical discs. When this checkbox is unchecked, you are asked to place all your optical discs (spaning the entire cold storage)
+                            one by one in the optical disc reader device in order to accumulate all the required metadata so that we can then determine what is missing from your cold storage.
+                            Since this is quite a tedious process, you can provide a JSON file containing said metadata. Now, how do I create this file you may ask.
+                            You simply run this process once by unsetting this checkbox and then the application will save this JSON file for you. You may then use
+                            this file for a future update of your cold storage. You have to be careful to make sure that the provided JSON file is up to date.
+                                                        
+                        </div>
+                    </div> 
+                               
+                </div>
+                <br>
+                <br>
+                <mat-divider></mat-divider>
+                <div style="align-self: center;">
+                    <mat-divider></mat-divider>
+                    <br>
+                    <mat-card-actions>
+                        <div>
+                            <button mat-flat-button color="primary" [disabled]="loadingExternalMetadataJSON" (click)="step1();">Next</button>
+                        </div>                    
+                    </mat-card-actions>
+                    <br>
+                    <br>
+                </div>
+            </div>
+    </mat-card>
+    <optical-disc-backup-data-retriever *ngIf="step=='step_2'"></optical-disc-backup-data-retriever>
+    <div style="display: flex; flex-direction: column; gap: 4vh;" *ngIf="step=='step_3'">
+        <div class="flex-centered">
+            <h2>Below you see the files missing from your cold storage.</h2>
+            <h2>Select the files you want to burn to discs, then press 'Next'.</h2>
+        </div> 
+        <div class="flex-centered">
+            <mat-checkbox style="align-self: self-start" [checked]="allFilesSelected" (change)="selectAllFiles($event.checked);"
+                (click)="$event.stopPropagation()">
+                Select all
+            </mat-checkbox>
+            <files-tree style="align-self: stretch;"></files-tree>
+        </div>
+        <div class="flex-centered">
+          <mat-form-field style="width: 350px;" subscriptSizing="dynamic">
+            <mat-label>Cold storage collection name</mat-label>
+            <input matInput [(ngModel)]="coldStorageCollectionName" name="coldStorageCollectionName" placeholder="e.g. My Backup">
+            <mat-hint *ngIf="useExternalMetadata">Burned onto each new disc's label as "{{coldStorageCollectionName || '...'}} Disc N" (continuing the numbering from your provided JSON) - use the same name as when this cold storage was first created.</mat-hint>
+            <mat-hint *ngIf="!useExternalMetadata">Burned onto each new disc's label as "{{coldStorageCollectionName || '...'}} Disc N" (continuing the numbering from the total you confirmed in the previous step) - use the same name as when this cold storage was first created.</mat-hint>
+          </mat-form-field>
+        </div>
+        <div class="flex-centered">
+            <button mat-flat-button color="primary" (click)="partition();">Next</button>
+        </div>
+        <br>
+        <br>           
+    </div>
+    <div *ngIf="step=='step_4'">
+        Error
+    </div>
+    <div *ngIf="step=='step_5'">
+        <br>
+        <mat-stepper orientation="vertical" [linear]="isLinear" #stepper>
+            @for (disk of _disks; track disk){
+            <mat-step [stepControl]="firstFormGroup">
+                <h3>The following files will be burned to this disc:</h3>
+                <br>
+                <div> 
+                    <span>
+                        @for (item of partitions[disk]; track item){
+                        <ng-container>{{item.path}}</ng-container>
+                        <mat-divider></mat-divider>
+                        }
+                    </span>
+                </div>
+                <br>
+                <div>
+                    <button mat-flat-button color="primary" mat-button (click)="sendToImgBurn(disk)">Send disk {{disk + 1}} to ImgBurn</button>
+                </div>
+            </mat-step>
+        }
+        </mat-stepper>
+
+    </div>
+
+</div>

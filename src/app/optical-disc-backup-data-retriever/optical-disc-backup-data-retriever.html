@@ -1,0 +1,104 @@
+<br>
+<div>
+  <br>
+  <br>
+  <mat-card appearance="raised">
+    <div style="display: flex; flex-direction: column;" *ngIf="step=='step_2'">
+        <div style="display: flex; flex-direction: row; flex:1;">
+            <div class="flex-centered">
+                <div style="display: flex; flex-direction: row; flex:1;">
+                    <mat-icon class="home-icons">album</mat-icon>
+                    <mat-icon class="home-icons">arrow_right_alt</mat-icon>
+                    <mat-icon class="home-icons">storage</mat-icon>
+                </div>
+                <br>
+                <mat-divider></mat-divider>
+                <br>
+                <div *ngIf="!opticalMediumLoaded" style="display: ruby;">
+                    <h2>Waiting for optical medium to be inserted</h2>
+                    <span class="dots"><span><h2>.</h2></span><span><h2>.</h2></span><span><h2>.</h2></span></span>
+                </div>
+                <div *ngIf="(opticalMediumLoaded && !finishedReadingFilePaths)" style="display: ruby;">
+                    <h2>Reading data from the optical disc</h2>
+                    <span class="dots"><span><h2>.</h2></span><span><h2>.</h2></span><span><h2>.</h2></span></span>
+                </div>               
+            </div>           
+        </div>
+    </div>
+
+    
+    <div style="display: flex; flex-direction: column;" *ngIf="step=='step_3'">
+        
+            <div class="flex-centered">
+                <div style="display: flex; flex-direction: row; flex:1;">
+                    <mat-icon class="home-icons">album</mat-icon>
+                    <mat-icon class="home-icons">arrow_right_alt</mat-icon>
+                    <mat-icon class="home-icons">storage</mat-icon>
+                </div>
+                <br>
+                <mat-divider></mat-divider>
+                <br>         
+            </div> 
+            <div class="flex-centered" *ngIf="!filesTreeNotLoaded">
+                <h2>Below you see the entire backup, gathering the files from all the optical disks.</h2>
+                <h2>Select the files you want to recover and press 'recover selected data'.</h2>
+            </div>
+            <div class="flex-centered" *ngIf="filesTreeNotLoaded">
+                <mat-spinner *ngIf="filesTreeNotLoaded"></mat-spinner>
+                <h2>Please wait ...</h2>
+            </div>  
+            <div class="flex-centered">
+                <mat-checkbox [ngClass]="{'hideThis' : filesTreeNotLoaded}" style="align-self: self-start" [checked]="allFilesSelected" (change)="selectAllFiles($event.checked);"
+                    (click)="$event.stopPropagation()">
+                    Select all
+                </mat-checkbox>
+                <mat-checkbox [ngClass]="{'hideThis' : filesTreeNotLoaded}" style="align-self: self-start" [(ngModel)]="groupPartialFiles"
+                    (click)="$event.stopPropagation()"
+                    matTooltip="A large file that didn't fit on one disc gets split into several '.partNNN' pieces, possibly spread across different discs. With this on, selecting any one piece automatically selects every other piece of that same file too, so you don't have to click each one by hand.">
+                    Group partials (choosing any part of a split file automatically selects all its other parts)
+                </mat-checkbox>
+                <files-tree style="align-self: stretch;" [ngClass]="{'hideThis' : filesTreeNotLoaded}" [groupPartialFiles]="groupPartialFiles"></files-tree>
+            </div> 
+            <div class="flex-centered" *ngIf="!filesTreeNotLoaded">
+                <button mat-flat-button color="primary" (click)="getPathsOfFilesToBeRecovered();">Recover selected data</button> 
+            </div>
+            <br>
+            <br>           
+    </div>
+
+    <div style="display: flex; flex-direction: column;" *ngIf="step=='step_5'">
+        <div class="flex-centered">
+            <div style="display: flex; flex-direction: row; flex:1;">
+                <mat-icon class="home-icons">album</mat-icon>
+                <mat-icon class="home-icons">arrow_right_alt</mat-icon>
+                <mat-icon class="home-icons">storage</mat-icon>
+            </div>
+            <br>
+            <mat-divider></mat-divider>
+            <br>         
+        </div>
+        <div class="flex-centered" style="display: ruby; align-self: center;" *ngIf="!opticalMediumLoaded">
+            <h2>Waiting for disc to be inserted</h2>
+            <span class="dots"><span><h2>.</h2></span><span><h2>.</h2></span><span><h2>.</h2></span></span>
+        </div>
+        <div class="flex-centered" *ngIf="(opticalMediumLoaded)">
+            <h2 *ngIf="!finishedCopyingFiles">Recovering data from optical disc</h2>
+            <br>
+            <mat-progress-bar *ngIf="!finishedCopyingFiles"  mode="indeterminate"></mat-progress-bar>
+            <mat-progress-bar *ngIf="finishedCopyingFiles"   mode="determinate" value="100"></mat-progress-bar>           
+            <br>
+        </div>  
+        <div style="align-items: stretch;" #scrollMe *ngIf=showLogs>
+            <app-scrollable-list></app-scrollable-list>
+        </div>
+        <div class="flex-centered" *ngIf="finishedCopyingFiles && !recoveredAllFilesFromAllDiscs">
+            <br>
+            <button mat-flat-button color="primary" (click)="recoverAllFilesFromAllDiscs();">Continue with the next disc</button>           
+            <br>
+        </div>            
+                       
+    </div>
+
+
+  </mat-card>
+</div>

@@ -1,0 +1,9 @@
+<mat-dialog-content class="mat-typography container">
+    <div>
+        <h3>Please wait</h3>
+        <mat-spinner></mat-spinner>
+    </div>
+</mat-dialog-content>
+<mat-dialog-actions align="center" *ngIf="showCancelButton">
+    <button mat-button [mat-dialog-close]="false">Cancel</button>
+</mat-dialog-actions>

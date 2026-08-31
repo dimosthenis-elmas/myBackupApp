@@ -1,0 +1,25 @@
+<div class="header-container" (click)="showHelpDialog()">
+    <h2 span matBadge="?" matBadgeOverlap="false" matBadgeSize="medium" matBadgeColor="accent">Cumulative backup</h2>
+</div>
+<h4 *ngIf="!diffTreeIsEmpty">The following files do not exist in the backup or have been modified.</h4>
+<h4 *ngIf="!diffTreeIsEmpty">Select which ones you want to transfer.</h4>
+<h4 *ngIf="diffTreeIsEmpty">The backup is up to date</h4>
+<mat-expansion-panel *ngIf="!diffTreeIsEmpty" [expanded]="panelOpenState" (opened)="panelOpenState = true" (closed)="panelOpenState = false">
+    <mat-expansion-panel-header>
+        <mat-panel-title>
+            <mat-checkbox [checked]="allFilesSelected" (change)="selectAllFiles($event.checked);"
+                (click)="$event.stopPropagation()">
+                Select all
+            </mat-checkbox>
+        </mat-panel-title>
+        <mat-panel-description>
+
+        </mat-panel-description>
+    </mat-expansion-panel-header>
+    <files-tree></files-tree>
+</mat-expansion-panel>
+<br>
+<div class="divider"></div>
+<button *ngIf="!diffTreeIsEmpty" mat-flat-button color="primary" (click)="proceedToPreview()">Next</button>
+<br>
+<br>

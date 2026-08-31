@@ -1,0 +1,9 @@
+[
+  { "path": "documents/notes.txt", "stats": { "size": 1200, "isDirectory": false } },
+  { "path": "documents/report.pdf", "stats": { "size": 8400, "isDirectory": false } },
+  { "path": "documents/archive/invoice-01.pdf", "stats": { "size": 3000, "isDirectory": false } },
+  { "path": "photos/beach.jpg", "stats": { "size": 15000, "isDirectory": false } },
+  { "path": "photos/sunset.jpg", "stats": { "size": 17000, "isDirectory": false } },
+  { "path": "music/track-01.mp3", "stats": { "size": 20000, "isDirectory": false } },
+  { "path": "notes.md", "stats": { "size": 500, "isDirectory": false } }
+]

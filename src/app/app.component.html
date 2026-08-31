@@ -1,0 +1,9 @@
+<mat-toolbar *ngIf="router.url!='/main-menu'">
+   <button mat-icon-button class="example-icon" aria-label="Example icon-button with menu icon" (click)="reloadAppAndGoToMainMenu()">
+     <mat-icon>home</mat-icon>
+   </button>
+   <span>{{headerTitles[router.url.split('/')[1]]}}</span>
+   <span class="example-spacer"></span>
+</mat-toolbar>
+<br>
+<router-outlet></router-outlet>

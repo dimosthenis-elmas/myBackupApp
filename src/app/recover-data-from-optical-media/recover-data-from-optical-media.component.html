@@ -1,0 +1,44 @@
+<div>
+  <div style="display: flex; flex-direction: column;" *ngIf="step=='step_1'">
+        <div style="display: flex; flex-direction: row; flex:1; align-self: center;">
+            <div class="flex-centered">
+                <div style="display: flex; flex-direction: row; flex:1; justify-content: center;">
+                    <mat-icon class="home-icons">album</mat-icon>
+                    <mat-icon class="home-icons">arrow_right_alt</mat-icon>
+                    <mat-icon class="home-icons">storage</mat-icon>
+                </div>
+                <br>                  
+                <button mat-flat-button color="primary" class="file-chooser-btn" (click)="getDirToCopyRecoveredData()">Select a directory to save the recovered files</button>
+                <mat-chip-set *ngIf="backup.targetPath">
+                    <mat-chip>{{backup.targetPath}}</mat-chip>
+                </mat-chip-set>
+            </div>           
+        </div>
+        <br>
+        <br>
+        <mat-divider></mat-divider>
+        <div style="align-self: center;">
+            <mat-checkbox [(ngModel)]="useExternalMetadata" class="example-margin">Provide cold storage files metadata by importing a JSON file.</mat-checkbox>
+            <div *ngIf="useExternalMetadata">
+                <button mat-flat-button color="primary" class="file-chooser-btn" (click)="getJSON()">Select JSON file</button>
+                <mat-chip-set *ngIf="externalMetadataJSONpath">
+                <mat-chip>{{externalMetadataJSONpath}}</mat-chip>
+            </mat-chip-set>
+            <div *ngIf="loadingExternalMetadataJSON">Reading and validating the JSON file...</div>
+            </div>
+        </div>
+        <br> 
+        <div style="align-self: center;">
+            <mat-divider></mat-divider>
+            <br>
+            <mat-card-actions>
+                <div>
+                    <button mat-flat-button color="primary" [disabled]="loadingExternalMetadataJSON" (click)="step1();">Next</button>
+                </div>                    
+            </mat-card-actions>
+            <br>
+            <br>
+        </div>
+    </div>
+  <optical-disc-backup-data-retriever [groupPartialFiles]="groupPartialFiles"></optical-disc-backup-data-retriever>
+</div>

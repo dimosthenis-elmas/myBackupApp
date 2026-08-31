@@ -1,0 +1,10 @@
+[
+  { "path": "documents/report.pdf", "stats": { "size": 45000, "isDirectory": false } },
+  { "path": "documents/notes.txt", "stats": { "size": 1200, "isDirectory": false } },
+  { "path": "documents/archive/2024/invoice-01.pdf", "stats": { "size": 8000, "isDirectory": false } },
+  { "path": "documents/archive/2024/invoice-02.pdf", "stats": { "size": 8000, "isDirectory": false } },
+  { "path": "photos/holiday/beach.jpg", "stats": { "size": 3200000, "isDirectory": false } },
+  { "path": "photos/holiday/sunset.jpg", "stats": { "size": 2900000, "isDirectory": false } },
+  { "path": "photos/empty-album/", "stats": { "size": 0, "isDirectory": true } },
+  { "path": "large-files/movie.mp4", "stats": { "size": 700000000, "isDirectory": false } }
+]

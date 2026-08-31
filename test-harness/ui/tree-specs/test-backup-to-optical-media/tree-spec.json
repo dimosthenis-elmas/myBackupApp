@@ -1,0 +1,12 @@
+[
+  { "path": "documents/notes.txt", "stats": { "size": 1200, "isDirectory": false } },
+  { "path": "documents/report.pdf", "stats": { "size": 8400, "isDirectory": false } },
+  { "path": "documents/archive/2024/invoice-01.pdf", "stats": { "size": 3000, "isDirectory": false } },
+  { "path": "photos/holiday/beach.jpg", "stats": { "size": 15000, "isDirectory": false } },
+  { "path": "photos/holiday/sunset.jpg", "stats": { "size": 17000, "isDirectory": false } },
+  { "path": "notes.md", "stats": { "size": 500, "isDirectory": false } },
+  { "path": "edge-cases/zero-byte-file.dat", "stats": { "size": 0, "isDirectory": false } },
+  { "path": "edge-cases/unicode and space file ünïcödé 测试.txt", "stats": { "size": 900, "isDirectory": false } },
+  { "path": "edge-cases/empty-directory/", "stats": { "size": 0, "isDirectory": true } },
+  { "path": "large-files/oversized-file.bin", "stats": { "size": 700000000, "isDirectory": false } }
+]

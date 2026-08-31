@@ -1,0 +1,14 @@
+<h3>Update files</h3>
+
+<mat-expansion-panel [expanded]="panelOpenState" (opened)="panelOpenState = true" (closed)="panelOpenState = false">
+    <mat-expansion-panel-header>
+        <mat-progress-bar *ngIf="!finished && !errorOccured" style="margin: 20px;" mode="indeterminate"></mat-progress-bar>
+        <mat-progress-bar *ngIf="finished || errorOccured" style="margin: 20px;"  mode="determinate" value="100"></mat-progress-bar> 
+    </mat-expansion-panel-header>
+    <mat-dialog-content style="margin: 10px;" class="mat-typography" #scrollMe>
+        <app-scrollable-list></app-scrollable-list>
+    </mat-dialog-content>
+</mat-expansion-panel>
+<br>
+<br>
+<button mat-flat-button *ngIf="!finished && !errorOccured" color="primary" (click)="cancel()">Cancel</button>

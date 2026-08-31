@@ -1,0 +1,76 @@
+<!--
+<mat-tree [dataSource]="dataSource" [treeControl]="treeControl">
+    <mat-tree-node *matTreeNodeDef="let node" matTreeNodeToggle matTreeNodePadding>
+      <button mat-icon-button disabled></button>
+      <mat-checkbox class="checklist-leaf-node"
+                    [checked]="checklistSelection.isSelected(node)"
+                    (change)="todoLeafItemSelectionToggle(node)">
+                    <mat-icon aria-hidden="false" aria-label="file">description</mat-icon>
+                    {{node.item}}
+      </mat-checkbox>
+    </mat-tree-node>
+  
+  
+    <mat-tree-node *matTreeNodeDef="let node; when: hasChild" matTreeNodePadding>
+      <button mat-icon-button matTreeNodeToggle
+              [attr.aria-label]="'toggle ' + node.filename">
+        <mat-icon class="mat-icon-rtl-mirror">
+          {{treeControl.isExpanded(node) ? 'expand_more' : 'chevron_right'}}
+        </mat-icon>
+      </button>
+      <mat-checkbox *ngIf="!isEmptyDir(node)"
+                  [checked]="descendantsAllSelected(node)"
+                  [indeterminate]="descendantsPartiallySelected(node)"
+                  (change)="todoItemSelectionToggle(node)">
+                  <mat-icon aria-hidden="false" aria-label="folder">folder</mat-icon>
+                  {{node.item}}
+      </mat-checkbox>
+      <mat-checkbox *ngIf="isEmptyDir(node)" 
+                  [checked]="checklistSelection.isSelected(node)"
+                  [indeterminate]="false"
+                  (change)="todoItemSelectionToggle(node)">
+                  <mat-icon aria-hidden="false" aria-label="folder">folder</mat-icon>
+                  {{node.item}}
+      </mat-checkbox>
+     
+    </mat-tree-node>
+  </mat-tree>
+-->
+<cdk-virtual-scroll-viewport [itemSize]="40" class="files-tree-viewport">
+  <div *cdkVirtualFor="let node of dataSource;">
+    <div *ngIf="!node.expandable" class="leaf" [style.padding-left]="node.level * 24 + 'px'">
+      <button mat-icon-button disabled></button>
+      <mat-checkbox class="checklist-leaf-node"
+                    [checked]="checklistSelection.isSelected(node)"
+                    (change)="todoLeafItemSelectionToggle(node)">
+                    <mat-icon aria-hidden="false" aria-label="file">description</mat-icon>
+                    {{node.item}}
+      </mat-checkbox>
+    </div>
+
+    <div *ngIf="node.expandable" [style.padding-left]="node.level * 24 + 'px'">
+      <button (click)="treeControl.toggle(node)" mat-icon-button
+              [attr.aria-label]="'toggle ' + node.filename">
+        <mat-icon class="mat-icon-rtl-mirror">
+          {{treeControl.isExpanded(node) ? 'expand_more' : 'chevron_right'}}
+        </mat-icon>
+      </button>
+      <mat-checkbox *ngIf="!isEmptyDir(node)"
+                  [checked]="descendantsAllSelected(node)"
+                  [indeterminate]="descendantsPartiallySelected(node)"
+                  (change)="todoItemSelectionToggle(node)">
+                  <mat-icon aria-hidden="false" aria-label="folder">folder</mat-icon>
+                  {{node.item}}
+      </mat-checkbox>
+      <mat-checkbox *ngIf="isEmptyDir(node)" 
+                  [checked]="checklistSelection.isSelected(node)"
+                  [indeterminate]="false"
+                  (change)="todoItemSelectionToggle(node)">
+                  <mat-icon aria-hidden="false" aria-label="folder">folder</mat-icon>
+                  {{node.item}}
+      </mat-checkbox>
+      <!-- <button mat-icon-button (click)="addNewItem(node)"><mat-icon>add</mat-icon></button> -->
+    </div>
+    
+  </div>
+</cdk-virtual-scroll-viewport>

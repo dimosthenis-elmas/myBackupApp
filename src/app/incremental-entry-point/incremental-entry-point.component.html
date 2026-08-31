@@ -1,0 +1,33 @@
+<br>
+<mat-card appearance="raised">
+    <div style="display: flex; flex-direction: column;">
+        <div style="display: flex; flex-direction: row; flex:1;">
+            <div class="flex-centered">
+                <!-- <mat-icon svgIcon="pc" class="home-icons"></mat-icon>-->
+                <mat-icon class="home-icons">computer</mat-icon>            
+                <button mat-flat-button color="primary" class="file-chooser-btn" (click)="getSource()">Source directory path</button>
+                <mat-chip-set *ngIf="backup.sourcePath">
+                    <mat-chip>{{backup.sourcePath}}</mat-chip>
+                </mat-chip-set>
+            </div>
+            <div class="flex-centered">
+                <!--<mat-icon svgIcon="right_arrow" class="home-icons"></mat-icon>-->
+                <mat-icon class="home-icons">forward</mat-icon>
+            </div>
+            <div class="flex-centered">
+                <!--<mat-icon svgIcon="storage" class="home-icons"></mat-icon>-->
+                <mat-icon class="home-icons">storage</mat-icon>
+                <button mat-flat-button color="primary" class="file-chooser-btn" (click)="getTarget()">Backup directory path</button>
+                <mat-chip-set *ngIf="backup.targetPath">
+                    <mat-chip>{{backup.targetPath}}</mat-chip>
+                </mat-chip-set>
+            </div>
+        </div>
+        <div class="container2">
+            <br>
+            <button mat-flat-button color="primary" (click)="UpdateBackupProceed();">Next</button>
+            <br>
+            <br>
+        </div>
+    </div>
+</mat-card>
