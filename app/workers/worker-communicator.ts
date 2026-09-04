@@ -232,12 +232,18 @@ export class WorkerCommunicator {
         }, 'response.res');
     }
 
-    static deleteFilesAndDirsForDirSync(pathsMarkedForDeletion: Array<string>, previewOnly: boolean, source: string, target: string): Promise<WorkerResponse> {
+    /** @param commit false previews the operation only (nothing is actually deleted - see worker.ts's
+     *  deleteFilesAndDirsForDirSync, whose own `commit` parameter this is passed straight through to,
+     *  unmodified); true actually performs the deletions. Named (and typed) to match that worker-side parameter
+     *  exactly - it used to be called `previewOnly` here despite carrying the opposite sense with no inversion
+     *  anywhere in between, which happened to still work only because every call site already passed values as
+     *  if this were `commit` (false to preview, true to commit) rather than what its old name promised. */
+    static deleteFilesAndDirsForDirSync(pathsMarkedForDeletion: Array<string>, commit: boolean, source: string, target: string): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('delete-files-and-dirs-for-dir-sync', {
             pathsMarkedForDeletion: pathsMarkedForDeletion,
             source: source,
             target: target,
-            previewOnly: previewOnly
+            commit: commit
         }, 'response.res');
     }
 

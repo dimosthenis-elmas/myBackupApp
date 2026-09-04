@@ -199,8 +199,7 @@ of source's final state — `verify-manifest.js`'s own `EXTRA` detection is what
 gone, not just that the expected ones are.
 
 **This is the one UI script that can genuinely delete real files** — see `worker-ipc/README.md`'s
-`test-sync-dirs.js` section for the full IPC-level safety writeup (a real `previewOnly`/`commit` naming trap in
-the app's own code, not a bug, but easy to get backwards). This script adds its own on-disk check: right after
+`test-sync-dirs.js` section for the full IPC-level safety writeup. This script adds its own on-disk check: right after
 the preview dialog appears — before "Yes, continue" is ever clicked — it asserts the two deliberately-planted
 "leftover" files (one in an existing directory, one alone in its own directory) are still present, failing loudly
 if the preview stage itself touched anything.

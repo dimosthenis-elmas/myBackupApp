@@ -892,7 +892,7 @@ import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/
     }
 
     goToHomePage(){
-      this.router.navigate(['home']);
+      this.router.navigate(['main-menu']);
     }
 
   }

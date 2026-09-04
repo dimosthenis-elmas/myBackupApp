@@ -1799,7 +1799,7 @@ const init = function() : void
         case 'delete-files-and-dirs-for-dir-sync':
           logsBuffer.setChannel('delete-files-and-dirs-for-dir-sync');
           console.log("(worker) in delete-files-and-dirs-for-dir-sync");
-          deleteFilesAndDirsForDirSync(arg.params.pathsMarkedForDeletion, arg.params.previewOnly, arg.params.source, arg.params.target).then((d)=>{
+          deleteFilesAndDirsForDirSync(arg.params.pathsMarkedForDeletion, arg.params.commit, arg.params.source, arg.params.target).then((d)=>{
             logsBuffer.flush(); // whatever remained in the buffer
             if(process.env._stop != "stop"){
               ipc.sendResponseToMain({ key: 'delete-files-and-dirs-for-dir-sync', res: d, status: "completed" });

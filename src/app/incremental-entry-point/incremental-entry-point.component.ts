@@ -93,11 +93,12 @@ export class IncrementalEntryPointComponent implements OnInit {
         url = 'incremental';
         break;
       case 'sync':
-        const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
-        loadingDialogRef.componentInstance.title = "Info";
-        loadingDialogRef.componentInstance.message = `Synchronized backup has not been implemented yet! We will consider it in a future version of the program`;
-        url = 'sync';
-        this.router.navigate(['sync-dirs'])
+        // Sync Dirs is a real, implemented feature (see sync-dirs.component.ts) - this used to show a stale
+        // "not implemented yet" dialog and navigate straight to 'sync-dirs' unconditionally, bypassing the
+        // sourcePath/targetPath check below entirely, then ALSO navigate to a non-existent 'sync' route right
+        // after if paths were set (racing/cancelling the first navigation). Now it goes through the exact same
+        // path-validation and navigation as every other mode.
+        url = 'sync-dirs';
         break;
     }
 

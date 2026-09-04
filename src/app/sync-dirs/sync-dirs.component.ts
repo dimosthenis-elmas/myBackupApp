@@ -193,7 +193,13 @@ export class SyncDirsComponent {
     
     this.copyFilesPreviewPromise = ipc.incrementalPreview(filePathsToBeCopied, this.backup.sourcePath, this.backup.targetPath);
     await this.copyFilesPreviewPromise;
-    //this.workerListener.removeListener();
+    // By the time copyFilesPreviewPromise has resolved, this listener has already seen and handled the final
+    // 'completed'/'stopped' message for 'incremental-preview' (both this listener and sendAndAwaitResponse's own
+    // internal one fire for the same event before either can remove the other - see WorkerCommunicator.
+    // sendAndAwaitResponse's own doc comment). Removing it now - instead of leaving it registered forever, as
+    // before - is therefore safe and stops it (and the one about to be registered below for the delete phase)
+    // from silently accumulating on every sync attempt for the lifetime of this component.
+    this.workerListener.removeListener();
     console.log("Finished incremental preview ")
     await componentInstance.streamFinishedPromise();
     this.backup.resetStream();
@@ -218,7 +224,11 @@ export class SyncDirsComponent {
     //Setting commit = false means we only want a peview of the operations.
     this.deleteFilesPreviewPromise = ipc.deleteFilesAndDirsForDirSync(filePathsToBeDeleted, /*commit=*/false, this.backup.sourcePath, this.backup.targetPath);
     await this.deleteFilesPreviewPromise;
-    console.log("Finished  deleteFilesAndDirsForDirSync")    
+    console.log("Finished  deleteFilesAndDirsForDirSync")
+    // Same cleanup as after the copy-preview phase above - this listener has already handled the final message
+    // by the time deleteFilesPreviewPromise resolved, and nothing below reuses it (commitAllSyncOperations, if
+    // reached, registers its own).
+    this.workerListener.removeListener();
 
   }
 
@@ -259,7 +269,7 @@ export class SyncDirsComponent {
         errorDialog.componentInstance.message = `An error occurred while comparing the directories: ${error}`;
         errorDialog.componentInstance.action1Callback = () => {
           errorDialog.close();
-          this.router.navigate(['home']);
+          this.router.navigate(['main-menu']);
         }
       }
       return;
@@ -398,7 +408,11 @@ export class SyncDirsComponent {
               // while it has really just started. The stream is completed once, after the delete phase
               // finishes (see the 'delete-files-and-dirs-for-dir-sync' case below).
             } else if(response.status == 'error'){
-              Promise.reject("File copy operation failed: " + response.res)
+              // Intentionally no-op: this Promise.reject() used to be created and immediately discarded here -
+              // nothing awaited or returned it, so it never actually surfaced anything. The real rejection
+              // already happens on its own: copyFilesPromise (awaited below) is settled by
+              // WorkerCommunicator.sendAndAwaitResponse's own internal listener on this same 'error' status, and
+              // that rejection is what propagates out of this method to syncDirs()'s .catch().
             }
             break;
         }
@@ -407,6 +421,10 @@ export class SyncDirsComponent {
 
     this.copyFilesPromise = ipc.incrementalCopyFiles(this.pathsOfFilesToBeCopied, this.backup.sourcePath, this.backup.targetPath);
     await this.copyFilesPromise;
+    // See the identical cleanup (and its comment) in previewOperationsBeforeCommiting - this listener has
+    // already handled the final message by the time copyFilesPromise resolved, and the delete-phase listener
+    // registered next needs this one gone first so it isn't left dangling once THAT one is itself reassigned.
+    this.workerListener.removeListener();
 
     // deleting files from dir to be synched
     this.workerListener = ipc.onResponseFromWorker((event, response) => {
@@ -419,7 +437,8 @@ export class SyncDirsComponent {
               this.backup.previewLogsStream.complete();
               status = response.status
             } else if(response.status == 'error'){
-              Promise.reject("File delete operation failed: " + response.res)
+              // Intentionally no-op - see the identical comment on the copy phase's 'error' case above.
+              // deleteFilesPromise (awaited below) is what actually rejects.
             }
             break;
         }
@@ -428,6 +447,9 @@ export class SyncDirsComponent {
 
     this.deleteFilesPromise = ipc.deleteFilesAndDirsForDirSync(this.pathsOfFilesToBeDeleted, /*commit=*/true, this.backup.sourcePath, this.backup.targetPath);
     await this.deleteFilesPromise;
+    // Same cleanup as previewOperationsBeforeCommiting/the copy phase above - nothing after this reuses
+    // this.workerListener, so leaving it registered would just leak for the rest of the component's lifetime.
+    this.workerListener.removeListener();
 
     return status;
 

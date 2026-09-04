@@ -325,7 +325,13 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   private replacePartialFileSplits(coldStoragePaths: filesMetadata[], masterPaths: filesMetadata[]): filesMetadata[] {
     this.opticalDiscVolumeLetter = coldStoragePaths[0].path.split('\\').slice(0)[0];
     let r = coldStoragePaths.map((itm, i) => {
-      const re = /.part.\d+$/
+      // Escaped dots and case-insensitive, matching the canonical PART_FILE_PATTERN in worker.ts exactly (this
+      // is a separate, local reimplementation of the same ".part.NNN" convention, not an import of that one -
+      // worker.ts is Node-side code with its own require()s and is not meant to be pulled into the renderer
+      // bundle). The previous /.part.\d+$/ left both dots unescaped, so they matched ANY character rather than
+      // a literal ".", and had no /i flag - looser and case-sensitive compared to the pattern it was meant to
+      // mirror.
+      const re = /\.part\.\d+$/i
       let completeLargeFilePathCandidate = itm.path.replace(this.opticalDiscVolumeLetter, "").replace(re, "");
       if(completeLargeFilePathCandidate === itm.path.replace(this.opticalDiscVolumeLetter, "")){
         return itm;
@@ -399,7 +405,18 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       const b = coldStoragePathsWithoutPartials.find((o)=> o.path==file.path.replace(this.backup.targetPath, this.opticalDiscVolumeLetter));
       if (b == undefined) {
         return true // missing
-      } else if ((file.stats.mtime > b.stats.mtime) || (file.stats.size != b.stats.size)) {
+      } else if ((new Date(file.stats.mtime).getTime() > new Date(b.stats.mtime).getTime()) || (file.stats.size != b.stats.size)) {
+        // Wrapped both sides in `new Date(...).getTime()`: file.stats.mtime (from a live ipc.getFilePathsWithStats
+        // scan of the master directory) is always a real Date, but b.stats.mtime is only a Date when the cold
+        // storage side came from physically re-inserting each disc - when it came from a loaded metadata JSON
+        // (readJSONfromDisk -> JSON.parse, which never reconstructs Dates) it is a plain ISO string instead. A
+        // bare `Date > string` comparison coerces the Date to its numeric timestamp but leaves the string as a
+        // string, then - since they're not both strings - falls back to Number(theString), which is NaN for an
+        // ISO date string. Any comparison against NaN is false, so that comparison was ALWAYS false whenever b
+        // came from a JSON file - silently disabling the mtime half of this out-of-sync check (only the
+        // size-mismatch half still worked) for exactly the "load an existing metadata JSON" path this check
+        // exists to protect. new Date(x) parses an ISO string correctly, and passing an existing Date through
+        // it is a harmless no-op, so this works for both sources.
         // modified. This would be an problem. Show some kind of warning and cancel the operation.
         // Stop the loop
         outOfSync = true;

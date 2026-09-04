@@ -87,8 +87,7 @@ wasn't the genuinely new thing worth proving first.
 - `worker-ipc/test-sync-dirs.js` and `ui/test-sync-dirs.js` are the only two scripts that can delete real files.
   Both always run a preview pass first with an explicit on-disk assertion that nothing was deleted, and only ever
   delete a small, explicit, hand-planted set of files - never anything computed or sweeping. See their own
-  README sections for the full writeup, including a real naming trap found in the app's own IPC layer (not a
-  bug - current behavior is correct, but easy to get backwards - see "Notable findings" below).
+  README sections for the full writeup.
 - A run you interrupt (Ctrl+C, closing the app window, a genuine failure) deliberately leaves its scratch data in
   place instead of cleaning up, so it can actually be inspected. Run `node test-harness/cleanup.js` afterward to
   clear it out (`--dry-run` to just see what it would remove first).
@@ -145,13 +144,6 @@ found by actually running the real code and checking real results, not by readin
   real UI (the smallest selectable medium, a 700MB CD, is always bigger than a 500 MiB piece), so this has never
   affected real usage - it only surfaced because a test calls the function directly with too small a capacity.
   See `test-harness/worker-ipc/README.md`'s `test-large-file-split.js` section for the full diagnosis.
-- `WorkerCommunicator.deleteFilesAndDirsForDirSync`'s parameter is named `previewOnly` and sent over IPC that
-  way, but the worker's own handler passes it straight through, unchanged, into a parameter that's actually
-  named `commit` - there's no inversion, so `previewOnly: true` actually **commits** deletions and
-  `previewOnly: false` actually **previews only**, backwards from what the name suggests. The app only works
-  correctly today because both real call sites happen to pass the value they mean for `commit`, with an inline
-  comment overriding the misleading parameter name. Not a functional bug (current behavior is correct), just a
-  landmine worth knowing about if that code is ever touched.
 
 **One requested hardening (not a bug):** the 500MB large-file split-piece size in `worker.ts` was pulled out of a
 bare number in a command string into a named, documented constant (`LARGE_FILE_SPLIT_VOLUME_SIZE_MIB`) - same

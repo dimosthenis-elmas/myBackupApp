@@ -210,7 +210,7 @@ export class IncrementalComponent implements OnInit, OnDestroy {
       errorDialog.componentInstance.message = `An error occurred while comparing the directories: ${error}`;
       errorDialog.componentInstance.action1Callback = () => {
         errorDialog.close();
-        this.router.navigate(['home']);
+        this.router.navigate(['main-menu']);
       }
     })
     
@@ -220,7 +220,7 @@ export class IncrementalComponent implements OnInit, OnDestroy {
         console.log("Sending stop")
         ipc.stop();
         diffPromise.then(()=>{
-          this.router.navigate(['home']);
+          this.router.navigate(['main-menu']);
         })
       }
     });

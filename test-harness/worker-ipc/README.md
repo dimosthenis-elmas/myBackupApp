@@ -107,15 +107,11 @@ mode (`commit=false`) always runs first with an explicit on-disk assertion that 
 lets get deleted are a small hand-picked set it plants itself (never anything computed/sweeping), and a path
 guard fires immediately before the one real delete call.
 
-**A naming trap worth knowing about, current app behavior (not a bug):**
-`WorkerCommunicator.deleteFilesAndDirsForDirSync`'s parameter is named `previewOnly` and sent over IPC that way,
-but `worker.ts`'s handler passes it straight through, unchanged, into the worker function's own parameter —
-which is actually named `commit`. There's no inversion applied anywhere. So `previewOnly: true` actually
-**commits** deletions, and `previewOnly: false` actually **previews only** — backwards from what the name
-suggests. The app itself only gets this right today because both real call sites in `sync-dirs.component.ts`
-pass the value they mean for `commit`, with an inline comment overriding the misleading parameter name.
-`test-sync-dirs.js` names its own constants after what they actually do, never passes a bare `true`/`false` to
-this call, and documents this in full in its header comment. Worth remembering if you ever touch this call site.
+`WorkerCommunicator.deleteFilesAndDirsForDirSync`'s parameter is named `commit`, sent over IPC that way, and
+passed straight through into `worker.ts`'s own `commit` parameter, which gates the actual deletions — `commit:
+false` previews only, `commit: true` actually deletes. `test-sync-dirs.js` still names its own constants after
+what they DO rather than passing a bare `true`/`false`, which costs nothing and keeps intent obvious at each
+call site.
 
 Proven: copy-side and delete-side path sets both match exactly what's expected, preview mode provably deletes
 nothing, the real commit correctly deletes a planted leftover file AND cleans up the now-empty directory it was

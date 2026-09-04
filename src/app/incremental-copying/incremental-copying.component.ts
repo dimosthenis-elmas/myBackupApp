@@ -125,7 +125,7 @@ export class IncrementalCopyingComponent implements OnInit, OnDestroy {
   }
 
   goToMainMenu(){
-    this.router.navigate(['home'])
+    this.router.navigate(['main-menu'])
   }
 
 }

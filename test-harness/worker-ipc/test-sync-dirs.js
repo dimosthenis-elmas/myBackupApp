@@ -12,18 +12,14 @@
  * ============================================================================================================
  * SAFETY - this is the one test-harness script that can genuinely delete real files, so read this before editing
  * ============================================================================================================
- * A REAL LANDMINE in the app's own IPC naming, confirmed by reading worker.ts directly, not guessed:
- * WorkerCommunicator.deleteFilesAndDirsForDirSync's second parameter is called `previewOnly` and sent over IPC
- * as `{ previewOnly: ... }` - but worker.ts's handler (the 'delete-files-and-dirs-for-dir-sync' case) passes that
- * value UNCHANGED, positionally, into the worker function's own parameter - which is itself named `commit`, not
- * `previewOnly`, and used directly to gate fs.unlinkSync/fs.rmdirSync. There is NO inversion. So counter-
- * intuitively: `previewOnly: true` -> `commit: true` -> ACTUALLY DELETES FILES. `previewOnly: false` ->
- * `commit: false` -> preview only, nothing deleted. This is backwards from what the name suggests. The app
- * itself only works correctly today because both real call sites in sync-dirs.component.ts ignore the
- * parameter's declared name and pass the value they actually mean for `commit` (with an inline `/*commit=*\/`
- * comment overriding the misleading name) - see that file. NOT a functional bug (current behavior is correct),
- * just a very easy thing to get backwards - which is exactly why this script names its own constants after what
- * they DO, not what the IPC field is called, and never passes a bare `true`/`false` to this call.
+ * WorkerCommunicator.deleteFilesAndDirsForDirSync's second parameter is `commit` - false previews the operation
+ * only (nothing is touched on disk), true actually performs the deletions - sent over IPC as `{ commit: ... }`
+ * and passed straight through, unmodified, into worker.ts's own `commit` parameter, which gates
+ * fs.unlinkSync/fs.rmdirSync directly. (This used to be named `previewOnly` here, with the opposite sense and no
+ * inversion anywhere in the pipeline - a landmine that happened to not matter only because every real call site
+ * already passed values as if it were `commit`. Fixed by renaming the parameter to match what it actually does.)
+ * This script still names its own constants after what they DO rather than passing a bare `true`/`false` - that
+ * costs nothing and keeps the intent obvious at each call site below.
  *
  * Additional guardrails specific to this script (on top of the usual generate-random-tree.js safety model):
  *  - `targetRoot` is never anything other than a fresh folder this script itself creates under the OS temp dir -
@@ -52,8 +48,8 @@ const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { MARKER_FILE_NAME } = require('../lib/safety');
 const { printTree } = require('../lib/print-tree');
 
-// See the SAFETY block above - these names describe the REAL effect, not the misleading `previewOnly` IPC field
-// name. Always use these, never a bare true/false, at any deleteFilesAndDirsForDirSync call site in this file.
+// See the SAFETY block above. Named after what they DO rather than passed as a bare true/false, so intent stays
+// obvious at each deleteFilesAndDirsForDirSync call site in this file.
 const DELETE_PARAM_THAT_ACTUALLY_PREVIEWS_ONLY = false;
 const DELETE_PARAM_THAT_ACTUALLY_COMMITS_DELETIONS = true;
 
@@ -189,7 +185,7 @@ async function main() {
     console.log('\nCalling delete-files-and-dirs-for-dir-sync in PREVIEW mode (must delete nothing)...');
     await callWorker(win, 'delete-files-and-dirs-for-dir-sync', {
       pathsMarkedForDeletion: deletePaths,
-      previewOnly: DELETE_PARAM_THAT_ACTUALLY_PREVIEWS_ONLY,
+      commit: DELETE_PARAM_THAT_ACTUALLY_PREVIEWS_ONLY,
       source: sourceRoot,
       target: targetRoot,
     });
@@ -224,7 +220,7 @@ async function main() {
     console.log('\nCalling delete-files-and-dirs-for-dir-sync in COMMIT mode (deletes the planted leftovers)...');
     await callWorker(win, 'delete-files-and-dirs-for-dir-sync', {
       pathsMarkedForDeletion: deletePaths,
-      previewOnly: DELETE_PARAM_THAT_ACTUALLY_COMMITS_DELETIONS,
+      commit: DELETE_PARAM_THAT_ACTUALLY_COMMITS_DELETIONS,
       source: sourceRoot,
       target: targetRoot,
     });

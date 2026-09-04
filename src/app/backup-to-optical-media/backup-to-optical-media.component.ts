@@ -87,6 +87,15 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   /** Full path (folder + file name), chosen by the user via a save dialog, where the cold storage metadata
    * JSON is written/updated for this session. See chooseSaveFile(). */
   private coldStorageMetadataJSONPath!: string;
+  /** Serializes sendToImgBurn's read-modify-write of the shared cold storage metadata JSON across discs.
+   *  Without this, since the stepper is non-linear ([isLinear]=false) and every disc's "Send to ImgBurn" button
+   *  is always enabled, nothing stops the user from triggering sendToImgBurn for a second disc before the
+   *  first one's write has finished - if the second disc's read then lands before the first disc's write, the
+   *  first disc's update is silently lost (overwritten by the second write, which was based on a stale read).
+   *  Each call chains its own read-modify-write onto this promise and awaits it, so only one is ever in flight
+   *  at a time, in call order - the same pattern WorkerCommunicator.queueTail already uses for the analogous
+   *  problem on the worker IPC channel itself. */
+  private metadataUpdateQueue: Promise<void> = Promise.resolve();
   /** Name of this cold storage collection of discs, provided once by the user in step_1 and burned onto every
    * disc's UDF volume label as "<name> Disc <N>" (see sendToImgBurn/createIBB_file) - so all discs from the
    * same backup carry a recognizable, shared label. */
@@ -450,14 +459,20 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     });
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
-    let updatedMetadataJSON: Array<Array<{ path: string; stats: any; }>>;
-    try {
-      updatedMetadataJSON = (await ipc.readJSONfromDisk(this.coldStorageMetadataJSONPath)).res;
-      updatedMetadataJSON[i] = selectedFiles;
-      await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPath, JSON.stringify(updatedMetadataJSON, null, 2));
-    } catch (error) {
-      console.log("There is a problem with the cold storage files medadata json. Expecting array of length this._disc.")
-    }
+    // Chain this disc's read-modify-write onto the queue (see metadataUpdateQueue's own doc comment) and await
+    // OUR turn specifically - not just the queue's current tail - so a later disc's call, chained on after this
+    // one, can never run its own read until this write has actually finished.
+    const thisUpdate = this.metadataUpdateQueue.then(async () => {
+      try {
+        const updatedMetadataJSON: Array<Array<{ path: string; stats: any; }>> = (await ipc.readJSONfromDisk(this.coldStorageMetadataJSONPath)).res;
+        updatedMetadataJSON[i] = selectedFiles;
+        await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPath, JSON.stringify(updatedMetadataJSON, null, 2));
+      } catch (error) {
+        console.log("There is a problem with the cold storage files medadata json. Expecting array of length this._disc.")
+      }
+    });
+    this.metadataUpdateQueue = thisUpdate;
+    await thisUpdate;
 
     this.createIBB_file(i, this.filesTrees.toArray()[i].getSelectedData(), this.backup.sourcePath).then(()=>{
       loadingDialogRef.close();

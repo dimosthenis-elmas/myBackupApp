@@ -79,7 +79,7 @@ export class RecoverDataFromOpticalMediaComponent implements OnInit, OnDestroy{
   }
 
   goToMainMenu(){
-    
+    this.router.navigate(['main-menu']);
   }
 
 

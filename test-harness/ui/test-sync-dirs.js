@@ -12,9 +12,7 @@
  * ============================================================================================================
  * SAFETY - this is the one UI test that can genuinely delete real files, same reason as worker-ipc/test-sync-dirs.js
  * ============================================================================================================
- * See that script's header for the full explanation of the previewOnly/commit IPC-naming trap - not relevant to
- * THIS script directly (it never calls the IPC layer itself, only clicks buttons), but worth knowing if you ever
- * touch the app code this exercises. What IS directly relevant here:
+ * What IS directly relevant here:
  *  - `targetRoot` is always a fresh folder this script creates under test-harness/generated-fixtures/ (see
  *    lib/fixtures-root.js) - no CLI flag accepts an external path.
  *  - The wizard's own design already enforces preview-before-commit (the "Write to the backup" proceed button
