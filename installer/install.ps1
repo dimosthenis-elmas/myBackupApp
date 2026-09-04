@@ -4,20 +4,20 @@
   A simple, portable installer for this app - no admin rights, no registry entries, no Program Files.
 
 .DESCRIPTION
-  Copies the already-built dist\win-unpacked folder into a directory YOU choose, optionally records the paths
+  Copies the already-built release\win-unpacked folder into a directory YOU choose, optionally records the paths
   to your 7z.exe and ImgBurn.exe into the copied appData\config.json, and (optionally) creates a Desktop-or-
   wherever-you-choose shortcut to the installed .exe. Nothing is written outside the folder you pick - no
   registry keys, no Start Menu entries, no per-machine install. Uninstalling is just deleting that folder (and
   the shortcut, if you made one).
 
   This script does NOT build the app - run `npm run electron:build` first (or `npm run build:prod` if
-  dist\win-unpacked already exists from a previous build you trust). This just packages up what that already
+  release\win-unpacked already exists from a previous build you trust). This just packages up what that already
   produced into a real, standalone install.
 
   The app's own real temp/cache directory (appData\config.json's cacheDataDirectoryPath) is left on its default
-  value, which is a RELATIVE path resolved against the app's own appData folder - already portable by design
-  (verified 2026-08-27: it resolves correctly no matter where the whole folder is copied to), so nothing needs
-  to be done here to satisfy that.
+  value, which is a RELATIVE path resolved against the app's own appData folder - already portable by design,
+  resolving correctly no matter where the whole folder is copied to - so nothing needs to be done here to
+  satisfy that.
 
 .NOTES
   Run this by double-clicking install.bat (in the same folder), or directly:
@@ -30,12 +30,12 @@ Add-Type -AssemblyName System.Drawing
 $ErrorActionPreference = 'Stop'
 
 # --------------------------------------------------------------------------------------------------------------
-# 0. Locate the already-built win-unpacked folder (sibling to this script's own project root: installer\..\dist\
-#    win-unpacked) - this script never builds anything itself, only packages what's already there.
+# 0. Locate the already-built win-unpacked folder (sibling to this script's own project root: installer\..\
+#    release\win-unpacked) - this script never builds anything itself, only packages what's already there.
 # --------------------------------------------------------------------------------------------------------------
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
-$sourceDir = Join-Path $projectRoot 'dist\win-unpacked'
+$sourceDir = Join-Path $projectRoot 'release\win-unpacked'
 
 if (-not (Test-Path $sourceDir)) {
     [System.Windows.Forms.MessageBox]::Show(
@@ -88,6 +88,18 @@ if (-not (Test-Path $installedExePath)) {
     [System.Windows.Forms.MessageBox]::Show("Copy finished, but $installedExePath is missing - something went wrong. Nothing else will be done.", 'Copy failed', 'OK', 'Error') | Out-Null
     exit 1
 }
+
+# resources\appData\tempFilesCanBeDeleted is disposable scratch space the app creates and owns itself, proven
+# by a marker file tied to the exact absolute path it was created at (see verifyOwnershipMarker in
+# app/workers/worker.ts). If $sourceDir already had one - e.g. the build being installed was run once directly
+# from release\win-unpacked before this install - the copy above just carried over a marker pointing at that
+# OLD path, which the app then refuses to trust here. Removing any copied-over instance means the app always
+# creates this directory fresh, right here, the first time it actually needs it - same final location inside
+# the installed app folder, just never inherited from wherever the source build happened to run before.
+$copiedTempDir = Join-Path $installDir 'resources\appData\tempFilesCanBeDeleted'
+if (Test-Path $copiedTempDir) {
+    Remove-Item -Path $copiedTempDir -Recurse -Force
+}
 Write-Host '  done.'
 
 # --------------------------------------------------------------------------------------------------------------
@@ -129,13 +141,10 @@ if (Test-Path $configPath) {
     $config | Add-Member -NotePropertyName 'setupAcknowledged' -NotePropertyValue $true -Force
     # NOT `Set-Content -Encoding UTF8` - PowerShell 5.1's "UTF8" encoding writes a UTF-8 BOM, and the app's own
     # readConfig() (worker.ts) reads config.json with fs.readFileSync (no encoding specified) then passes the
-    # result straight to JSON.parse, which does NOT tolerate a leading BOM - it throws, and readConfig()'s catch
-    # block silently swallows that into an empty {} config. Found for real (2026-08-27): every value this
-    # installer wrote (both executable paths AND setupAcknowledged) was invisible to the app on its very first
-    # read because of this - it only "fixed itself" once the app's own first-run flow re-prompted and rewrote
-    # the file itself (via plain fs.promises.writeFile, no BOM). [System.IO.File]::WriteAllText with an explicit
-    # UTF8Encoding($false) writes UTF-8 with NO BOM, which JSON.parse reads correctly - reproduced and confirmed
-    # via a standalone Node script that mirrors the app's exact read path before landing on this fix.
+    # result straight to JSON.parse, which does NOT tolerate a leading BOM: it throws, and readConfig()'s catch
+    # block silently swallows that into an empty {} config, so every value written here would be invisible to
+    # the app on its first read. [System.IO.File]::WriteAllText with an explicit UTF8Encoding($false) writes
+    # UTF-8 with NO BOM, which JSON.parse reads correctly.
     $jsonText = $config | ConvertTo-Json -Depth 10
     [System.IO.File]::WriteAllText($configPath, $jsonText, (New-Object System.Text.UTF8Encoding($false)))
     Write-Host '  done.'

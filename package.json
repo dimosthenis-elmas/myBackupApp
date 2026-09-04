@@ -99,6 +99,12 @@
     "chrome 114"
   ],
   "build": {
+    "directories": {
+      "output": "release"
+    },
+    "electronLanguages": [
+      "en-US"
+    ],
     "win": {
       "icon": "dist/assets/icons",
       "target": [
@@ -115,19 +121,12 @@
       "app/workers/logsbuffer.js",
       "app/workers/preload/contextBridge_api.js",
       "app/workers/preload/preload.js",
-      "src/types/interface.d.ts",
-      "src/index.html",
       "app/node_modules/",
       "appData/config.json",
       "appData/IBB_TEMPLATE.ibb",
       {
         "from": "dist",
-        "to": "dist",
-        "filter": [
-          "**/*",
-          "!win-unpacked",
-          "!win-unpacked/**"
-        ]
+        "to": "dist"
       }
     ]
   }

@@ -6,7 +6,7 @@ shortcut gets created wherever you choose. To uninstall, delete that one folder 
 one) - nothing else on the machine is touched.
 
 This deliberately does **not** use the existing NSIS-based `npm run electron:build` installer output (the
-`...Setup....exe` in `dist\`) - that one installs per-user to a fixed `%LOCALAPPDATA%\Programs\...` location and
+`...Setup....exe` in `release\`) - that one installs per-user to a fixed `%LOCALAPPDATA%\Programs\...` location and
 writes an uninstaller registry entry, which is the opposite of what this is for. It also isn't an MSI - MSI
 packages always register themselves in the Windows Installer database and the registry (that's inherent to the
 format, not something you can opt out of), so it can't be made portable in this sense either.
@@ -17,7 +17,7 @@ format, not something you can opt out of), so it can't be made portable in this 
    ```
    npm run electron:build
    ```
-   (this produces `dist\win-unpacked\` - the installer doesn't build anything itself, it just packages up
+   (this produces `release\win-unpacked\` - the installer doesn't build anything itself, it just packages up
    whatever is already there)
 2. Double-click `install.bat` in this folder (or run `install.ps1` directly via
    `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1`).
@@ -30,7 +30,7 @@ format, not something you can opt out of), so it can't be made portable in this 
 
 ## What it actually does
 
-- Copies `dist\win-unpacked\*` into the folder you chose (`Copy-Item -Recurse`).
+- Copies `release\win-unpacked\*` into the folder you chose (`Copy-Item -Recurse`).
 - Writes the 7z/ImgBurn paths you picked into the *copied* `resources\appData\config.json` (never touches the
   project's own `appData\config.json`), and sets `setupAcknowledged: true` - the same field the app's own
   first-run flow sets once you click through its own prompts, so it won't ask again unnecessarily.
@@ -41,16 +41,15 @@ format, not something you can opt out of), so it can't be made portable in this 
 - Creates a real Windows shortcut (`.lnk`, via the same `WScript.Shell` mechanism Windows' own shortcut creation
   uses) pointing at the installed `.exe`, if you asked for one.
 
-## A real portability bug this surfaced and fixed (see the project's own git history for the exact commit)
+## Why this works when the folder is moved
 
-Building this exposed a genuine, pre-existing gap: `app/main.ts` used to find its own compiled UI (`index.html`)
-via a relative-path guess that only worked by coincidence, because `dist\win-unpacked\` happened to sit inside
-the same `dist\` folder that also holds the Angular build's own `index.html`. Copy `win-unpacked` anywhere else -
-exactly what this installer does - and that guess would fail, loading a blank window. Fixed by bundling the
-compiled Angular frontend as a proper resource (`extraResources` in `package.json`) and having `main.ts` find it
-via `process.resourcesPath` - Electron's own install-location-independent API - instead. This is why the installer
-requires a rebuild (`npm run electron:build`) after this change, rather than working with an older
-`dist\win-unpacked\` you might already have lying around.
+`app/main.ts` finds its compiled UI (`index.html`) via `process.resourcesPath` - Electron's own
+install-location-independent API - rather than a path relative to where the app happened to be built. The
+compiled Angular frontend is bundled as a proper resource for exactly this reason (`extraResources` in
+`package.json`, landing at `resources\dist\index.html`), so copying `win-unpacked` anywhere else, as this
+installer does, still finds it correctly. If `resources\dist\index.html` is missing from your
+`release\win-unpacked\` folder, rebuild with `npm run electron:build` before installing - the app will load a
+blank window without it.
 
 ## Known limitations / not yet verified
 

@@ -117,9 +117,9 @@ To start the app in debug mode run `npm start`
 ----------------------------------------------------------------
 Note for building the project in windows (.exe):
 To build a .exe file for windows you can use the command `npm run electron:build`
-This will create the dist/ directory and your working .exe is in the win-unpacked directory.
+This will create the release/ directory and your working .exe is in the win-unpacked directory.
 Note that if you want to install the app somewhere else you will have to copy 
-the entire dist/ directory and use the aforementioned .exe to open the app.
+the entire release/ directory and use the aforementioned .exe to open the app.
 
 There's a simple portable installer for actually installing the app somewhere - see "How to install" below.
 
@@ -134,7 +134,7 @@ and test-harness/README.md for the implementation details.
 
 --------------------------------------------------------------
 ## How to install (a simple, portable installer - no admin rights, no registry entries, no Program Files):
-1) Build the app first: `npm run electron:build` (see above - this produces dist/win-unpacked).
+1) Build the app first: `npm run electron:build` (see above - this produces release/win-unpacked).
 2) Double-click `installer/install.bat` (or run `installer/install.ps1` directly via PowerShell).
 3) Follow the prompts: pick (or create) the folder you want the app's files installed into, optionally point it
 at your 7z.exe and ImgBurn.exe (you can also skip these and set them later - the app will ask again itself the

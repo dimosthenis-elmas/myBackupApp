@@ -23,21 +23,20 @@ const args = process.argv.slice(1),
  *  createWindow and the did-fail-load handler need this identical logic, so it lives in one place instead of
  *  being duplicated).
  *
- *  app.isPackaged is checked FIRST and is the only branch a real packaged build (dist/win-unpacked or wherever
+ *  app.isPackaged is checked FIRST and is the only branch a real packaged build (release/win-unpacked or wherever
  *  that folder is later copied/installed to - see the portable installer) actually needs: process.resourcesPath
  *  is Electron's own install-location-independent way to find the app's bundled resources, and extraResources
  *  in package.json's "build" config copies the compiled Angular frontend there (resources/dist/index.html) for
- *  exactly this reason. This used to be a bare relative-path guess instead (checking `../dist/index.html`, then
- *  `../../../index.html`, relative to __dirname - i.e. inside app.asar) - found for real (2026-08-27) while
- *  building the portable installer: that guess only ever resolved correctly by COINCIDENCE, because
- *  dist/win-unpacked/ happens to sit inside the very same dist/ folder that also holds the Angular build's own
- *  index.html at dev/build time, three directories up. Move the packaged app folder anywhere else - exactly
- *  what installing to a chosen directory does - and neither relative guess finds a real index.html any more,
- *  silently falling through to the raw (unbuilt, unbundled) src/index.html instead, which has no compiled
- *  JS/CSS attached and would load an actual blank window. app.isPackaged is false for every other way this app
- *  gets launched (npm run electron:local, npm run e2e, every worker-ipc/ui test script's launchApp() - all of
- *  which run app/main.js directly, unpacked, straight from the repo, never through app.asar), so this whole
- *  branch is skipped for all of them - the dev-mode fallback below is completely unchanged from before. */
+ *  exactly this reason - a path guessed relative to __dirname (inside app.asar) would only resolve correctly if
+ *  the packaged folder never moved from wherever it was built, which breaks the moment it's copied or installed
+ *  anywhere else. If extraResources is misconfigured and resources/dist/index.html doesn't exist, this warns
+ *  and falls through to the dev-mode fallback below, which won't find a real index.html either in a moved
+ *  packaged build and ends up loading a blank window.
+ *
+ *  app.isPackaged is false for every other way this app gets launched (npm run electron:local, npm run e2e,
+ *  every worker-ipc/ui test script's launchApp() - all of which run app/main.js directly, unpacked, straight
+ *  from the repo, never through app.asar), so this whole branch is skipped for all of them - the dev-mode
+ *  fallback below handles those cases directly. */
 function resolveIndexHtmlUrl(): string {
   if (app.isPackaged) {
     const packagedIndexHtml = path.join(process.resourcesPath, 'dist', 'index.html');
