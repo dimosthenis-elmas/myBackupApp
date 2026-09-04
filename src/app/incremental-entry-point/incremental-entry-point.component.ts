@@ -1,10 +1,9 @@
-import { Component, numberAttribute, OnInit, ViewChild, ViewEncapsulation } from '@angular/core';
+import { Component, numberAttribute, ViewChild, ViewEncapsulation } from '@angular/core';
 import { MatDialog } from '@angular/material/dialog';
 import { Router, ActivatedRoute } from '@angular/router';
 import { BackupService } from '../core/services/backup/backup.service'
 import { LoadingDialogComponent } from '../shared/components';
 import { ConfirmationDialogComponent } from '../shared/components';
-import { FormControl } from '@angular/forms';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
 
 
@@ -14,20 +13,16 @@ import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communica
   styleUrls: ['./incremental-entry-point.component.scss'],
   encapsulation: ViewEncapsulation.None,
 })
-export class IncrementalEntryPointComponent implements OnInit {
+export class IncrementalEntryPointComponent {
 
   constructor(private router: Router, private route: ActivatedRoute, public backup: BackupService, public dialog: MatDialog) { }
 
   public incremental_help_msg = `
-  This option: 
+  This option:
   \n1) Copies to the backup all the files that exist only on your source directory and not in the backup.
   \n2) Rewrites to the backup all the files that have been modified.
   \nThis option can only add or modify existing files in the backup.
   \nIt will not delete any files from the backup if they have been deleted from your source directory.`;
-  
-  public sync_help_msg = `This option synchronizes the backup with the files on your source directory.
-  This means that in the end, the backup will have become the same as the source directory.
-  Therefore, if a file has been deleted from the source directory, it will also be deleted from the backup directory, if it exists.`
 
   optical_media_choices: {value: string, viewValue: string, capacity: number}[] = [
     {value: 'cd', viewValue: 'CD (700 MB)', capacity: 0.7e9},
@@ -38,20 +33,6 @@ export class IncrementalEntryPointComponent implements OnInit {
   ];
 
   selected_optical_medium!: {value: string, viewValue: string, capacity: number};
-
-  // 0 is the first tab and 1 the next
-  selected_tab!:FormControl;
-
-  ngOnInit(): void {
-    this.selected_tab = new FormControl(this.backup.selectedTabIndex);
-   } 
-
-  tabSelectionChanged(idx: number) {
-    // When the user changes the tab clear all inputs.
-    this.backup.sourcePath = "";
-    this.backup.targetPath = "";
-    this.backup.selectedTabIndex = idx;
-  }
 
   goToMainMenu(){
     this.router.navigate(['main-menu']);
@@ -86,24 +67,12 @@ export class IncrementalEntryPointComponent implements OnInit {
   }
 
   UpdateBackupProceed():void{
-    let url!: string;
-    
-    switch (this.backup.mode.value) {
-      case 'incremental':
-        url = 'incremental';
-        break;
-      case 'sync':
-        // Sync Dirs is a real, implemented feature (see sync-dirs.component.ts) - this used to show a stale
-        // "not implemented yet" dialog and navigate straight to 'sync-dirs' unconditionally, bypassing the
-        // sourcePath/targetPath check below entirely, then ALSO navigate to a non-existent 'sync' route right
-        // after if paths were set (racing/cancelling the first navigation). Now it goes through the exact same
-        // path-validation and navigation as every other mode.
-        url = 'sync-dirs';
-        break;
-    }
-
+    // This screen only ever drives the Incremental flow - "Synchronize directories" has its own dedicated
+    // main-menu tile (main-menu.component.ts's goToSyncDirsPage()) that routes straight to 'sync-dirs',
+    // bypassing this component entirely. There used to be a second, unreachable "sync" mode selected via a
+    // BackupService.mode value nothing on this screen could actually set - removed along with that dead code.
     if (this.backup.sourcePath && this.backup.targetPath) {
-      this.router.navigate([url]);
+      this.router.navigate(['incremental']);
     }else{
       const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
       loadingDialogRef.componentInstance.title = "Paths selection";

@@ -707,10 +707,20 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
   if(splitLargeFiles){
     //Filter files too large to fit to any single optical disc
     [filePathsAndStats, largeFilePathsAndStats] = partitionArrayBasedOnFilter(
-      filePathsAndStats, 
+      filePathsAndStats,
       (item) => item.stats.size <= mediaCapacityInBytes,
     );
   }
+
+  // Sort largest-first (First-Fit Decreasing) before packing, rather than packing in whatever order
+  // getAllFilePathsWithStats/the filesMetadata caller happened to hand us (filesystem enumeration order,
+  // effectively arbitrary). Bin packing (minimizing the number of discs used) is NP-hard in general, so this
+  // isn't claiming an optimal packing - but unsorted first-fit has a materially worse worst-case bound than
+  // first-fit *decreasing*, and in practice placing large files first (while a disc still has its full capacity
+  // free) and letting small files fill in the leftover gaps at the end avoids the classic failure mode of
+  // opening a new disc prematurely because a disc's remaining space was awkwardly sized. Same packing loop
+  // below, unchanged - only the order items are offered to it changes.
+  filePathsAndStats = filePathsAndStats.slice().sort((a, b) => b.stats.size - a.stats.size);
 
   while (filePathsAndStats.length > 0 && !(process.env._stop=="stop")) {
     if(process.env._stop == 'stop'){break;}
@@ -828,6 +838,11 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
     }
 
     largeFilePathsAndStats = largeFilePathsAndStats_.flat()
+
+    // Same largest-first sort as the ordinary-file pass above, for consistency - though split pieces are almost
+    // all the same fixed size (LARGE_FILE_SPLIT_VOLUME_SIZE_MIB), so there's little to gain here beyond each
+    // large file's own smaller final remainder piece sorting toward the end.
+    largeFilePathsAndStats = largeFilePathsAndStats.slice().sort((a, b) => b.stats.size - a.stats.size);
 
     while (largeFilePathsAndStats.length > 0 && !(process.env._stop=="stop")) {
       if(process.env._stop == 'stop'){break;}

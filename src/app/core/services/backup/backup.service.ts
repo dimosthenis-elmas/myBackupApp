@@ -18,12 +18,6 @@ export class BackupService {
 
   public previewLogsStream = new Subject<string[]>();
 
-  public mode = {
-    value: "incremental"
-  }
-
- public selectedTabIndex = 0;
-
  public messsage_queue = new Subject()
 
   public mySubscription!: Subscription;
