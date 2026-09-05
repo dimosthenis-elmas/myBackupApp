@@ -2,14 +2,20 @@
 'use strict';
 
 /**
- * Exercises the REAL "split a too-large-for-any-disc file" path of partitionBackupToOpticalMedia (splitLargeFiles
- * = true) through the app's REAL worker IPC - no app source touched, no UI clicking. This is the one piece
- * worker-ipc/test-partitioning.js and worker-ipc/test-merge.js deliberately don't cover for real:
+ * Exercises the REAL "split a too-large-for-any-disc file" path through the app's REAL worker IPC - no app
+ * source touched, no UI clicking. This is the one piece worker-ipc/test-partitioning.js and worker-ipc/
+ * test-merge.js deliberately don't cover for real:
  *  - test-partitioning.js never sets splitLargeFiles, so it never exercises this code path at all.
  *  - test-merge.js proves the REASSEMBLY side thoroughly, but produces its own small multi-volume 7-Zip split
- *    directly (bypassing partitionBackupToOpticalMedia) to avoid needing a 500MB+ file.
- * This script instead generates a real 700 MB file and lets the app's own code do the real split (the actual
- * `7z -v500m -mx0 a ...` call in worker.ts), then feeds the REAL resulting part files into the already-proven
+ *    directly (bypassing this app's own splitting code) to avoid needing a 500MB+ file.
+ *
+ * partitionBackupToOpticalMedia PLANS using pure arithmetic only (estimateLargeFileSplitPieces in worker.ts) -
+ * it never invokes 7-Zip itself any more. The real split only happens later, lazily, when
+ * materialize-optical-media-disc-pieces is called for a disc that actually needs one of a large file's pieces -
+ * mirroring exactly how the real burn wizards call it (see backup-to-optical-media.component.ts /
+ * add-missing-files-to-optical-media-cold-storage.component.ts). This script exercises BOTH steps in that same
+ * order: partition (fast, no filesystem side effects for the split path) then materialize (the real
+ * `7z -v500m -mx0 a ...` call), then feeds the REAL resulting part files into the already-proven
  * merge-file-parts to confirm the whole real round trip is byte-for-byte correct.
  *
  * Heavier than every other worker-ipc script here: generates 700 MB of random data, splits it, then reassembles
@@ -128,13 +134,23 @@ async function main() {
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
 
-    console.log('\nCalling partition-backup-to-optical-media with splitLargeFiles=true (runs the real 7-Zip split)...');
+    // Avoid racing app.component.ts's own startup housekeeping IPC call - see ui/test-add-missing-files.js's
+    // and ui/capture-recover-data-gif.js's identical pauses for the same explanation:
+    // WorkerCommunicator.sendAndAwaitResponse removes ALL 'message-from-worker' listeners (not just its own)
+    // once ANY call resolves - so if the startup housekeeping call's own response arrives while this script's
+    // callWorker() below is still waiting for its own, that cleanup wipes this listener out too, and the real
+    // response - whenever it eventually arrives - has nothing left listening for it. This script never had this
+    // pause before because the old, real (multi-minute) 7-Zip split was slow enough that the race rarely
+    // mattered in practice; now that planning is near-instant pure arithmetic, it's hit far more reliably.
+    await new Promise((r) => setTimeout(r, 3000));
+
+    console.log('\nCalling partition-backup-to-optical-media with splitLargeFiles=true (planning only - no 7-Zip yet)...');
     const response = await withHeartbeat(
       callWorker(win, 'partition-backup-to-optical-media', {
         rootPath: sourceRoot,
         mediaCapacityInBytes: MEDIA_CAPACITY_BYTES,
         splitLargeFiles: true,
-      }, 10 * 60 * 1000), // generous timeout - real disk I/O on ~515 MB
+      }, 60 * 1000), // planning is now pure arithmetic - should be near-instant even for a 700 MB file
       'partition-backup-to-optical-media',
     );
 
@@ -142,7 +158,7 @@ async function main() {
     const largeFileAbsPath = path.join(sourceRoot, largeFileEntry.relativePath.split('/').join(path.sep));
 
     // 1. The original large file must NOT appear anywhere in the result in its original, unsplit form - only
-    //    its real split pieces should.
+    //    its predicted split pieces should.
     results.originalLargeFileExcluded = !allEntries.some((e) => e.path === largeFileAbsPath);
     console.log(`  original large file excluded from the result: ${results.originalLargeFileExcluded}`);
 
@@ -156,13 +172,57 @@ async function main() {
     results.normalFilesStillPartitionedCorrectly = normalFilesFound;
     console.log(`  all ${normalFileEntries.length} normal files still present, unsplit: ${normalFilesFound}`);
 
-    // 3. Exactly 2 real part files, sitting in the app's real temp directory, with the exact sizes a genuine
-    //    "-v500m" split of this exact file size must produce - the actual point of this test. Identified by the
-    //    app's own PART_FILE_PATTERN naming convention alone (none of our small generated files can ever match
-    //    it), then separately double-checked (case-insensitively - Windows paths, don't want a spurious drive-
-    //    letter-casing mismatch to hide a real problem) that they really did land under the temp directory.
-    const partEntries = allEntries
+    // 3. Exactly 2 PREDICTED part-file paths - identified by the app's own PART_FILE_PATTERN naming convention
+    //    alone (none of our small generated files can ever match it) - and, the actual point of planning no
+    //    longer touching 7-Zip at all: neither predicted path may exist on disk yet.
+    const predictedPartEntries = allEntries
       .filter((e) => /\.part\.\d+$/i.test(e.path))
+      .sort((a, b) => a.path.localeCompare(b.path));
+    results.exactlyTwoPartsPredicted = predictedPartEntries.length === 2;
+    console.log(`  predicted part-file paths: ${predictedPartEntries.length} (expected 2)`);
+    const noPartFilesMaterializedYet = predictedPartEntries.every((e) => !fs.existsSync(e.path));
+    results.planningHadNoFilesystemSideEffects = noPartFilesMaterializedYet;
+    console.log(`  none of them physically exist yet (planning is side-effect-free): ${noPartFilesMaterializedYet}`);
+    if (predictedPartEntries.length === 2) {
+      // The ESTIMATE is plain arithmetic with no 7-Zip archive overhead folded in (see estimateLargeFileSplitPieces
+      // in worker.ts) - so, unlike the real split checked after materialization below, both predicted sizes are
+      // exact: the first is exactly one full volume, the second is exactly the raw remainder.
+      const [predictedFirst, predictedSecond] = predictedPartEntries;
+      const predictedFirstCorrect = predictedFirst.stats.size === EXPECTED_VOLUME_SIZE_BYTES;
+      const predictedSecondCorrect = predictedSecond.stats.size === (LARGE_FILE_BYTES - EXPECTED_VOLUME_SIZE_BYTES);
+      results.predictedSizesAreExactlyRight = predictedFirstCorrect && predictedSecondCorrect;
+      console.log(`    predicted part 1: ${predictedFirst.stats.size.toLocaleString()} bytes (expected exactly ${EXPECTED_VOLUME_SIZE_BYTES.toLocaleString()}) - ${predictedFirstCorrect ? 'OK' : 'WRONG'}`);
+      console.log(`    predicted part 2: ${predictedSecond.stats.size.toLocaleString()} bytes (expected exactly ${(LARGE_FILE_BYTES - EXPECTED_VOLUME_SIZE_BYTES).toLocaleString()}) - ${predictedSecondCorrect ? 'OK' : 'WRONG'}`);
+    } else {
+      results.predictedSizesAreExactlyRight = false;
+    }
+
+    // 4. Materialize this "disc"'s pieces - the ONLY point that actually invokes 7-Zip - passing bare-relative
+    //    paths, the same convention materializeOpticalMediaDiscPieces expects and the real burn wizards already
+    //    hand it. Predicted split-piece paths (unlike ordinary files) are rooted under the TEMP directory, not
+    //    sourceRoot (see estimateLargeFileSplitPieces/partitionBackupToOpticalMedia in worker.ts) - so the
+    //    relative path has to be computed against tempDir, not sourceRoot, or path.relative() produces a
+    //    "../../.." climb between two unrelated trees instead of the short, sensible relative path the real
+    //    burn wizards already produce by stripping whichever of sourcePath/tempDataDirectoryPath actually
+    //    matches (see backup-to-optical-media.component.ts's WriteToOpticalMediaProceed for that exact idiom -
+    //    found for real testing this script against the actual worker).
+    const bareRelativePartPaths = predictedPartEntries.map((e) => path.relative(tempDir, e.path));
+    console.log('\nCalling materialize-optical-media-disc-pieces (runs the real 7-Zip split)...');
+    const materializeResponse = await withHeartbeat(
+      callWorker(win, 'materialize-optical-media-disc-pieces', {
+        dirPath: sourceRoot,
+        paths: bareRelativePartPaths,
+      }, 10 * 60 * 1000), // generous timeout - real disk I/O on ~515 MB
+      'materialize-optical-media-disc-pieces',
+    );
+    const materializedEntries = materializeResponse.res;
+
+    // 5. Exactly 2 real part files, sitting in the app's real temp directory, with the exact sizes a genuine
+    //    "-v500m" split of this exact file size must produce - the actual point of this test. Separately
+    //    double-checked (case-insensitively - Windows paths, don't want a spurious drive-letter-casing mismatch
+    //    to hide a real problem) that they really did land under the temp directory.
+    const partEntries = materializedEntries
+      .map((e) => ({ path: path.join(tempDir, e.path), stats: e.stats }))
       .sort((a, b) => a.path.localeCompare(b.path));
     results.exactlyTwoRealPartFilesProduced = partEntries.length === 2;
     console.log(`  real part files produced: ${partEntries.length} (expected 2)`);
@@ -174,9 +234,11 @@ async function main() {
       // `-v500m -mx0` still wraps the data in a real 7z ARCHIVE (headers/CRC/filename metadata), not a raw
       // byte-for-byte split - so the total archived size is always a little bigger than the original file, not
       // identical (confirmed on a real run: 122-146 bytes of overhead for a single-file store-mode archive,
-      // varying slightly run to run - not a fixed constant worth hardcoding). The first volume, however, IS
-      // always exactly EXPECTED_VOLUME_SIZE_BYTES (7-Zip only ever truncates the LAST volume) - confirmed
-      // identically on every real run so far, so that one is checked for an exact match.
+      // varying slightly run to run - not a fixed constant worth hardcoding, which is also why
+      // estimateLargeFileSplitPieces in worker.ts deliberately does NOT try to predict it - see its own
+      // comment). The first volume, however, IS always exactly EXPECTED_VOLUME_SIZE_BYTES (7-Zip only ever
+      // truncates the LAST volume) - confirmed identically on every real run so far, so that one is checked for
+      // an exact match.
       const MAX_PLAUSIBLE_7Z_ARCHIVE_OVERHEAD_BYTES = 4096; // generous margin over the observed 122-146 bytes
       const totalSize = first.stats.size + second.stats.size;
       const firstSizeCorrect = first.stats.size === EXPECTED_VOLUME_SIZE_BYTES;
@@ -186,7 +248,7 @@ async function main() {
       console.log(`    part 2: ${second.stats.size.toLocaleString()} bytes (the remainder, size not asserted exactly - see comment above)`);
       console.log(`    total (${totalSize.toLocaleString()} bytes) is original size + small 7z archive overhead: ${totalSizeCorrect}`);
 
-      // 4. Feed the REAL part files into the already-proven merge-file-parts, and confirm the reassembled file's
+      // 6. Feed the REAL part files into the already-proven merge-file-parts, and confirm the reassembled file's
       //    fingerprint matches the ORIGINAL large file's fingerprint exactly (recorded by generate-random-tree.js
       //    while writing it, streamed - no need to re-read the ~515 MB file separately here).
       const originalFileName = path.basename(largeFileEntry.relativePath);
@@ -253,7 +315,7 @@ async function main() {
     console.log(`\nLeaving scratch files in place for inspection: ${scratchRoot}`);
   }
 
-  console.log(`\n${pass ? 'PASS' : 'FAIL'} - real large-file splitting (partition-backup-to-optical-media with splitLargeFiles=true) ${pass ? 'produced correct, byte-for-byte-reassemblable pieces.' : 'did not behave as expected, see above.'}`);
+  console.log(`\n${pass ? 'PASS' : 'FAIL'} - large-file splitting (partition-backup-to-optical-media estimate + materialize-optical-media-disc-pieces real split) ${pass ? 'produced correct, byte-for-byte-reassemblable pieces.' : 'did not behave as expected, see above.'}`);
   process.exitCode = pass ? 0 : 1;
 }
 

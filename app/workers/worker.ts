@@ -69,6 +69,42 @@ const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string>
  *  you must manually re-confirm it still leaves comfortable headroom under the smallest medium's capacity. */
 const LARGE_FILE_SPLIT_VOLUME_SIZE_MIB = 500;
 
+/** Zero-pads to 7-Zip's own observed volume-suffix width (".part.001", ".002", ...) - shared by the planning
+ *  estimate below and the real materialization step (materializeOpticalMediaDiscPieces), so both agree on the
+ *  exact predicted/real filename for a given piece. */
+const zeroPad = (num: number, places: number) => String(num).padStart(places, '0');
+
+/** Pure-arithmetic prediction of how many pieces the real `-v${LARGE_FILE_SPLIT_VOLUME_SIZE_MIB}m -mx0 a` split
+ *  will produce for a file of `fileSizeBytes`, and each piece's size - WITHOUT ever invoking 7-Zip. Used by
+ *  partitionBackupToOpticalMedia for planning (so an entire multi-disc job's worth of large files no longer has
+ *  to be physically split, all at once, before a single disc is even burned) and by
+ *  materializeOpticalMediaDiscPieces to sanity-check a real split's result against what was planned.
+ *
+ *  Deliberately does NOT try to account for 7-Zip's own archive-format overhead (the header/footer/CRC bytes a
+ *  single-file store-mode archive always carries) with any padding constant - that overhead is an internal
+ *  implementation detail of whatever 7-Zip build happens to be installed, not something this app should assume
+ *  a specific value for. Confirmed empirically against real 7z runs: every piece except the last is always
+ *  exactly volumeSizeBytes; the last piece is `fileSizeBytes % volumeSizeBytes`, which can be 0 - a real split
+ *  ALWAYS produces one more piece than a plain fileSizeBytes/volumeSizeBytes division would suggest, even when
+ *  the remainder is exactly zero, because the archive's own overhead has to live somewhere and 7-Zip never lets
+ *  a non-last volume exceed the requested size to make room for it.
+ *
+ *  This CAN rarely undercount by exactly one piece: when fileSizeBytes % volumeSizeBytes lands within that same
+ *  small, unknown overhead of volumeSizeBytes itself, the overhead tips what "should" have been the last piece
+ *  over the volume cap, forcing a real extra piece this formula does not predict. That is by design, not a bug
+ *  to be papered over with a guessed safety margin - materializeOpticalMediaDiscPieces is responsible for
+ *  reconciling this the one time it's actually observed to happen, against the real, measured result, rather
+ *  than this function trying to guess around a number it cannot know in advance. */
+const estimateLargeFileSplitPieces = function (fileSizeBytes: number): Array<{ size: number }> {
+  const volumeSizeBytes = LARGE_FILE_SPLIT_VOLUME_SIZE_MIB * 1024 * 1024;
+  const pieceCount = Math.floor(fileSizeBytes / volumeSizeBytes) + 1;
+  const pieces: Array<{ size: number }> = [];
+  for (let i = 1; i <= pieceCount; i++) {
+    pieces.push({ size: i < pieceCount ? volumeSizeBytes : (fileSizeBytes - (pieceCount - 1) * volumeSizeBytes) });
+  }
+  return pieces;
+}
+
 const CONFIG_PATH = () => node_path_module.join(__dirname, `../../appData/config.json`);
 
 /** The app's appData/ directory, resolved to an absolute path. Relative cacheDataDirectoryPath values are
@@ -676,7 +712,10 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
   //be on the save side, fill the disk at most up to a certain percentage (e.g. 95% or something).
   const configJSON = fs.readFileSync(node_path_module.join(__dirname, `../../appData/config.json`));
   const parsedConfig = JSON.parse(configJSON);
-  mediaCapacityInBytes = mediaCapacityInBytes * parsedConfig.maxOpticalMediumRepletionRatio;
+  // Clamped to a hard maximum of 0.99 regardless of what's configured - this margin is what absorbs the small,
+  // unavoidable size uncertainty in estimateLargeFileSplitPieces' predictions (see its own comment), and a
+  // config value close to or at 1.0 would silently erase the very slack that safety net depends on.
+  mediaCapacityInBytes = mediaCapacityInBytes * Math.min(parsedConfig.maxOpticalMediumRepletionRatio, 0.99);
   // Routes through ensureTempDataDirectoryIsAppOwned rather than just creating the directory on demand - see
   // its doc comment for why (the startup check normally catches an unowned directory before this is ever
   // reached - this is defense-in-depth for cacheDataDirectoryPath being changed to something pre-existing
@@ -778,66 +817,32 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
   // console.log(partitioning.length)
 
 
-  /* Next we need to split the files to multiple parts. Note that we are not doing the actual splitting here, we just
-    create the paths and sizes of the split files (currently virtual, non existing). The actual splitting will be done when the user
-    clicks the button to send the data to the ImgBurn software. The resulting paths array will be used later to assist with the
-    actual splitting of the large files and their partitioning to optical discs.
+  /* Next we need to split the files to multiple parts. This does NOT invoke 7-Zip at all here - only paths and
+    ESTIMATED sizes of the split pieces are computed (see estimateLargeFileSplitPieces), so planning an entire
+    multi-disc backup job never has to physically split every large file up front, before a single disc has even
+    been burned. The real splitting only happens later, lazily, disc by disc, when the user actually sends a
+    disc to ImgBurn - see materializeOpticalMediaDiscPieces. The paths predicted here (the same "<name>.part.NNN"
+    naming convention 7-Zip itself produces) are exactly what that later, real split is found again by.
   */
-  const zeroPad = (num: number, places: number) => String(num).padStart(places, '0')
 
   if(splitLargeFiles){
-    let largeFilePathsAndStats_:any = [];
-    for (let i = 0; i < largeFilePathsAndStats.length; i++) {
-          let tmp = (await Promise.all([largeFilePathsAndStats[i]].map(
-            async (itm): Promise<typeof filePathsAndStats> => {
-              let fileName = itm.path.split('\\').slice(-1)[0];
-              let pathToLargeFile = itm.path;
-              let pathToLargeFileRelativeToOpticalMediumRoot = pathToLargeFile.replace(dirPath + "\\", "");
-              let relativeDirOfLargeFile = pathToLargeFileRelativeToOpticalMediumRoot.split("\\").slice(0, -1).join("\\");
-              let pathToLargeFileSplitsInTempDirectory = node_path_module.join(tempDataDirectoryPath, relativeDirOfLargeFile);
-              let path = node_path_module.join(tempDataDirectoryPath, fileName);
+    let largeFilePathsAndStats_: typeof filePathsAndStats = [];
+    for (const itm of largeFilePathsAndStats) {
+      const fileName = itm.path.split('\\').slice(-1)[0];
+      const pathToLargeFileRelativeToOpticalMediumRoot = itm.path.replace(dirPath + "\\", "");
+      const relativeDirOfLargeFile = pathToLargeFileRelativeToOpticalMediumRoot.split("\\").slice(0, -1).join("\\");
+      const pathToLargeFileSplitsInTempDirectory = node_path_module.join(tempDataDirectoryPath, relativeDirOfLargeFile);
 
-              // Create a directory in the temp data directory for each large files splits set if it does not exist already
-              if (!fs.existsSync(pathToLargeFileSplitsInTempDirectory)){
-                fs.mkdirSync(pathToLargeFileSplitsInTempDirectory, { recursive: true });
-              }
-
-
-              // then create the large file splits in that directory if not already existing.
-
-              // Escape all special characters in fileName.
-              let re = new RegExp(`^${fileName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}.part`);
-              let partFileNames = fs.readdirSync(pathToLargeFileSplitsInTempDirectory).filter((value: string) => re.test(value));
-
-              if (partFileNames.length == 0) {
-                const util = require('util');
-                const exec = util.promisify(require('child_process').exec);
-                const configJSON = fs.readFileSync(node_path_module.join(__dirname, `../../appData/config.json`));
-                const _7zipExecutablePath = JSON.parse(configJSON)._7zipExecutablePath;
-                // We split the files without compression to speed up the process. Each split is
-                // LARGE_FILE_SPLIT_VOLUME_SIZE_MIB (see that constant's own comment for why this size).
-                const { stdout, stderr } = await exec(`"${_7zipExecutablePath}" -v${LARGE_FILE_SPLIT_VOLUME_SIZE_MIB}m -mx0 a "${pathToLargeFileSplitsInTempDirectory}\/${fileName}.part" "${pathToLargeFile}"`);
-              }
-              
-              partFileNames = fs.readdirSync(pathToLargeFileSplitsInTempDirectory).filter((value: string) => re.test(value));
-
-              let a: typeof largeFilePathsAndStats = [];
-              for (let index = 0; index < partFileNames.length; index++) {
-                a.push({
-                  path: pathToLargeFileSplitsInTempDirectory + "\\" + partFileNames[index], stats: {
-                    size: fs.statSync(pathToLargeFileSplitsInTempDirectory + "\\" + partFileNames[index]).size,
-                    mtime: fs.statSync(pathToLargeFileSplitsInTempDirectory + "\\" + partFileNames[index]).mtime,
-                    isDirectory: false
-                  }
-                });
-              }
-              return a;
-            }
-          ))).flat();
-        largeFilePathsAndStats_.push(tmp);
+      const predictedPieces = estimateLargeFileSplitPieces(itm.stats.size);
+      predictedPieces.forEach((piece, index) => {
+        largeFilePathsAndStats_.push({
+          path: node_path_module.join(pathToLargeFileSplitsInTempDirectory, `${fileName}.part.${zeroPad(index + 1, 3)}`),
+          stats: { size: piece.size, mtime: itm.stats.mtime, isDirectory: false }
+        });
+      });
     }
 
-    largeFilePathsAndStats = largeFilePathsAndStats_.flat()
+    largeFilePathsAndStats = largeFilePathsAndStats_
 
     // Same largest-first sort as the ordinary-file pass above, for consistency - though split pieces are almost
     // all the same fixed size (LARGE_FILE_SPLIT_VOLUME_SIZE_MIB), so there's little to gain here beyond each
@@ -914,6 +919,188 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
   }else{
     return partitioning;
   }
+}
+
+/** Given `dirPath` (the same backup source root partitionBackupToOpticalMedia was called with) and `paths`
+ *  (paths bare-relative to dirPath, using "\\" separators - the SAME convention createIBB_file's own `paths`
+ *  parameter and insertBranch_for_IBB_creation's existence-based source/temp-dir fallback already use, and what
+ *  FilesTreeComponent.getSelectedData() already hands calling components), returns fresh, real stats for each:
+ *   - An ordinary file (real, exists under dirPath): a plain fs.statSync pass-through - it never needed
+ *     splitting, so its stats were already correct.
+ *   - An already-materialized split piece (exists under the temp directory from an earlier call): also just a
+ *     pass-through.
+ *   - A predicted-but-not-yet-real split piece (matches PART_FILE_PATTERN, exists under neither): reconstructs
+ *     the original file's real path by stripping the ".part.NNN" suffix, runs the real 7-Zip split for that
+ *     original file if not already done (idempotent - same "does a part file already exist" check
+ *     partitionBackupToOpticalMedia used to do inline before this function existed), then statSyncs the
+ *     specific requested piece.
+ *
+ *  This is deliberately the ONLY place the real `7z -v...m -mx0 a` command still runs - planning
+ *  (partitionBackupToOpticalMedia) never does any more. Splitting one file necessarily creates ALL of its
+ *  pieces at once (7-Zip has no "just this one volume" mode), so materializing what one disc needs can
+ *  incidentally also materialize pieces belonging to OTHER, not-yet-sent discs that happen to share the same
+ *  source file - that is expected, not a bug.
+ *
+ *  The one time a file is actually, really split by this function (never on a later call that finds its pieces
+ *  already present - see alreadyProcessedOriginalFiles below), the real piece count is compared against a
+ *  freshly recomputed estimateLargeFileSplitPieces(realFileSize) for that same file (see that function's own
+ *  comment for why this can, rarely, disagree with what planning predicted):
+ *   - Equal: nothing further to do.
+ *   - Real count is exactly one more than estimated: the one extra, unplanned piece is appended to the
+ *     returned results too, even though it wasn't requested - the caller builds a disc's saved metadata from
+ *     whatever this function returns, so the surplus rides along automatically and gets attached to whichever
+ *     disc's send-to-ImgBurn action triggered this real split (always safe: that disc has definitely not been
+ *     burned/confirmed yet). Reported exactly once, by the one call that actually performed the split.
+ *   - Any other difference: throws - genuinely unexpected, not the one known/reconciled case. */
+const materializeOpticalMediaDiscPieces = async function (dirPath: string, paths: Array<string>): Promise<filesMetadata[]> {
+  const ownership = await ensureTempDataDirectoryIsAppOwned();
+  if (!ownership.ok) {
+    throw new Error(ownership.message);
+  }
+  const tempDataDirectoryPath = ownership.path;
+  if (dirPath.slice(-1) == '\\') { dirPath = dirPath.slice(0, -1); }
+
+  const config = await readConfig();
+  const _7zipExecutablePath = config._7zipExecutablePath;
+
+  // Which original large files this call has already (re-)split, so requesting several pieces of the same
+  // file only checks/splits it once, and so the surplus-piece check below only ever runs once per file too.
+  const alreadyProcessedOriginalFiles = new Set<string>();
+  const surplusPieces: filesMetadata[] = [];
+
+  const results: filesMetadata[] = [];
+  for (const relPath of paths) {
+    // Same existence-based disambiguation insertBranch_for_IBB_creation already uses when resolving a path to
+    // burn: try it as a real, ordinary file under the source directory first.
+    const sourceAbsolutePath = node_path_module.join(dirPath, relPath);
+    if (fs.existsSync(sourceAbsolutePath)) {
+      const s = fs.statSync(sourceAbsolutePath);
+      results.push({ path: relPath, stats: { size: s.size, mtime: s.mtime, isDirectory: s.isDirectory() } });
+      continue;
+    }
+
+    const tempAbsolutePath = node_path_module.join(tempDataDirectoryPath, relPath);
+    if (fs.existsSync(tempAbsolutePath)) {
+      // Already materialized (this call or an earlier one).
+      const s = fs.statSync(tempAbsolutePath);
+      results.push({ path: relPath, stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
+      continue;
+    }
+
+    if (!PART_FILE_PATTERN.test(relPath)) {
+      throw new Error(`materializeOpticalMediaDiscPieces: "${relPath}" was not found under the source directory or the temp directory, and does not look like a large-file split piece.`);
+    }
+
+    const relDir = relPath.split('\\').slice(0, -1).join('\\');
+    const pieceFileName = relPath.split('\\').slice(-1)[0];                   // e.g. "video.mp4.part.003"
+    const originalFileName = pieceFileName.replace(PART_FILE_PATTERN, '');    // e.g. "video.mp4"
+    const originalRelPath = relDir ? `${relDir}\\${originalFileName}` : originalFileName;
+    const originalAbsolutePath = node_path_module.join(dirPath, originalRelPath);
+    const pieceDir = node_path_module.join(tempDataDirectoryPath, relDir);
+
+    if (!alreadyProcessedOriginalFiles.has(originalAbsolutePath)) {
+      alreadyProcessedOriginalFiles.add(originalAbsolutePath);
+
+      if (!fs.existsSync(pieceDir)) { fs.mkdirSync(pieceDir, { recursive: true }); }
+      const re = new RegExp(`^${originalFileName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}.part`);
+      let partFileNames: string[] = fs.readdirSync(pieceDir).filter((v: string) => re.test(v));
+
+      if (partFileNames.length === 0) {
+        const util = require('util');
+        const exec = util.promisify(require('child_process').exec);
+        // Same invocation shape partitionBackupToOpticalMedia used to run inline - see
+        // LARGE_FILE_SPLIT_VOLUME_SIZE_MIB's own comment for why this size.
+        await exec(`"${_7zipExecutablePath}" -v${LARGE_FILE_SPLIT_VOLUME_SIZE_MIB}m -mx0 a "${pieceDir}\\${originalFileName}.part" "${originalAbsolutePath}"`);
+        partFileNames = fs.readdirSync(pieceDir).filter((v: string) => re.test(v));
+
+        const expectedPieceCount = estimateLargeFileSplitPieces(fs.statSync(originalAbsolutePath).size).length;
+        if (partFileNames.length === expectedPieceCount + 1) {
+          // The known, rare boundary case (see estimateLargeFileSplitPieces) - one real piece the plan never
+          // assigned to any disc. Surface it so the caller can attach it to the disc it just materialized for.
+          const surplusName = partFileNames.slice().sort()[partFileNames.length - 1];
+          const surplusRelPath = relDir ? `${relDir}\\${surplusName}` : surplusName;
+          const surplusAbsolutePath = node_path_module.join(pieceDir, surplusName);
+          const s = fs.statSync(surplusAbsolutePath);
+          surplusPieces.push({ path: surplusRelPath, stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
+        } else if (partFileNames.length !== expectedPieceCount) {
+          throw new Error(
+            `Splitting "${originalAbsolutePath}" produced ${partFileNames.length} real piece(s) but the disc plan ` +
+            `expected ${expectedPieceCount} - the capacity plan is out of date for this file. Please redo the ` +
+            `planning step before burning.`
+          );
+        }
+      }
+    }
+
+    if (!fs.existsSync(tempAbsolutePath)) {
+      throw new Error(`materializeOpticalMediaDiscPieces: expected piece "${relPath}" was not produced by the real split.`);
+    }
+    const s = fs.statSync(tempAbsolutePath);
+    results.push({ path: relPath, stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
+  }
+
+  return results.concat(surplusPieces);
+}
+
+/** Deletes exactly the given real, absolute temp-dir piece paths (e.g. from one disc's own materialized plan
+ *  entries) - never a whole file's OTHER pieces if that file happens to be split across multiple discs (e.g. if
+ *  a large file's pieces 1-3 are on disc 1 and piece 4 is on disc 2, deleting disc 1's pieces must not touch
+ *  piece 4). Reuses the exact same safety pattern clearTempDataDirectory already uses (ownership check,
+ *  realpath-inside-temp-dir containment check, isRecognizedTempContent) rather than introducing a separate,
+ *  less-safe deletion path - this is effectively clearTempDataDirectory's own per-entry deletion loop, scoped to
+ *  a caller-supplied allowlist of exact paths instead of "every recognized entry in the directory". Returns the
+ *  same {cleared, message, deletedItems} shape as clearTempDataDirectory for UI consistency.
+ *
+ *  Deliberately does not also try to remove now-empty parent subdirectories left behind - clearTempDataDirectory
+ *  doesn't do that either, and correctly telling "empty of everything" apart from "empty of THIS disc's pieces
+ *  but still holding another, not-yet-confirmed disc's pieces" adds real risk for cosmetic benefit; leftover
+ *  empty subdirectories are harmless and are cleaned up whenever clearTempDataDirectory next runs. */
+const deleteMaterializedPiecesForDisc = async function (pieceAbsolutePaths: Array<string>): Promise<{ cleared: boolean, message: string, deletedItems: string[] }> {
+  const ownership = await ensureTempDataDirectoryIsAppOwned();
+  if (!ownership.ok) {
+    return { cleared: false, message: 'Refusing to delete: ' + ownership.message, deletedItems: [] };
+  }
+  let realTempDataDirectoryPath: string;
+  try {
+    realTempDataDirectoryPath = fs.realpathSync(ownership.path);
+  } catch (error) {
+    return { cleared: false, message: 'Failed to resolve the real path of the temp directory: ' + (error && (error as any).message ? (error as any).message : String(error)), deletedItems: [] };
+  }
+
+  const deletedItems: string[] = [];
+  const problems: string[] = [];
+  for (const entryPath of pieceAbsolutePaths) {
+    if (!fs.existsSync(entryPath)) {
+      // Already gone - idempotent, not a problem (e.g. a previous, partially-failed confirm already removed it).
+      continue;
+    }
+    let entryRealPath: string;
+    try {
+      entryRealPath = fs.realpathSync(entryPath);
+    } catch (error) {
+      problems.push(`"${entryPath}" was skipped: could not resolve its real path.`);
+      continue;
+    }
+    if (!isPathStrictlyInside(entryRealPath, realTempDataDirectoryPath)) {
+      problems.push(`"${entryPath}" was skipped: it does not resolve to a location inside the temp directory.`);
+      continue;
+    }
+    if (!isRecognizedTempContent(entryPath, false)) {
+      problems.push(`"${entryPath}" was skipped: it does not look like this app's own temp/cache content.`);
+      continue;
+    }
+    try {
+      fs.rmSync(entryPath, { force: true });
+      deletedItems.push(entryPath);
+    } catch (error) {
+      problems.push(`"${entryPath}" could not be deleted: ${error && (error as any).message ? (error as any).message : String(error)}.`);
+    }
+  }
+
+  if (problems.length === 0) {
+    return { cleared: true, message: `Removed ${deletedItems.length} item(s) for this disc.`, deletedItems };
+  }
+  return { cleared: deletedItems.length > 0, message: `Removed ${deletedItems.length} of ${pieceAbsolutePaths.length} item(s). ` + problems.join(' '), deletedItems };
 }
 
 
@@ -1749,6 +1936,26 @@ const init = function() : void
           }
         }).catch((err)=>{
           ipc.sendResponseToMain({ key: 'create-IBB-file', res: err, status: "error" });
+        });
+        break;
+      case 'materialize-optical-media-disc-pieces':
+        console.log("(worker) in materialize-optical-media-disc-pieces")
+        materializeOpticalMediaDiscPieces(arg.params.dirPath, arg.params.paths).then((d)=>{
+          if(process.env._stop != "stop"){
+            ipc.sendResponseToMain({ key: 'materialize-optical-media-disc-pieces', res: d, status: "completed" });
+          }else{
+            ipc.sendResponseToMain({ key: 'materialize-optical-media-disc-pieces', res: d, status: "stopped" });
+          }
+        }).catch((err)=>{
+          ipc.sendResponseToMain({ key: 'materialize-optical-media-disc-pieces', res: err, status: "error" });
+        });
+        break;
+      case 'delete-materialized-pieces-for-disc':
+        console.log("(worker) in delete-materialized-pieces-for-disc")
+        deleteMaterializedPiecesForDisc(arg.params.pieceAbsolutePaths).then((d)=>{
+          ipc.sendResponseToMain({ key: 'delete-materialized-pieces-for-disc', res: d, status: "completed" });
+        }).catch((err)=>{
+          ipc.sendResponseToMain({ key: 'delete-materialized-pieces-for-disc', res: err, status: "error" });
         });
         break;
       case 'get-temp-data-directory-path':

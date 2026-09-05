@@ -30,13 +30,13 @@
  * nothing else does: does a JSON metadata file correctly describe split-file pieces distributed across discs (the
  * pieces are just ordinary files as far as get-file-paths-with-stats/seedFromExternalMetadata are concerned - no
  * special-casing anywhere), and does the merge-offer flow still work when the file tree came from JSON rather than
- * physical enumeration. Same as test-recover-multi-disc.js, the real split pieces can come from either the app's
- * own live partition-backup-to-optical-media call (random mode / --json-tree with no split-plan.json - same
- * proven-safe size constants as that script, see its own comments for why MEDIA_CAPACITY_BYTES can't just be
- * "small enough to force a split") OR already be sitting in the tree from --json-tree's own split-plan.json (see
- * tree-specs/test-recover-from-json-metadata/split-plan.json) - this script detects which happened the same way
- * that one does (the whole file is simply absent, only its ".part.NNN" siblings exist) and skips the live IPC
- * call when it's already done.
+ * physical enumeration. Same as test-recover-multi-disc.js, the real split pieces can come from either this
+ * script splitting the file directly via real 7-Zip (random mode / --json-tree with no split-plan.json - see
+ * test-recover-multi-disc.js's own comments for why this bypasses the app's own partitioning IPC entirely) OR
+ * already be sitting in the tree from --json-tree's own split-plan.json (see tree-specs/
+ * test-recover-from-json-metadata/split-plan.json) - this script detects which happened the same way that one
+ * does (the whole file is simply absent, only its ".part.NNN" siblings exist) and skips the live 7-Zip call when
+ * it's already done.
  *
  * NOTE: needs a real Windows desktop/window session (see worker-ipc/call-worker.js's top comment) - run from
  * your own interactive terminal.
@@ -58,14 +58,15 @@ const { printTree } = require('../lib/print-tree');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { normalizeForMetadata } = require('../lib/cold-storage-metadata');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
+const { resolveSevenZipExecutablePath, splitFileIntoRealParts } = require('../lib/seven-zip');
 
 const SPEC_DIR = path.join(__dirname, 'tree-specs', 'test-recover-from-json-metadata');
 
-// Same proven-safe constants as worker-ipc/test-large-file-split.js and test-recover-multi-disc.js - see those
-// scripts' own comments for the full reasoning.
-const EXPECTED_VOLUME_SIZE_BYTES = 500 * 1024 * 1024;
+// Same proven-safe constant as worker-ipc/test-large-file-split.js - see test-recover-multi-disc.js's own
+// comment for why this script's fixture-building split calls 7-Zip directly (lib/seven-zip.js) instead of going
+// through the app's own partitioning IPC - there's no app-side capacity constant to worry about here any more.
 const LARGE_FILE_BYTES = 700_000_000;
-const MEDIA_CAPACITY_BYTES = 600_000_000;
+const LARGE_FILE_SPLIT_VOLUME_SIZE_MIB = 500; // must match LARGE_FILE_SPLIT_VOLUME_SIZE_MIB in app/workers/worker.ts
 
 /** Prints a periodic "still working" line while `promise` is pending - a real run went silent on the
  *  get-file-paths-with-stats calls below long enough to look hung (it was not - just slower than expected on
@@ -149,8 +150,9 @@ async function main() {
   console.log('\nChecking no optical media is already mounted...');
   assertNoOpticalMediaAlreadyMounted();
 
-  // Same guard test-recover-multi-disc.js uses before it touches the app's real temp/cache directory -
-  // partition-backup-to-optical-media writes the real split pieces there.
+  // Same guard test-recover-multi-disc.js uses before it touches the app's real temp/cache directory - the
+  // recovery wizard's own reassembly step may use it, protecting any real, in-progress backup work you might
+  // have sitting there.
   console.log('Checking the app\'s real temp/cache directory is safe to use...');
   assertRealTempDataDirectoryIsSafeToUse();
 
@@ -158,6 +160,12 @@ async function main() {
   try {
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
+
+    // Avoid racing app.component.ts's own startup housekeeping IPC call before the first raw callWorker() call
+    // below (get-file-paths-with-stats, or - in the --json-tree branch below with no split-plan.json - none of
+    // the intervening real-7z-split work that would otherwise provide enough of a natural gap) - see
+    // ui/test-add-missing-files.js's identical pause for the full explanation.
+    await new Promise((r) => setTimeout(r, 3000));
 
     let partEntries;
     if (alreadySplitPartPaths) {
@@ -167,16 +175,14 @@ async function main() {
       console.log(`"${largeFileName}" arrived already split into ${alreadySplitPartPaths.length} real piece(s) (this spec's own split-plan.json) - skipping the live app split.`);
       partEntries = alreadySplitPartPaths.map((p) => ({ path: p, stats: { size: fs.statSync(p).size } }));
     } else {
-      console.log(`Calling partition-backup-to-optical-media with splitLargeFiles=true (real 7-Zip split of the ${(LARGE_FILE_BYTES / 1e6).toFixed(1)} MB file)...`);
-      const partitionResponse = await callWorker(win, 'partition-backup-to-optical-media', {
-        rootPath: sourceRoot,
-        mediaCapacityInBytes: MEDIA_CAPACITY_BYTES,
-        splitLargeFiles: true,
-      }, 5 * 60 * 1000);
-      partEntries = partitionResponse.res.flat()
-        .filter((e) => /\.part\.\d+$/i.test(e.path))
-        .sort((a, b) => a.path.localeCompare(b.path));
-      tempPartDir = path.dirname(partEntries[0].path);
+      // Splits the real file directly via 7-Zip (see this script's own header comment for why) rather than
+      // going through the app's own partitioning IPC.
+      console.log(`Splitting the ${(LARGE_FILE_BYTES / 1e6).toFixed(1)} MB file with real 7-Zip (${LARGE_FILE_SPLIT_VOLUME_SIZE_MIB} MiB volumes)...`);
+      const sevenZipPath = resolveSevenZipExecutablePath();
+      tempPartDir = path.join(scratchRoot, 'large-file-split');
+      const largeFileAbsPath = path.join(largeFileDirAbs, largeFileName);
+      const partPaths = splitFileIntoRealParts(sevenZipPath, largeFileAbsPath, tempPartDir, largeFileName, LARGE_FILE_SPLIT_VOLUME_SIZE_MIB);
+      partEntries = partPaths.map((p) => ({ path: p, stats: { size: fs.statSync(p).size } }));
     }
     if (partEntries.length !== 2) {
       throw new Error(`Expected exactly 2 real split pieces, got ${partEntries.length}. Something about the size constants (or your own split-plan.json's volumeSizeMiB) no longer holds.`);
@@ -332,12 +338,9 @@ async function main() {
       console.log('\nDismounting whichever disc is still mounted...');
       dismountIso(mountedIsoPath);
     }
-    // Clean up the app's own real temp/cache directory - the split pieces were copied out to the disc folders
-    // above, but the app's own copies (created by partition-backup-to-optical-media) are still sitting there and
-    // are not this script's to leave behind (see test-recover-multi-disc.js for the same cleanup).
-    if (tempPartDir && fs.existsSync(tempPartDir)) {
-      fs.rmSync(tempPartDir, { recursive: true, force: true });
-    }
+    // No separate tempPartDir cleanup needed here any more: it's now a plain subdirectory of scratchRoot (this
+    // script's own split, via real 7-Zip directly), not the app's real temp/cache directory, so it's already
+    // covered by scratchRoot's own pass/fail cleanup below - see test-recover-multi-disc.js's identical comment.
   }
 
   // 4. Verify: recovered folder should exactly match the original combined manifest, including the large file

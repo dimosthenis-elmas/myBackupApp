@@ -357,8 +357,13 @@ async function main() {
     // worker-ipc/test-large-file-split.js gives the equivalent direct IPC call. This confirmation is the actual
     // proof partition() (and the JSON write after it) finished - not either of the two clicks above, which only
     // wait for their own click to register, not for the app's subsequent async work.
-    await step('wait for the "Cold storage metadata saved to JSON" confirmation (up to 5 minutes)', () =>
-      win.getByText('Cold storage metadata saved to JSON', { exact: true }).waitFor({ timeout: 5 * 60_000 }));
+    // Title/text changed from "Cold storage metadata saved to JSON" to "Cold storage metadata prepared" when
+    // partition() was changed to write an incremental scaffold instead of the full (now-estimate-only) result in
+    // one shot - see that dialog's own comment in add-missing-files-to-optical-media-cold-storage.component.ts.
+    // The 5-minute budget is now generous rather than required - partition() itself is fast (planning is pure
+    // arithmetic, no more real 7-Zip split up front) - but there's no harm in leaving headroom here.
+    await step('wait for the "Cold storage metadata prepared" confirmation (up to 5 minutes)', () =>
+      win.getByText('Cold storage metadata prepared', { exact: true }).waitFor({ timeout: 5 * 60_000 }));
 
     // Redirect ImgBurn to the harmless stub only now, right before it's actually needed - see lib/ibb-tools.js.
     console.log('\nRedirecting the real ImgBurn path to a harmless no-op stub for the "Send to ImgBurn" clicks below...');
@@ -418,37 +423,40 @@ async function main() {
 
     console.log('\nWizard completed.');
     printTree(realTempDir, 'App temp dir (after) - real .ibb files and any split pieces');
-  } finally {
-    if (app) { await app.close().catch(() => {}); }
-    if (originalConfigContent !== undefined) {
-      restoreConfig(originalConfigContent);
-    }
-    // NOTE: deliberately NOT deleting the real .ibb files (or the real split-piece files they reference) here -
-    // the verification step right below still needs to read all of it (see test-backup-to-optical-media.js's own
-    // history for the self-inflicted ENOENT this caused there the first time). Cleaned up in its own finally
-    // further down, once parsing is done with it.
-  }
 
-  // 3. Verify (a): the real generated .ibb files (combined, across all new discs) contain EXACTLY the missing
-  //    normal files/directories, PLUS the large file's real split pieces (verified structurally - see below).
-  console.log('\nParsing the real .ibb file(s) and comparing against the expected missing files...');
-  const allIbbEntries = [];
-  const actualVolumeLabels = [];
-  const splitPieceFilesToCleanUp = [];
-  try {
-    for (const ibbPath of createdIbbPaths) {
-      const entries = parseIbbBackupList(ibbPath);
-      const discFileCount = entries.filter((e) => e.type === 'F').length;
-      const discDirCount = entries.filter((e) => e.type === 'D').length;
-      console.log(`  ${path.basename(ibbPath)}: ${discFileCount} file entries, ${discDirCount} directory entries.`);
-      allIbbEntries.push(...entries);
-      actualVolumeLabels.push(parseIbbVolumeLabel(ibbPath));
+    // --- Phase D (verification, still with the app open) ---
+    //
+    // 3. Verify (a): the real generated .ibb files (combined, across all new discs) contain EXACTLY the missing
+    //    normal files/directories, PLUS the large file's real split pieces (verified structurally - see below).
+    //
+    // This now runs BEFORE the app closes (it used to run after, purely against files left on disk) because
+    // Phase E below needs to click "Confirm disc burned" for real, which needs a live app - and confirming a
+    // disc deletes its real split-piece files, which this verification still needs to read the sizes of first.
+    // So the order has to be: verify (files still exist) -> confirm (deletes them) -> assert they're gone - same
+    // restructuring as ui/test-backup-to-optical-media.js, see that script's own comment for the full reasoning.
+    console.log('\nParsing the real .ibb file(s) and comparing against the expected missing files...');
+    const allIbbEntries = [];
+    const actualVolumeLabels = [];
+    const splitPieceFilesToCleanUp = [];
+    // Per-disc breakdown (parallel to createdIbbPaths) - Phase E needs to know exactly which real split-piece
+    // files belong to WHICH disc, since a large file's pieces can be spread across more than one disc and
+    // confirming disc i must only ever delete disc i's own pieces.
+    const perDiscFileEntries = [];
+    try {
+      for (const ibbPath of createdIbbPaths) {
+        const entries = parseIbbBackupList(ibbPath);
+        const discFileCount = entries.filter((e) => e.type === 'F').length;
+        const discDirCount = entries.filter((e) => e.type === 'D').length;
+        console.log(`  ${path.basename(ibbPath)}: ${discFileCount} file entries, ${discDirCount} directory entries.`);
+        allIbbEntries.push(...entries);
+        actualVolumeLabels.push(parseIbbVolumeLabel(ibbPath));
+        perDiscFileEntries.push(entries.filter((e) => e.type === 'F'));
+      }
+    } finally {
+      for (const ibbPath of createdIbbPaths) {
+        if (fs.existsSync(ibbPath)) { fs.rmSync(ibbPath, { force: true }); }
+      }
     }
-  } finally {
-    for (const ibbPath of createdIbbPaths) {
-      if (fs.existsSync(ibbPath)) { fs.rmSync(ibbPath, { force: true }); }
-    }
-  }
 
   const ibbFileEntries = allIbbEntries.filter((e) => e.type === 'F');
   const ibbDirAbsPaths = allIbbEntries.filter((e) => e.type === 'D').map((e) => e.fullSourcePath.replace(/\\+$/, ''));
@@ -536,16 +544,53 @@ async function main() {
   console.log(`  Original whole (unsplit) large file leaked into any .ibb: ${originalLargeFileLeakedWhole ? 'WRONG - regression!' : 'OK, not present'}`);
   const splitCheckPassed = !largeFileEntry || (partCountCorrect && firstPieceSizeCorrect && totalSizeCorrect && !originalLargeFileLeakedWhole);
 
-  // Clean up the real split-piece files now that their sizes have been read - they're disposable, one-time-use
-  // scratch artifacts (same reasoning as the .ibb cleanup above), and the app itself does NOT clean them up on
-  // its own (ngAfterViewInit's own warning message tells the user to do this manually). Also removes the
-  // now-empty "large-files" parent directory they were the only contents of, so cleanup.js finds nothing left
-  // over on the next run.
-  for (const p of splitPieceFilesToCleanUp) { if (fs.existsSync(p)) { fs.rmSync(p, { force: true }); } }
-  const splitPieceParentDirs = new Set(splitPieceFilesToCleanUp.map((p) => path.dirname(p)));
-  for (const d of splitPieceParentDirs) {
-    if (fs.existsSync(d) && fs.readdirSync(d).length === 0) { fs.rmdirSync(d); }
-  }
+    // --- Phase E: confirm each new disc was burned, and verify ITS OWN real split pieces (if any) actually get
+    // deleted - the whole point of the "confirm disc burned" feature (lazy per-disc materialization instead of
+    // splitting every large file up front for the entire job). Uses perDiscFileEntries (captured above) rather
+    // than the flattened, all-discs splitPieceIbbEntries, since confirming disc i must only ever delete disc i's
+    // own pieces - never a different, not-yet-confirmed disc's, even if they share the same source file.
+    console.log('\nConfirming each new disc was burned, and verifying its real split pieces get cleaned up...');
+    const confirmDeletionResults = [];
+    for (let i = 0; i < createdIbbPaths.length; i++) {
+      const discSplitPiecePaths = perDiscFileEntries[i]
+        .filter((e) => e.fullSourcePath.startsWith(realTempDir))
+        .map((e) => e.fullSourcePath);
+
+      await step(`open new disc ${i + 1}'s step (for confirm)`, () =>
+        win.getByRole('tab').nth(i).click({ timeout: 15_000 }));
+
+      await step(`click "Confirm disc burned" for new disc ${i + 1}`, () =>
+        win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 15_000 }));
+
+      await step(`wait for new disc ${i + 1} to show as confirmed`, () =>
+        win.getByRole('button', { name: 'Disc confirmed', exact: false }).waitFor({ timeout: 15_000 }));
+
+      if (discSplitPiecePaths.length > 0) {
+        // confirmDiscBurned awaits the real delete IPC call before its own button text updates, so by the time
+        // the wait above resolves this should already be done - a short grace period only guards against any
+        // last bit of filesystem latency, to avoid a flaky false failure.
+        await new Promise((r) => setTimeout(r, 1000));
+        const stillPresent = discSplitPiecePaths.filter((p) => fs.existsSync(p));
+        const deleted = stillPresent.length === 0;
+        confirmDeletionResults.push(deleted);
+        console.log(`  new disc ${i + 1}: ${discSplitPiecePaths.length} real split piece(s), all deleted after confirm: ${deleted}`);
+        if (!deleted) { console.log(`    STILL PRESENT: ${stillPresent.join(', ')}`); }
+      } else {
+        console.log(`  new disc ${i + 1}: no split pieces to clean up.`);
+      }
+    }
+    const confirmCheckPassed = confirmDeletionResults.every(Boolean);
+
+    // Fallback cleanup only - by this point confirmCheckPassed being true already means every real split-piece
+    // file is gone, so this is normally a no-op (fs.existsSync guards make it safe either way). They're
+    // disposable, one-time-use scratch artifacts either way (same reasoning as the .ibb cleanup above). Also
+    // removes the now-empty "large-files" parent directory they were the only contents of, so cleanup.js finds
+    // nothing left over on the next run.
+    for (const p of splitPieceFilesToCleanUp) { if (fs.existsSync(p)) { fs.rmSync(p, { force: true }); } }
+    const splitPieceParentDirs = new Set(splitPieceFilesToCleanUp.map((p) => path.dirname(p)));
+    for (const d of splitPieceParentDirs) {
+      if (fs.existsSync(d) && fs.readdirSync(d).length === 0) { fs.rmdirSync(d); }
+    }
 
   // 4. Verify (b): the updated metadata JSON preserves the original disc's entries untouched and correctly
   //    appends every new disc's entries (paths normalized to the D:\ convention, continuing the numbering) -
@@ -599,16 +644,22 @@ async function main() {
     if (!volumeLabelCorrect || !dialogMentionsExpected || dialogWronglyMentions1) { discNumberingCheckPassed = false; }
   }
 
-  const verifyPassed = normalCheckPassed && splitCheckPassed && jsonCheckPassed && discNumberingCheckPassed;
+    const verifyPassed = normalCheckPassed && splitCheckPassed && confirmCheckPassed && jsonCheckPassed && discNumberingCheckPassed;
 
-  if (verifyPassed) {
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-  } else {
-    console.log(`\nLeaving scratch files in place for inspection: ${scratchRoot}`);
+    if (verifyPassed) {
+      fs.rmSync(scratchRoot, { recursive: true, force: true });
+    } else {
+      console.log(`\nLeaving scratch files in place for inspection: ${scratchRoot}`);
+    }
+
+    console.log(`\n${verifyPassed ? 'PASS' : 'FAIL'} - add-missing-files ${verifyPassed ? 'correctly diffed against the existing cold storage, split the large missing file for real, burned only the missing files/directories/pieces across the new discs, correctly merged the updated metadata JSON with continued numbering, and cleaned each disc\'s pieces up on confirm.' : 'did not produce a correct result, see the counts above.'}`);
+    process.exitCode = verifyPassed ? 0 : 1;
+  } finally {
+    if (app) { await app.close().catch(() => {}); }
+    if (originalConfigContent !== undefined) {
+      restoreConfig(originalConfigContent);
+    }
   }
-
-  console.log(`\n${verifyPassed ? 'PASS' : 'FAIL'} - add-missing-files ${verifyPassed ? 'correctly diffed against the existing cold storage, split the large missing file for real, burned only the missing files/directories/pieces across the new discs, and correctly merged the updated metadata JSON with continued numbering.' : 'did not produce a correct result, see the counts above.'}`);
-  process.exitCode = verifyPassed ? 0 : 1;
 }
 
 main().catch((e) => {

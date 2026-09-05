@@ -4,7 +4,8 @@ export type WorkerChannel =
 "create-IBB-file" | "wait-for-optical-disk-to-be-mounted" | "get-file-paths" |
 "delete-files-and-dirs-for-dir-sync" | 'get-temp-data-directory-path' | 'get-file-paths-with-stats' |
 "read-json-from-disk" | "write-json-to-disk" | "merge-file-parts" | "clear-temp-data-directory" |
-"validate-config-paths" | "update-config" | "ensure-temp-directory-ownership";
+"validate-config-paths" | "update-config" | "ensure-temp-directory-ownership" |
+"materialize-optical-media-disc-pieces" | "delete-materialized-pieces-for-disc";
 
 export interface WorkerRequest {
   key: WorkerChannel;

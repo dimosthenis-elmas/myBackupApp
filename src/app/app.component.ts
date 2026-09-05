@@ -6,6 +6,7 @@ import { Router } from '@angular/router';
 import { MatDialog } from '@angular/material/dialog';
 import { ConfirmationDialogComponent } from './shared/components/confirmation-dialog/confirmation-dialog.component';
 import { WorkerCommunicator as ipc } from '../../app/workers/worker-communicator';
+import { PART_FILE_PATTERN } from './shared/utils/part-file-pattern';
 
 interface StringIndexedObject {
   [key: string]: string;
@@ -268,9 +269,8 @@ export class AppComponent implements OnInit {
     try {
       const tempDataDirectoryPath = (await ipc.getTempDataDirectoryPath()).res;
       const filesWithStats: Array<{ path: string }> = (await ipc.getFilePathsWithStats(tempDataDirectoryPath)).res;
-      const partFilePattern = /\.part\.\d+$/i;
       const ibbProjectFilePattern = /Disk_\d+\.ibb$/i;
-      const leftoverFiles = (filesWithStats || []).filter((f) => partFilePattern.test(f.path) || ibbProjectFilePattern.test(f.path));
+      const leftoverFiles = (filesWithStats || []).filter((f) => PART_FILE_PATTERN.test(f.path) || ibbProjectFilePattern.test(f.path));
 
       if (leftoverFiles.length === 0) {
         return;

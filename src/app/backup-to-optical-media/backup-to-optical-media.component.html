@@ -61,23 +61,29 @@
   @for (disk of _disks; track disk){
   <mat-step [stepControl]="firstFormGroup">
     <br>
+    <div [class.disc-confirmed]="confirmedDiscs[disk]">
     <div>
       <h3>Select the files you want to burn to the optical disc</h3>
     </div>
     <br>
     <mat-checkbox [checked]="allFilesSelected" (change)="selectAllFiles(disk, $event.checked);"
-       (click)="$event.stopPropagation()">
+       (click)="$event.stopPropagation()" [disabled]="confirmedDiscs[disk]">
        Select all
     </mat-checkbox>
     <files-tree #cmp></files-tree>
     <form [formGroup]="firstFormGroup">
-      <ng-template matStepLabel>Optical disk {{disk + 1}}</ng-template>
+      <ng-template matStepLabel>Optical disk {{disk + 1}}{{confirmedDiscs[disk] ? ' (confirmed)' : ''}}</ng-template>
       <br>
       <br>
       <div>
-        <button mat-flat-button color="primary" mat-button (click)="sendToImgBurn(disk)">Send to ImgBurn</button>
+        <button mat-flat-button color="primary" mat-button (click)="sendToImgBurn(disk)" [disabled]="confirmedDiscs[disk]">Send to ImgBurn</button>
+        <button mat-flat-button color="accent" mat-button (click)="confirmDiscBurned(disk)"
+                [disabled]="!sentDiscs[disk] || confirmedDiscs[disk]" style="margin-left: 8px;">
+          {{ confirmedDiscs[disk] ? 'Disc confirmed ✓' : 'Confirm disc burned' }}
+        </button>
       </div>
     </form>
+    </div>
   </mat-step>
   }
 </mat-stepper>

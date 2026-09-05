@@ -10,6 +10,9 @@ import { Subject } from 'rxjs';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
 import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
+import { filesMetadata } from '../../types/interface';
+import { SerialQueue } from '../shared/utils/serial-queue';
+import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
 
 import {FormBuilder, Validators, FormsModule, ReactiveFormsModule} from '@angular/forms';
 import {MatButtonModule} from '@angular/material/button';
@@ -87,15 +90,23 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   /** Full path (folder + file name), chosen by the user via a save dialog, where the cold storage metadata
    * JSON is written/updated for this session. See chooseSaveFile(). */
   private coldStorageMetadataJSONPath!: string;
-  /** Serializes sendToImgBurn's read-modify-write of the shared cold storage metadata JSON across discs.
-   *  Without this, since the stepper is non-linear ([isLinear]=false) and every disc's "Send to ImgBurn" button
-   *  is always enabled, nothing stops the user from triggering sendToImgBurn for a second disc before the
-   *  first one's write has finished - if the second disc's read then lands before the first disc's write, the
-   *  first disc's update is silently lost (overwritten by the second write, which was based on a stale read).
-   *  Each call chains its own read-modify-write onto this promise and awaits it, so only one is ever in flight
-   *  at a time, in call order - the same pattern WorkerCommunicator.queueTail already uses for the analogous
-   *  problem on the worker IPC channel itself. */
-  private metadataUpdateQueue: Promise<void> = Promise.resolve();
+  /** Serializes sendToImgBurn's read-modify-write of the shared cold storage metadata JSON across discs - see
+   *  SerialQueue's own doc comment for why this is needed (the stepper is non-linear and every disc's "Send to
+   *  ImgBurn" button is always enabled). */
+  private metadataUpdateQueue = new SerialQueue();
+  /** Whether disc i has been sent to ImgBurn at least once yet - gates both "Confirm disc burned" (can't
+   *  confirm a disc that was never sent) and re-sending. */
+  public sentDiscs: boolean[] = [];
+  /** Whether the user has confirmed disc i was actually burned - see confirmDiscBurned(). Intentionally pure
+   *  in-memory state, never persisted: if the app closes mid-job, the user starts over. That is an explicit
+   *  decision (no resume support), not an oversight - please don't "fix" this into a persistence feature. */
+  public confirmedDiscs: boolean[] = [];
+  /** For each disc i, the bare-relative (relative to this.backup.sourcePath) large-file-split-piece paths that
+   *  were actually materialized and burned for that disc - captured once in sendToImgBurn, since it can include
+   *  a rare surplus piece (see materializeOpticalMediaDiscPieces) that was never part of the tree's own
+   *  selection and so cannot be recovered later by re-querying the tree. confirmDiscBurned reads this to know
+   *  exactly which real temp-dir files to delete. */
+  private sentDiscPartPaths: string[][] = [];
   /** Name of this cold storage collection of discs, provided once by the user in step_1 and burned onto every
    * disc's UDF volume label as "<name> Disc <N>" (see sendToImgBurn/createIBB_file) - so all discs from the
    * same backup carry a recognizable, shared label. */
@@ -142,6 +153,9 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   goToStep2(){
     this.totalNumberOfDisksNeeded = this.backup.opticalMediaPartitioning.length;
     this._disks = [...Array(this.totalNumberOfDisksNeeded).keys()];
+    this.sentDiscs = Array(this.totalNumberOfDisksNeeded).fill(false);
+    this.confirmedDiscs = Array(this.totalNumberOfDisksNeeded).fill(false);
+    this.sentDiscPartPaths = Array(this.totalNumberOfDisksNeeded).fill(null).map(() => []);
     this.step='step_2'
   }
 
@@ -279,12 +293,10 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
                 console.log(this.tempDataDirectoryPath);
                 
                 const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
-                infoDialog.componentInstance.title = "Warning!";
-                const info_msg = `The feature you selected will split the large files and store those splits (parts) in the temp data directory located in 
-                ${this.tempDataDirectoryPath}. After you have finished burning all the optical disks you are kindly requested to empty this entire directory
-                so that your disk space is freed from these temporary files. By the way, you may ask 'why save these part files to disk instead of keeping them as virtual
-                views of the large files?'. The answer is that this would have been the better option, but implementing these 'virtual' files as views of other files
-                is rather complicated. So for now, it is what it is. This is a consideration for a future update.`
+                infoDialog.componentInstance.title = "Info";
+                const info_msg = `The feature you selected will split any too-large files into parts, one disc's worth at a time, in the temp data directory located in
+                ${this.tempDataDirectoryPath}. Each disc's parts are only physically created when that disc is actually sent to ImgBurn, and are deleted again
+                automatically once you confirm that disc was burned - so you don't need to manually clean up this directory yourself.`
                 infoDialog.componentInstance.message = info_msg;
                 infoDialog.componentInstance.actionsNum = 1
                 infoDialog.componentInstance.action1Label = "Ok, got it."
@@ -432,10 +444,24 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   }
 
   async sendToImgBurn(i: number){
-    /* The files tree will return an object containing an attribute named "extras". This extas may hold any additional information regarding a tree entry.
-    We will rename this "extras" attribute to "stats" so that the metadata is aligned with the output of node js for the respective files metadata.
-    We also add the volume letter, normalized to OPTICAL_DRIVE_LETTER_CONVENTION (see disc-id-hash.ts for why). */
-    const selectedFiles = this.filesTrees.toArray()[i].getSelectedFilePathsIncludingExtraInfo().map(x=>{return {"path": OPTICAL_DRIVE_LETTER_CONVENTION + x.path, "stats": x.extras}});
+    // The bare-relative (relative to this.backup.sourcePath) paths currently selected in this disc's tree -
+    // this is the plan's ESTIMATE for any large-file split piece among them (see estimateLargeFileSplitPieces
+    // in worker.ts): a piece's path is already correctly predicted, but its size is not necessarily final yet.
+    const selectedRelativePaths = this.filesTrees.toArray()[i].getSelectedFilePathsIncludingExtraInfo().map(x => x.path);
+
+    // Materializes this disc's real large-file split pieces (if any), lazily, right now - this is the ONLY
+    // point a large file actually gets physically split, rather than the whole job's large files all being
+    // split up front before any disc is burned. The response can contain MORE entries than were requested (a
+    // rare, known boundary case surfaces one extra, unplanned piece - see materializeOpticalMediaDiscPieces's
+    // own comment) - that surplus piece belongs to THIS disc, since this disc's send action is what triggered
+    // its file's real split, so everything below is built from the full response, not from
+    // selectedRelativePaths, to make sure it's included in both the burned .ibb and the saved JSON.
+    const realStats: filesMetadata[] = (await ipc.materializeOpticalMediaDiscPieces(this.backup.sourcePath, selectedRelativePaths)).res;
+
+    /* We rename the worker's "stats" field to match what used to come from the files-tree's own "extras" -
+    same shape, now real/measured instead of an estimate. We also add the volume letter, normalized to
+    OPTICAL_DRIVE_LETTER_CONVENTION (see disc-id-hash.ts for why). */
+    const selectedFiles = realStats.map(e => { return { "path": OPTICAL_DRIVE_LETTER_CONVENTION + e.path, "stats": e.stats } });
 
     // Same disc-identification hash used during recovery (see getDiscIdHash / OpticalDiscBackupDataRetriever) -
     // computed here from the exact same OPTICAL_DRIVE_LETTER_CONVENTION-prefixed paths that are about to be written
@@ -459,10 +485,10 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     });
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
-    // Chain this disc's read-modify-write onto the queue (see metadataUpdateQueue's own doc comment) and await
-    // OUR turn specifically - not just the queue's current tail - so a later disc's call, chained on after this
-    // one, can never run its own read until this write has actually finished.
-    const thisUpdate = this.metadataUpdateQueue.then(async () => {
+    // Enqueue this disc's read-modify-write (see metadataUpdateQueue's own doc comment) and await its turn
+    // specifically - not just whatever else is queued - so a later disc's call, enqueued after this one, can
+    // never run its own read until this write has actually finished.
+    await this.metadataUpdateQueue.enqueue(async () => {
       try {
         const updatedMetadataJSON: Array<Array<{ path: string; stats: any; }>> = (await ipc.readJSONfromDisk(this.coldStorageMetadataJSONPath)).res;
         updatedMetadataJSON[i] = selectedFiles;
@@ -471,10 +497,11 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         console.log("There is a problem with the cold storage files medadata json. Expecting array of length this._disc.")
       }
     });
-    this.metadataUpdateQueue = thisUpdate;
-    await thisUpdate;
 
-    this.createIBB_file(i, this.filesTrees.toArray()[i].getSelectedData(), this.backup.sourcePath).then(()=>{
+    this.sentDiscPartPaths[i] = realStats.filter(e => PART_FILE_PATTERN.test(e.path)).map(e => e.path);
+
+    this.createIBB_file(i, realStats.map(e => e.path), this.backup.sourcePath).then(()=>{
+      this.sentDiscs[i] = true;
       loadingDialogRef.close();
     }).catch((error)=>{
       loadingDialogRef.close();
@@ -482,6 +509,22 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       errorDialog.componentInstance.title = "Error";
       errorDialog.componentInstance.message = `An error occurred while creating the ImgBurn project: ${error}`;
     })
+  }
+
+  /** Marks disc i as confirmed-burned: deletes its real materialized split pieces (if any) from the temp
+   *  directory, then marks it confirmed (the template grays out and disables its controls once confirmedDiscs[i]
+   *  is true - see the template). Discs can be sent/confirmed in any order, independent of each other - there is
+   *  no sequencing requirement, matching the already non-linear stepper "Send to ImgBurn" itself allows. */
+  async confirmDiscBurned(i: number): Promise<void> {
+    if (!this.sentDiscs[i] || this.confirmedDiscs[i]) { return; }
+    const partRelativePaths = this.sentDiscPartPaths[i] || [];
+    if (partRelativePaths.length > 0) {
+      const tempDataDirectoryPath: string = (await ipc.getTempDataDirectoryPath()).res;
+      const tempDirNormalized = tempDataDirectoryPath.replace(/\\$/, '');
+      const piecePaths = partRelativePaths.map(p => tempDirNormalized + '\\' + p);
+      await ipc.deleteMaterializedPiecesForDisc(piecePaths);
+    }
+    this.confirmedDiscs[i] = true;
   }
 
   goToHomePage(){

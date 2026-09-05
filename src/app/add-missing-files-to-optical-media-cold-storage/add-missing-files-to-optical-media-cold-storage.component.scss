@@ -1,0 +1,6 @@
+// Grays out a confirmed disc's own content, without disabling stepper navigation to it - a confirmed disc
+// should still be reviewable, just visually out of the way and (via [disabled] on its own controls) no longer
+// actionable. Same rule as backup-to-optical-media.component.scss.
+.disc-confirmed {
+  opacity: 0.6;
+}

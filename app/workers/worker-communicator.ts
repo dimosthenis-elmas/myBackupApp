@@ -307,6 +307,22 @@ export class WorkerCommunicator {
         return this.sendAndAwaitResponse('clear-temp-data-directory', {});
     }
 
+    /** Physically splits (via real 7-Zip) whichever large files `paths` references that haven't been split yet,
+     *  and returns fresh, real stats for every path - see materializeOpticalMediaDiscPieces in worker.ts. The
+     *  response's `res` array can be longer than `paths` (a rare, known boundary case surfaces one extra,
+     *  unplanned piece - see that function's own comment) - callers should build their disc's saved metadata
+     *  from the full response, not by zipping it against the original request. */
+    static materializeOpticalMediaDiscPieces(dirPath: string, paths: Array<string>): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('materialize-optical-media-disc-pieces', { dirPath: dirPath, paths: paths });
+    }
+
+    /** Deletes exactly the given real, absolute temp-dir piece paths - see deleteMaterializedPiecesForDisc in
+     *  worker.ts. Never deletes a whole file's other pieces if they belong to a different, not-yet-confirmed
+     *  disc - only the exact paths passed in. */
+    static deleteMaterializedPiecesForDisc(pieceAbsolutePaths: Array<string>): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('delete-materialized-pieces-for-disc', { pieceAbsolutePaths: pieceAbsolutePaths });
+    }
+
     static validateConfigPaths(): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('validate-config-paths', {});
     }
