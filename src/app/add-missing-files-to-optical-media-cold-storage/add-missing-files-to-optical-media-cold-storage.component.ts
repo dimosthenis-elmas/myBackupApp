@@ -79,9 +79,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     optical_media_choices: {value: string, viewValue: string, capacity: number}[] = [
     {value: 'cd', viewValue: 'CD (700 MB)', capacity: 0.7e9},
     {value: 'dvd', viewValue: 'DVD (4.7 GB)', capacity: 4.7e9},
-    {value: 'blu-ray', viewValue: 'Blu ray (25 GB)', capacity: 25e9},
-    {value: 'blu-ray', viewValue: 'Blu ray (50 GB)', capacity: 50e9},
-    {value: 'blu-ray', viewValue: 'Blu ray (100 GB)', capacity: 100e9}
+    {value: 'blu-ray-25', viewValue: 'Blu ray (25 GB)', capacity: 25e9},
+    {value: 'blu-ray-50', viewValue: 'Blu ray (50 GB)', capacity: 50e9},
+    {value: 'blu-ray-100', viewValue: 'Blu ray (100 GB)', capacity: 100e9}
   ];
 
   useExternalMetadata = false;
@@ -164,7 +164,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '600px'});
     loadingDialogRef.componentInstance.title = "Info";
     loadingDialogRef.componentInstance.message = `Since you want to burn your cold storage backup to a set of optical discs you may come across files which are too large to fit on any single optical disc. In such a case
-    we have to split the large file into multiple parts (chunks of 500 MB), in the temp data directory located in ${tempDataDirectoryPath}. Each large file's parts are only physically created when the disc that needs them is actually sent to ImgBurn, and are deleted again automatically once you confirm that disc was burned - so normally you don't need to clean this up yourself. If a disc's parts were created but never confirmed (e.g. the app was closed before you got to it, or sending that disc failed), they're harmless to delete by hand from that same directory.`;
+    we have to split those large files into multiple parts (chunks of 500 MB) in the temp data directory located in ${tempDataDirectoryPath}. Each large file's parts are only physically created when the disc that needs them is actually sent to ImgBurn, and are deleted again automatically once you confirm that disc was burned - so normally you don't need to clean this up yourself. If a disc's parts were created but never confirmed (e.g. the app was closed before you got to it, or sending that disc failed), they're harmless to delete by hand from that same directory.`;
   }
 
   async chooseDirectory (): Promise<string>{
@@ -646,7 +646,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       loadingDialogRef.close();
       const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
       errorDialog.componentInstance.title = "Error";
-      errorDialog.componentInstance.message = `Failed to update the cold storage metadata JSON for this disc - it was NOT sent to ImgBurn, so nothing was burned with an unrecorded entry. Error: ${error}`;
+      errorDialog.componentInstance.message = `Failed to update the cold storage metadata JSON for this disc - it was NOT sent to ImgBurn, so nothing was burned without being recorded in the JSON. Error: ${error}`;
       return;
     }
 

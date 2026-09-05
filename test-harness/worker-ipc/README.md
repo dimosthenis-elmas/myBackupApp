@@ -123,10 +123,13 @@ expected).
 ```
 node test-harness/worker-ipc/test-large-file-split.js
 ```
-Generates a real 700 MB file and lets the app's own code do the real split (`partition-backup-to-optical-media`
-with `splitLargeFiles: true` - the actual `7z -v500m -mx0 a ...` call in `worker.ts`, not a smaller stand-in),
-then feeds the real resulting part files into the already-proven `merge-file-parts` to confirm the whole round
-trip is byte-for-byte correct at the real 500 MiB volume size, not just at `test-merge.js`'s smaller scale.
+Generates a real 700 MB file and exercises the app's real two-step split flow: `partition-backup-to-optical-media`
+with `splitLargeFiles: true` first PLANS the split using pure arithmetic only (`estimateLargeFileSplitPieces` in
+`worker.ts` - no 7-Zip call at all), then `materialize-optical-media-disc-pieces` actually runs it (the real
+`7z -v500m -mx0 a ...` call), mirroring exactly how the real burn wizards call it - plan once, then materialize
+only the disc(s) that need a piece. The real resulting part files are then fed into the already-proven
+`merge-file-parts` to confirm the whole round trip is byte-for-byte correct at the real 500 MiB volume size, not
+just at `test-merge.js`'s smaller scale.
 Every check passes, including a direct sha256 comparison between the original 700 MB file (hashed while it was
 written) and the reassembled file, byte-for-byte identical.
 
@@ -145,6 +148,36 @@ Two things worth knowing if you extend this script: `-v500m -mx0` still wraps th
 total against a small overhead margin instead of an exact byte count. And `mergeFileParts` writes the reassembled
 file next to the part files it was given, mirroring the large file's original relative subdirectory - not the
 temp directory's own root.
+
+### `test-large-file-split-boundary.js` — the two rare reconciliation paths `test-large-file-split.js` can't hit
+```
+node test-harness/worker-ipc/test-large-file-split-boundary.js
+```
+`test-large-file-split.js`'s 700 MB file isn't near the boundary where a real 7-Zip split can produce a piece
+count the plan didn't predict, so this script targets that boundary directly, in two parts:
+1. A file sized to exactly 50 bytes short of an even 2-volume split - known to real-split into 3 pieces, not 2 -
+   confirming `materializeOpticalMediaDiscPieces` returns that surplus piece rather than dropping it.
+2. A file whose estimate predicts 2 pieces, split instead by a stub batch script (the app's own configured
+   7-Zip path is temporarily redirected to it) that deliberately produces 5 - proving the "more than one piece
+   off -> throw" guard actually fires, since no real 7-Zip run can be coaxed into misbehaving that way on demand.
+
+Both source files are written sparse/zero-filled - piece COUNT and SIZE are what's under test, not reassembled
+content, so there's no need to generate real random data at this scale.
+
+### `test-multi-large-file-split.js` — two large files sharing one disc's plan
+```
+node test-harness/worker-ipc/test-multi-large-file-split.js
+```
+Every other large-file test here uses exactly one large file. This one uses two (each producing a full-volume
+piece plus a remainder piece), sized by hand-tracing the real bin-packing loop so the two REMAINDER pieces
+provably end up sharing a third disc's plan alongside each file's own full-volume piece on its own disc -
+`partitionBackupToOpticalMedia` pools every large file's pieces together before packing, never one file at a
+time, which no single-large-file test can actually observe happening.
+
+Confirms: materializing the shared disc splits BOTH source files for real and returns both real pieces;
+materializing one disc's pieces incidentally materializes the other discs' pieces too, since splitting a file
+always produces all of its pieces at once (expected, documented behavior, not a bug); and a scoped delete for
+the shared disc removes only its own two piece files, leaving the other, not-yet-confirmed discs' pieces intact.
 
 ### `test-split-piece-capacity-guard.js` — proves the split-piece infinite loop is actually fixed
 ```

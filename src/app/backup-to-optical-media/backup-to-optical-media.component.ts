@@ -115,9 +115,9 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   optical_media_choices: {value: string, viewValue: string, capacity: number}[] = [
     {value: 'cd', viewValue: 'CD (700 MB)', capacity: 0.7e9},
     {value: 'dvd', viewValue: 'DVD (4.7 GB)', capacity: 4.7e9},
-    {value: 'blu-ray', viewValue: 'Blu ray (25 GB)', capacity: 25e9},
-    {value: 'blu-ray', viewValue: 'Blu ray (50 GB)', capacity: 50e9},
-    {value: 'blu-ray', viewValue: 'Blu ray (100 GB)', capacity: 100e9}
+    {value: 'blu-ray-25', viewValue: 'Blu ray (25 GB)', capacity: 25e9},
+    {value: 'blu-ray-50', viewValue: 'Blu ray (50 GB)', capacity: 50e9},
+    {value: 'blu-ray-100', viewValue: 'Blu ray (100 GB)', capacity: 100e9}
   ];
 
   selected_optical_medium!: {value: string, viewValue: string, capacity: number};

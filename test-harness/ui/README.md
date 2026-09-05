@@ -303,8 +303,9 @@ cases plus a real 700MB file, big enough on its own to force a real split.
 `splitLargeFiles: true` unconditionally, every time - see `ui/test-add-missing-files.js`), THIS wizard's
 `WriteToOpticalMediaProceed` tries *without* splitting first, and only on catching a
 `FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC` error does it show its own confirmation chain: "Error - Too large files
-found" → "Yes, split the large files" → a "Warning!" about the temp directory → "Ok, got it." (which retries the
-whole call with `splitLargeFiles: true`, and is where the real 7-Zip split actually happens). The real 700MB file
+found" → "Yes, split the large files" → an "Info" dialog about the temp directory → "Ok, got it." (which retries
+the same PLANNING call with `splitLargeFiles: true` - still no 7-Zip involved yet; the real split only happens
+later, lazily, per disc, the first time each disc is actually sent to ImgBurn). The real 700MB file
 reliably produces 3 discs (1 for the small normal files, 2 for the real ~500MB/~176MB split pieces - same
 proven-safe combination as `worker-ipc/test-large-file-split.js` and `ui/test-add-missing-files.js`), each with
 its own "Send to ImgBurn" step in the per-disc loop below. Split pieces are verified *structurally* (exact piece
@@ -330,6 +331,14 @@ walk of the source tree: every real file must appear in **exactly one** disc's `
 be burned once), every real directory must appear in **at least one** (directories legitimately CAN repeat
 across discs, since each disc's `.ibb` is built from a fresh, disc-local tree and needs its own directory
 declared wherever it has files on that particular disc).
+
+**Also covers "Confirm disc burned" - in reverse order, on purpose.** After all discs are sent, the script clicks
+"Confirm disc burned" for each disc starting from the LAST one rather than sequentially, since any-order
+confirmation (both wizard steppers are non-linear, and nothing about `confirmDiscBurned` assumes an earlier disc
+was confirmed first) is a real, explicit part of this feature's design that confirming in send-order would never
+actually exercise. For each disc it checks that confirming deletes ONLY that disc's own real split-piece files
+(tracked per-disc, never the flattened all-discs list) - a different, not-yet-confirmed disc sharing the same
+source file must keep its own pending pieces untouched.
 
 ## `test-add-missing-files.js`
 
@@ -380,10 +389,15 @@ from the 1 disc already in the existing collection, both computed once via `getN
 never drift apart; (4) the split pieces' paths are correctly represented, without a stray leading backslash, in
 both the `.ibb` and the JSON.
 
-`add-missing-files-to-optical-media-cold-storage.component.ts`'s `ngAfterViewInit()` unconditionally opens a
-"This app is a work in progress..." warning dialog (title "Warning", a default single "Ok" button) the instant
-the wizard loads, before step 1's own form is usable at all - not a bug, just something the script has to click
-through before anything else.
+**Also covers "Confirm disc burned" - in reverse order, on purpose**, the same way and for the same reason as
+`test-backup-to-optical-media.js` above: confirms the new discs starting from the LAST one rather than
+sequentially, and checks that confirming a disc deletes ONLY that disc's own real split-piece files, never a
+different, not-yet-confirmed disc's.
+
+`add-missing-files-to-optical-media-cold-storage.component.ts`'s `ngAfterViewInit()` unconditionally opens an
+"Info" dialog (explaining that large-file split pieces are materialized lazily, per disc, only when that disc is
+sent to ImgBurn, and deleted automatically once confirmed) the instant the wizard loads, before step 1's own form
+is usable at all - not a bug, just something the script has to click through before anything else.
 
 ## `capture-readme-screenshots.js`
 

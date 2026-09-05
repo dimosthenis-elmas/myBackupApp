@@ -109,7 +109,7 @@
             @for (disk of _disks; track disk){
             <mat-step [stepControl]="firstFormGroup">
                 <div [class.disc-confirmed]="confirmedDiscs[disk]">
-                <h3>The following files will be burned to this disc:{{confirmedDiscs[disk] ? ' (confirmed)' : ''}}</h3>
+                <h3>The following files will be burned to this disc{{confirmedDiscs[disk] ? ' (confirmed)' : ''}}:</h3>
                 <br>
                 <div>
                     <span>
