@@ -30,15 +30,23 @@ function writeStubImgBurnBat(stubPath) {
 }
 
 /** Backs up appData/config.json's exact raw text (so it can be restored byte-for-byte, whitespace and all - not
- *  a JSON.stringify round trip, which could subtly reformat it), then writes a version with imgBurnExecutablePath
- *  pointed at `stubExecutablePath` instead. Returns the original raw text - pass it to restoreConfig when done. */
-function backupAndRedirectImgBurnPath(stubExecutablePath) {
+ *  a JSON.stringify round trip, which could subtly reformat it), then writes a version with `fieldName` pointed
+ *  at `newValue` instead. Returns the original raw text - pass it to restoreConfig when done. Generic over which
+ *  field gets redirected - backupAndRedirectImgBurnPath (below) is the original, specific use of this; a second,
+ *  independent use (redirecting _7zipExecutablePath to a stub instead) is what pulled the field name out into a
+ *  parameter rather than leaving it hardcoded a second time. */
+function backupAndRedirectConfigField(fieldName, newValue) {
   const originalContent = fs.readFileSync(CONFIG_PATH, 'utf8');
   const config = JSON.parse(originalContent);
-  config.imgBurnExecutablePath = stubExecutablePath;
+  config[fieldName] = newValue;
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 4));
-  console.log(`  (real appData/config.json temporarily redirected: imgBurnExecutablePath -> ${stubExecutablePath})`);
+  console.log(`  (real appData/config.json temporarily redirected: ${fieldName} -> ${newValue})`);
   return originalContent;
+}
+
+/** Thin, name-preserving wrapper over backupAndRedirectConfigField - see that function's own comment. */
+function backupAndRedirectImgBurnPath(stubExecutablePath) {
+  return backupAndRedirectConfigField('imgBurnExecutablePath', stubExecutablePath);
 }
 
 function restoreConfig(originalContent) {
@@ -95,6 +103,7 @@ function parseIbbVolumeLabel(ibbFilePath) {
 module.exports = {
   writeStubImgBurnBat,
   backupAndRedirectImgBurnPath,
+  backupAndRedirectConfigField,
   restoreConfig,
   waitForFile,
   parseIbbBackupList,

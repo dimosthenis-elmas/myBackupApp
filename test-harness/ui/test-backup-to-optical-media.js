@@ -399,9 +399,16 @@ async function main() {
     // splitting every large file up front for the entire job). Uses perDiscFileEntries (captured above) rather
     // than the flattened, all-discs splitPieceEntries, since confirming disc i must only ever delete disc i's
     // own pieces - never a different, not-yet-confirmed disc's, even if they share the same source file.
-    console.log('\nConfirming each disc was burned, and verifying its real split pieces get cleaned up...');
+    //
+    // Confirmed in REVERSE order (last disc first) rather than sequentially - any-order confirmation is a real,
+    // explicit part of this feature's design (both wizard steppers are non-linear, and nothing about
+    // confirmDiscBurned assumes an earlier disc was confirmed first), so this deliberately exercises that rather
+    // than only ever confirming in the same order discs were sent, which would leave "confirm out of order"
+    // completely unverified.
+    console.log('\nConfirming each disc was burned (in reverse order), and verifying its real split pieces get cleaned up...');
     const confirmDeletionResults = [];
-    for (let i = 0; i < actualDiscCount; i++) {
+    const confirmOrder = [...Array(actualDiscCount).keys()].reverse();
+    for (const i of confirmOrder) {
       const discSplitPiecePaths = perDiscFileEntries[i]
         .filter((e) => e.fullSourcePath.startsWith(realTempDir))
         .map((e) => e.fullSourcePath);
