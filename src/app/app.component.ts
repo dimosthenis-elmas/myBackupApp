@@ -62,7 +62,7 @@ export class AppComponent implements OnInit {
         return;
       }
 
-      await this.checkForLeftoverPartialFilesInTempDirectory();
+      await this.clearTempDataDirectoryOnStartup();
     }
   }
 
@@ -251,32 +251,27 @@ export class AppComponent implements OnInit {
     return false;
   }
 
-  /** On startup, checks whether the app's temp/cache directory (used as a buffer for large-file splits, and
-   *  for .ibb project files, before they are burned to optical media - see partitionBackupToOpticalMedia and
-   *  createIBB_file in worker.ts) still has any leftovers from a previous run (e.g. the user never got around
-   *  to burning/cleaning up, or the app was closed mid-way), and offers to clear it. Recognizes the same two
-   *  patterns clearTempDataDirectory itself is willing to delete (see PART_FILE_PATTERN and
-   *  IBB_PROJECT_FILE_PATTERN in worker.ts) - kept in sync with those by hand since this runs in the renderer,
-   *  not the worker. Any failure here is non-fatal to app startup - it is just logged, since this is a
-   *  convenience check, not something that should ever block the app from opening.
+  /** On every startup, unconditionally clears the app's temp/cache directory (used as a buffer for large-file
+   *  splits, and for .ibb project files, before they are burned to optical media - see
+   *  partitionBackupToOpticalMedia and createIBB_file in worker.ts). This is not conditional on the directory
+   *  actually having anything left over in it (clearing an already-empty directory is a harmless no-op) - it
+   *  runs every time because nothing in there can ever safely carry over to a new session: a backup/burn job
+   *  has no resume support (see confirmedDiscs in backup-to-optical-media.component.ts), so a piece left behind
+   *  by an earlier, abandoned session is not a head start on a later one - it is stale, and reusing it could
+   *  even silently serve wrong data (e.g. if the source file it was split from has since changed).
    *
-   *  Before deleting anything, the confirmation dialog itemizes exactly which files were found (not just "the
-   *  directory is not empty") so the user knows what they are agreeing to delete. Deletion is only committed
-   *  once the user confirms. Afterwards, a second dialog lists exactly which items clearTempDataDirectory
-   *  actually removed (its `deletedItems`), so the user also sees what really happened - which can differ from
-   *  the pre-deletion list, e.g. if an item was skipped or failed to delete. */
-  private async checkForLeftoverPartialFilesInTempDirectory(): Promise<void> {
+   *  The user is informed before it happens (itemizing exactly what will be removed, when there is anything),
+   *  but is not offered a way to decline - there is deliberately only one action ("Ok"), which triggers the
+   *  clear once clicked. Any failure here is logged and, unlike the happy path, does get its own dialog so a
+   *  real failure is not silently swallowed - but it never blocks app startup either way. */
+  private async clearTempDataDirectoryOnStartup(): Promise<void> {
     try {
       const tempDataDirectoryPath = (await ipc.getTempDataDirectoryPath()).res;
       const filesWithStats: Array<{ path: string }> = (await ipc.getFilePathsWithStats(tempDataDirectoryPath)).res;
       const ibbProjectFilePattern = /Disk_\d+\.ibb$/i;
       const leftoverFiles = (filesWithStats || []).filter((f) => PART_FILE_PATTERN.test(f.path) || ibbProjectFilePattern.test(f.path));
 
-      if (leftoverFiles.length === 0) {
-        return;
-      }
-
-      // Shown to the user so the confirmation below lists exactly what was found, not just "the directory is
+      // Shown to the user so the dialog below lists exactly what will be removed, not just "the directory is
       // not empty" - strips the temp directory's own path prefix off each entry so the list reads as paths
       // relative to it, which is what the user actually recognizes (part-file/ibb names), rather than the full
       // absolute path repeated on every line.
@@ -288,43 +283,36 @@ export class AppComponent implements OnInit {
       });
       const leftoverFilesList = relativeLeftoverPaths.map((p) => `  • ${p}`).join('\n');
 
-      const confirmDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
-      confirmDialog.disableClose = true;
-      confirmDialog.componentInstance.title = "Temporary files found";
-      confirmDialog.componentInstance.message =
-        `It seems that the temp directory "${tempDataDirectoryPath}" is not empty. This directory normally ` +
-        `stores partial file splits of larger files which can't be burned to a single optical medium, and ` +
-        `.ibb project files used to send a disc's contents to ImgBurn. It serves as a temporary buffer for ` +
-        `these and can usually be safely deleted.\n\n` +
-        `The following ${leftoverFiles.length} file(s) were found:\n${leftoverFilesList}\n\n` +
-        `Do you want me to delete these files (and clear this temporary directory)?`;
-      confirmDialog.componentInstance.actionsNum = 2;
-      confirmDialog.componentInstance.action1Label = "Yes, delete them";
-      confirmDialog.componentInstance.action2Label = "No, leave it";
-      confirmDialog.componentInstance.action1Callback = async () => {
-        confirmDialog.close();
-        try {
-          const response = await ipc.clearTempDataDirectory();
-          const result: { cleared: boolean; message: string; deletedItems: string[] } = response.res;
-
-          const resultDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
-          resultDialog.componentInstance.title = result.cleared ? "Temp directory cleared" : "Could not clear temp directory";
-          const deletedItemsList = (result.deletedItems || []).map((name) => `  • ${name}`).join('\n');
-          resultDialog.componentInstance.message = deletedItemsList
-            ? `${result.message}\n\nDeleted:\n${deletedItemsList}`
-            : result.message;
-          resultDialog.componentInstance.actionsNum = 1;
-          resultDialog.componentInstance.action1Label = "Ok";
-          resultDialog.componentInstance.action1Callback = () => { resultDialog.close(); }
-        } catch (error) {
-          console.error('Failed to clear the temp data directory', error);
+      await new Promise<void>((resolve) => {
+        const infoDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        infoDialog.disableClose = true;
+        infoDialog.componentInstance.title = "Clearing temporary files";
+        infoDialog.componentInstance.message =
+          `This app does not support resuming a backup/burn job across restarts, so its temporary directory ` +
+          `("${tempDataDirectoryPath}") is cleared at the start of every launch.` +
+          (leftoverFiles.length > 0
+            ? `\n\nThe following ${leftoverFiles.length} file(s) will be removed:\n${leftoverFilesList}`
+            : `\n\nIt is currently already empty - nothing to remove.`);
+        infoDialog.componentInstance.actionsNum = 1;
+        infoDialog.componentInstance.action1Label = "Ok";
+        infoDialog.componentInstance.action1Callback = () => {
+          infoDialog.close();
+          resolve();
         }
-      }
-      confirmDialog.componentInstance.action2Callback = () => {
-        confirmDialog.close();
+      });
+
+      const response = await ipc.clearTempDataDirectory();
+      const result: { cleared: boolean; message: string; deletedItems: string[] } = response.res;
+      if (!result.cleared) {
+        const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
+        errorDialog.componentInstance.title = "Could not clear temp directory";
+        errorDialog.componentInstance.message = result.message;
+        errorDialog.componentInstance.actionsNum = 1;
+        errorDialog.componentInstance.action1Label = "Ok";
+        errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); }
       }
     } catch (error) {
-      console.error('Failed to check the temp data directory for leftover partial files', error);
+      console.error('Failed to clear the temp data directory on startup', error);
     }
   }
 

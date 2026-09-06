@@ -344,6 +344,12 @@ what each one does, since you'll see them imported (`require('../lib/...')`) at 
   script's own source-tree generation step goes through - see `ui/README.md`'s "Switching between random and
   JSON-driven source trees" section for the `--random-tree`/`--json-tree` flags this gives every one of those
   scripts.
+- **`startup-dialogs.js`** — `dismissStartupTempClearDialog(win)`, which every `ui/` script (and the two
+  `capture-*.js` utilities) calls right after `launchApp()`. Every real launch now shows a mandatory, modal
+  "Clearing temporary files" dialog before anything else on screen is usable (the app has no resume-across-
+  restarts support, so its temp/cache directory is unconditionally cleared at the start of every launch, with
+  the user told about it first - see `clearTempDataDirectoryOnStartup` in `app.component.ts`) - without clicking
+  past it first, every single click after `launchApp()` would hang against a covered-up screen.
 
 ## Safety model (why this can't damage anything real)
 

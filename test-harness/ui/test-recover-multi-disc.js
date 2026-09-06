@@ -73,6 +73,7 @@ const { printTree } = require('../lib/print-tree');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
 const { resolveSevenZipExecutablePath, splitFileIntoRealParts } = require('../lib/seven-zip');
+const { dismissStartupTempClearDialog } = require('../lib/startup-dialogs');
 
 const SPEC_DIR = path.join(__dirname, 'tree-specs', 'test-recover-multi-disc');
 
@@ -182,6 +183,7 @@ async function main() {
     //    for the UI click-through further down - no need to launch twice.
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
+    await dismissStartupTempClearDialog(win);
     await app.evaluate(({ dialog }, dir) => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dir] });
     }, outputRoot);

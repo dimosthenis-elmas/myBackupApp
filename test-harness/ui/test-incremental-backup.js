@@ -39,6 +39,7 @@ const { launchApp } = require('../worker-ipc/call-worker');
 const { printTree } = require('../lib/print-tree');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
+const { dismissStartupTempClearDialog } = require('../lib/startup-dialogs');
 
 const SPEC_DIR = path.join(__dirname, 'tree-specs', 'test-incremental-backup');
 
@@ -78,6 +79,7 @@ async function main() {
     //    path, so one stub with a small queue covers both.
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
+    await dismissStartupTempClearDialog(win);
     await app.evaluate(({ dialog }, paths) => {
       const queue = [...paths];
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [queue.shift()] });

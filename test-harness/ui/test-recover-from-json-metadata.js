@@ -59,6 +59,7 @@ const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { normalizeForMetadata } = require('../lib/cold-storage-metadata');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
 const { resolveSevenZipExecutablePath, splitFileIntoRealParts } = require('../lib/seven-zip');
+const { dismissStartupTempClearDialog } = require('../lib/startup-dialogs');
 
 const SPEC_DIR = path.join(__dirname, 'tree-specs', 'test-recover-from-json-metadata');
 
@@ -160,11 +161,14 @@ async function main() {
   try {
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
+    await dismissStartupTempClearDialog(win);
 
-    // Avoid racing app.component.ts's own startup housekeeping IPC call before the first raw callWorker() call
-    // below (get-file-paths-with-stats, or - in the --json-tree branch below with no split-plan.json - none of
-    // the intervening real-7z-split work that would otherwise provide enough of a natural gap) - see
-    // ui/test-add-missing-files.js's identical pause for the full explanation.
+    // Avoid racing app.component.ts's own startup housekeeping IPC call(s) before the first raw callWorker()
+    // call below (get-file-paths-with-stats, or - in the --json-tree branch below with no split-plan.json - none
+    // of the intervening real-7z-split work that would otherwise provide enough of a natural gap) - see
+    // ui/test-add-missing-files.js's identical pause for the full explanation. dismissStartupTempClearDialog
+    // above already waits for/clicks past the mandatory startup dialog itself; this pause covers the trailing
+    // clear-temp-data-directory call that "Ok" click just triggered.
     await new Promise((r) => setTimeout(r, 3000));
 
     let partEntries;

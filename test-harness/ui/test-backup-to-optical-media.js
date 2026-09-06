@@ -86,6 +86,7 @@ const { printTree } = require('../lib/print-tree');
 const { writeStubImgBurnBat, backupAndRedirectImgBurnPath, restoreConfig, waitForFile, parseIbbBackupList } = require('../lib/ibb-tools');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
+const { dismissStartupTempClearDialog } = require('../lib/startup-dialogs');
 
 const SPEC_DIR = path.join(__dirname, 'tree-specs', 'test-backup-to-optical-media');
 
@@ -170,6 +171,7 @@ async function main() {
   try {
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
+    await dismissStartupTempClearDialog(win);
 
     await app.evaluate(({ dialog }, paths) => {
       const queue = [...paths];

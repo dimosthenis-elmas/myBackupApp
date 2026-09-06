@@ -39,6 +39,7 @@ const { assertRealTempDataDirectoryIsSafeToUse } = require('../worker-ipc/temp-d
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
 const { normalizeForMetadata } = require('../lib/cold-storage-metadata');
+const { dismissStartupTempClearDialog } = require('../lib/startup-dialogs');
 
 const OUTPUT_DIR = path.join(__dirname, '..', '..', 'docs', 'screenshots');
 // Never read - none of the functions below ever pass --json-tree, so generateFixtureTree always takes the
@@ -93,8 +94,9 @@ async function captureMainMenu() {
   let app, win;
   try {
     ({ app, win } = await launchApp());
+    await dismissStartupTempClearDialog(win); // the mandatory "Clearing temporary files" dialog - see its own doc comment
     await win.getByText('Backup to optical media', { exact: false }).first().waitFor({ timeout: 15_000 });
-    await pause(1000); // let any startup housekeeping dialog (see top-level README) resolve/settle
+    await pause(1000); // let anything else still settling (animations, etc.) finish
     await shot(win, 'Main menu', 'main-menu.png');
   } finally {
     if (app) { await app.close().catch(() => {}); }
@@ -122,6 +124,7 @@ async function captureBackupToOpticalMedia() {
   let app, win;
   try {
     ({ app, win } = await launchApp());
+    await dismissStartupTempClearDialog(win);
     await stubDialogs(app, [sourceRoot], [metadataJsonPath]);
 
     await clickMainMenuButton(win, 'Backup to optical media');
@@ -171,6 +174,7 @@ async function captureIncrementalBackup() {
   let app, win;
   try {
     ({ app, win } = await launchApp());
+    await dismissStartupTempClearDialog(win);
     await stubDialogs(app, [sourceRoot, targetRoot]);
 
     await clickMainMenuButton(win, 'Cumulative backup');
@@ -229,6 +233,7 @@ async function captureSyncDirs() {
   let app, win;
   try {
     ({ app, win } = await launchApp());
+    await dismissStartupTempClearDialog(win);
     await stubDialogs(app, [sourceRoot, targetRoot]);
 
     await clickMainMenuButton(win, 'Synchronize directories');
@@ -290,13 +295,16 @@ async function captureRecoverData() {
   let app, win;
   try {
     ({ app, win } = await launchApp());
-    // Avoid racing app.component.ts's own startup housekeeping IPC call - see captureAddMissingFiles's identical
-    // pause below, and ui/test-add-missing-files.js's own comment, for the full explanation: WorkerCommunicator's
-    // sendAndAwaitResponse removes ALL 'message-from-worker' listeners (not just its own) once any call resolves,
-    // so if the startup housekeeping call's own response arrives while this script's callWorker() below is still
-    // waiting for its own response, that cleanup wipes out this listener too and the real response - once it
-    // does arrive - has nothing left listening for it. Found for real (2026-08-31): this raced consistently
-    // enough to hang capture runs, apparently more often than in whatever timing let it pass unnoticed before.
+    await dismissStartupTempClearDialog(win);
+    // Avoid racing app.component.ts's own startup housekeeping IPC call(s) - see captureAddMissingFiles's
+    // identical pause below, and ui/test-add-missing-files.js's own comment, for the full explanation:
+    // WorkerCommunicator's sendAndAwaitResponse removes ALL 'message-from-worker' listeners (not just its own)
+    // once any call resolves, so if the startup housekeeping call's own response arrives while this script's
+    // callWorker() below is still waiting for its own response, that cleanup wipes out this listener too and the
+    // real response - once it does arrive - has nothing left listening for it. Found for real (2026-08-31): this
+    // raced consistently enough to hang capture runs, apparently more often than in whatever timing let it pass
+    // unnoticed before. dismissStartupTempClearDialog above already waits for/clicks past the mandatory startup
+    // dialog itself; this pause covers the trailing clear-temp-data-directory call that "Ok" click just triggered.
     await pause(3000);
 
     // Same technique as ui/test-recover-from-json-metadata.js: ask the app's own real IPC for each disc folder's
@@ -364,8 +372,11 @@ async function captureAddMissingFiles() {
   let app, win;
   try {
     ({ app, win } = await launchApp());
-    // Avoid racing app.component.ts's own startup housekeeping IPC call - see ui/test-add-missing-files.js's
-    // own comment on this exact race.
+    await dismissStartupTempClearDialog(win);
+    // Avoid racing app.component.ts's own startup housekeeping IPC call(s) - see ui/test-add-missing-files.js's
+    // own comment on this exact race. dismissStartupTempClearDialog above already waits for/clicks past the
+    // mandatory startup dialog itself; this pause covers the trailing clear-temp-data-directory call that "Ok"
+    // click just triggered.
     await pause(3000);
 
     console.log('Asking the app for the existing disc\'s real file listing (get-file-paths-with-stats)...');

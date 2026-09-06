@@ -99,6 +99,7 @@ const { writeStubImgBurnBat, backupAndRedirectImgBurnPath, restoreConfig, waitFo
 const { MARKER_FILE_NAME } = require('../lib/safety');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
+const { dismissStartupTempClearDialog } = require('../lib/startup-dialogs');
 
 const SPEC_DIR = path.join(__dirname, 'tree-specs', 'test-add-missing-files');
 
@@ -225,18 +226,21 @@ async function main() {
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
 
-    // Every app launch, app.component.ts's own checkForLeftoverPartialFilesInTempDirectory() unconditionally
-    // calls the exact same 'get-file-paths-with-stats' IPC key this script is about to call next, as its own
-    // startup housekeeping check. callWorker (worker-ipc/call-worker.js) matches responses by key alone - no
-    // per-request correlation ID exists anywhere in this IPC contract - so this script's own call, fired with no
-    // UI interaction in between, can race that startup check and receive ITS response instead of its own. Found
-    // for real (2026-08-27): the returned "listing" was a single entry pointing at the app's own temp-dir
-    // ownership marker file, not anything under existingDisc1Dir. Every OTHER script here does several UI clicks
-    // (each with their own 5s watch pause) before ever making a raw callWorker call, which is why none of them
-    // ever hit this - by then the startup check (two fast, sequential IPC round trips against a small/empty
-    // directory) has long since finished. This is specific to how this TEST HARNESS bypasses the app's own
-    // internal call queue for raw IPC calls - real UI-driven usage is naturally serialized through it instead -
-    // so the fix belongs here, not in the app.
+    // Every app launch, app.component.ts's own clearTempDataDirectoryOnStartup() unconditionally calls the
+    // exact same 'get-file-paths-with-stats' IPC key this script is about to call next (to build the mandatory
+    // "Clearing temporary files" dialog's own message), then - once that dialog is dismissed below - a further
+    // 'clear-temp-data-directory' call. callWorker (worker-ipc/call-worker.js) matches responses by key alone -
+    // no per-request correlation ID exists anywhere in this IPC contract - so this script's own call, fired with
+    // no UI interaction in between, can race one of those and receive ITS response instead of its own. Found for
+    // real (2026-08-27): the returned "listing" was a single entry pointing at the app's own temp-dir ownership
+    // marker file, not anything under existingDisc1Dir. Every OTHER script here does several UI clicks (each
+    // with their own 5s watch pause) before ever making a raw callWorker call, which is why none of them ever
+    // hit this - by then the startup check has long since finished. This is specific to how this TEST HARNESS
+    // bypasses the app's own internal call queue for raw IPC calls - real UI-driven usage is naturally
+    // serialized through it instead - so the fix belongs here, not in the app. dismissStartupTempClearDialog
+    // already waits for the dialog itself (so the FIRST two calls are guaranteed done by the time it returns) -
+    // this pause covers the trailing clear-temp-data-directory call the "Ok" click just triggered.
+    await dismissStartupTempClearDialog(win);
     await new Promise((r) => setTimeout(r, 3000));
 
     // 2. Ask the app's own real IPC for the "existing disc 1" folder's real file listing + stats, then build a

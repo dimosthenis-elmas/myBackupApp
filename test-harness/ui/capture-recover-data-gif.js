@@ -52,6 +52,7 @@ const { assertRealTempDataDirectoryIsSafeToUse, resolveRealTempDataDirectory } =
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
 const { normalizeForMetadata } = require('../lib/cold-storage-metadata');
+const { dismissStartupTempClearDialog } = require('../lib/startup-dialogs');
 
 const OUTPUT_DIR = path.join(__dirname, '..', '..', 'docs', 'media');
 const OUTPUT_FILE = path.join(OUTPUT_DIR, 'recover-data-from-optical-media.gif');
@@ -176,12 +177,15 @@ async function main() {
   try {
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp()); // deliberately no recordVideo - see this script's own header comment
-    // Avoid racing app.component.ts's own startup housekeeping IPC call - see capture-readme-screenshots.js's
+    await dismissStartupTempClearDialog(win);
+    // Avoid racing app.component.ts's own startup housekeeping IPC call(s) - see capture-readme-screenshots.js's
     // captureRecoverData for the full explanation (found for real, 2026-08-31): WorkerCommunicator's
     // sendAndAwaitResponse removes ALL 'message-from-worker' listeners when any call resolves, not just its own,
     // so the callWorker() below can lose its listener to the startup call's own cleanup within the first second -
     // long before the real (multi-minute) 7-Zip split ever finishes - and then just sit until its own 15-minute
-    // timeout, no matter how fast the split actually completes.
+    // timeout, no matter how fast the split actually completes. dismissStartupTempClearDialog above already
+    // waits for/clicks past the mandatory startup dialog itself; this pause covers the trailing
+    // clear-temp-data-directory call that "Ok" click just triggered.
     await pause(3000);
 
     // Generous budget - a real 7-Zip split of a 700MB file can take longer than you'd expect on some machines
