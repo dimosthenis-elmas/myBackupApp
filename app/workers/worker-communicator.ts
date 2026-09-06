@@ -277,6 +277,13 @@ export class WorkerCommunicator {
         return this.sendAndAwaitResponse('get-temp-data-directory-path', {});
     }
 
+    /** Applies config.json's maxOpticalMediumRepletionRatio to a medium's raw rated capacity - see
+     *  getEffectiveOpticalMediumCapacityInBytes in worker.ts for why this is the capacity every fit check
+     *  (not just up-front planning) should compare against, never a medium's raw capacity directly. */
+    static getEffectiveOpticalMediumCapacity(rawCapacityInBytes: number): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('get-effective-optical-medium-capacity', { rawCapacityInBytes: rawCapacityInBytes });
+    }
+
     static readJSONfromDisk(path: string): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('read-json-from-disk', { path: path });
     }

@@ -1,4 +1,4 @@
-import { Component, inject, NgZone, OnDestroy, OnInit, ViewChild, ViewChildren, QueryList } from '@angular/core';
+import { ChangeDetectorRef, Component, inject, NgZone, OnDestroy, OnInit, ViewChild, ViewChildren, QueryList } from '@angular/core';
 import { Router, ActivatedRoute } from '@angular/router';
 import { MatDialog } from '@angular/material/dialog';
 import { FilesTreeModule } from '../files-tree/files-tree.module';
@@ -6,7 +6,7 @@ import { BackupService } from '../core/services/backup/backup.service';
 import { IncrementalDialogComponent } from '../incremental-dialog/incremental-dialog.component';
 import { ConfirmationDialogComponent } from '../shared/components/confirmation-dialog/confirmation-dialog.component';
 import { LoadingDialogComponent } from '../shared/components/loading-dialog/loading-dialog.component';
-import { Subject } from 'rxjs';
+import { Subject, firstValueFrom } from 'rxjs';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
 import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
@@ -111,6 +111,26 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    * disc's UDF volume label as "<name> Disc <N>" (see sendToImgBurn/createIBB_file) - so all discs from the
    * same backup carry a recognizable, shared label. */
   public coldStorageCollectionName: string = '';
+  /** How many discs the initial plan (partitionBackupToOpticalMedia) actually called for - fixed once
+   *  goToStep2 runs, even though totalNumberOfDisksNeeded/_disks can later grow (see pendingOverflowPieces).
+   *  Needed to tell "every originally-planned disc has now been sent" apart from "every disc there currently
+   *  is, including ones already appended for overflow, has been sent" - see maybeAppendOverflowDiscs. */
+  private originalNumberOfDisksNeeded!: number;
+  /** Real, already-materialized large-file split pieces ("slivers" - see the capacity check in sendToImgBurn)
+   *  that have not yet found a disc with room for them. A sliver is first offered to the disc whose "Send to
+   *  ImgBurn" action produced it; if that disc is already too full, it lands here instead of immediately
+   *  forcing a new disc into existence - every SUBSEQUENT original disc's send also tries to absorb whatever
+   *  is still waiting here (see sendToImgBurn), so a sliver only ever actually forces a new, mostly-empty disc
+   *  if it's still unclaimed once every originally-planned disc has been sent - see maybeAppendOverflowDiscs,
+   *  which also tells the user their estimated disc count just changed before growing the stepper with the new
+   *  disc(s). This CAN happen even so: a sliver produced by the last original disc sent has no later disc left
+   *  to try. */
+  private pendingOverflowPieces: filesMetadata[] = [];
+  /** The selected medium's raw capacity, discounted by config.json's maxOpticalMediumRepletionRatio - see
+   *  getEffectiveOpticalMediumCapacityInBytes in worker.ts. Fetched once in goToStep2 and used as the one
+   *  capacity every later fit check (surplus slivers included) compares against, instead of the medium's raw
+   *  selected_optical_medium.capacity. */
+  private effectiveMediaCapacityInBytes!: number;
 
   optical_media_choices: {value: string, viewValue: string, capacity: number}[] = [
     {value: 'cd', viewValue: 'CD (700 MB)', capacity: 0.7e9},
@@ -122,7 +142,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
 
   selected_optical_medium!: {value: string, viewValue: string, capacity: number};
 
-  constructor(public router: Router, private route: ActivatedRoute, public dialog: MatDialog, public backup: BackupService, private ngZone: NgZone) { }
+  constructor(public router: Router, private route: ActivatedRoute, public dialog: MatDialog, public backup: BackupService, private ngZone: NgZone, private changeDetectorRef: ChangeDetectorRef) { }
 
   ngOnInit(): void {
     
@@ -150,12 +170,18 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     this.router.navigate(['main-menu']);
   }
 
-  goToStep2(){
+  async goToStep2(): Promise<void> {
     this.totalNumberOfDisksNeeded = this.backup.opticalMediaPartitioning.length;
+    this.originalNumberOfDisksNeeded = this.totalNumberOfDisksNeeded;
     this._disks = [...Array(this.totalNumberOfDisksNeeded).keys()];
     this.sentDiscs = Array(this.totalNumberOfDisksNeeded).fill(false);
     this.confirmedDiscs = Array(this.totalNumberOfDisksNeeded).fill(false);
     this.sentDiscPartPaths = Array(this.totalNumberOfDisksNeeded).fill(null).map(() => []);
+    // Same effective (margin-discounted) capacity partitionBackupToOpticalMedia itself planned against - see
+    // getEffectiveOpticalMediumCapacityInBytes in worker.ts. sendToImgBurn/maybeAppendOverflowDiscs must judge
+    // whether a surplus sliver fits against this exact number, never the medium's raw capacity: that margin is
+    // a general burn-safety feature, not something reserved for or spent by handling surplus slivers.
+    this.effectiveMediaCapacityInBytes = (await ipc.getEffectiveOpticalMediumCapacity(this.selected_optical_medium.capacity)).res;
     this.step='step_2'
   }
 
@@ -245,7 +271,10 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   
           const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
           infoDialog.componentInstance.title = "Backup to optical medium";
-          const info_msg = `To burn the backup to the optical medium of your choice (${this.selected_optical_medium.viewValue}) you will need ${response.res.length} discs in total.`
+          // "Estimated": the real count can still grow later, in the rare case a large file's real split turns
+          // out to need one more piece than planning predicted and that surplus doesn't fit on the disc that
+          // triggers it - see maybeAppendOverflowDiscs, which is what actually updates the count if that happens.
+          const info_msg = `To burn the backup to the optical medium of your choice (${this.selected_optical_medium.viewValue}) you will need an estimated ${response.res.length} discs in total.`
           infoDialog.componentInstance.message = info_msg;
           infoDialog.componentInstance.actionsNum = 2
           infoDialog.componentInstance.action2Label = "Cancel"
@@ -356,7 +385,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
 
-    this.goToStep2();
+    await this.goToStep2();
     let metadataJSON: string[][] = Array(this._disks.length).fill([]);
     await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPath, JSON.stringify(metadataJSON));
 
@@ -452,16 +481,51 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     // Materializes this disc's real large-file split pieces (if any), lazily, right now - this is the ONLY
     // point a large file actually gets physically split, rather than the whole job's large files all being
     // split up front before any disc is burned. The response can contain MORE entries than were requested (a
-    // rare, known boundary case surfaces one extra, unplanned piece - see materializeOpticalMediaDiscPieces's
-    // own comment) - that surplus piece belongs to THIS disc, since this disc's send action is what triggered
-    // its file's real split, so everything below is built from the full response, not from
-    // selectedRelativePaths, to make sure it's included in both the burned .ibb and the saved JSON.
+    // rare, known boundary case surfaces one extra, unplanned "sliver" piece - see
+    // materializeOpticalMediaDiscPieces's own comment): whichever disc's send action happens to trigger a
+    // given large file's real split is offered that file's sliver first, purely as a byproduct of triggering
+    // the split - not because it's guaranteed to belong there. Whether it actually ends up on THIS disc is
+    // decided below, by the capacity check.
     const realStats: filesMetadata[] = (await ipc.materializeOpticalMediaDiscPieces(this.backup.sourcePath, selectedRelativePaths)).res;
+
+    // Split the response back into what this disc's tree actually asked for and any surplus sliver(s) riding
+    // along with it (see materializeOpticalMediaDiscPieces's own comment).
+    const requestedPaths = new Set(selectedRelativePaths);
+    const normalStats = realStats.filter(e => requestedPaths.has(e.path));
+    const ownSurplusStats = realStats.filter(e => !requestedPaths.has(e.path));
+    let discUsedBytes = normalStats.reduce((sum, e) => sum + e.stats.size, 0);
+    const finalStats = normalStats.slice();
+
+    // A surplus piece is accepted onto THIS disc only if the disc's total real, materialized size still fits
+    // within effectiveMediaCapacityInBytes - the SAME margin-discounted capacity partitionBackupToOpticalMedia
+    // planned every disc against (see getEffectiveOpticalMediumCapacityInBytes in worker.ts), never the
+    // medium's raw capacity: that margin is a general burn-safety feature that applies to everything written
+    // to a disc, not something reserved for or spent by surplus slivers specifically.
+    //
+    // The candidates tried here are this disc's own fresh surplus AND any sliver an EARLIER disc's send
+    // already produced but couldn't fit at the time (pendingOverflowPieces) - not just the former. Without
+    // this, a sliver rejected by disc 1 would sit untouched until every original disc is sent and then get a
+    // brand new, almost entirely empty disc all to itself, even if disc 2 (sent right after, with real
+    // content of its own and room to spare) could easily have carried it. Trying the accumulated backlog on
+    // every subsequent disc's send - oldest first, so a longer-waiting piece isn't starved by a newer one -
+    // means a new disc only ever gets created for whatever still doesn't fit anywhere once every original
+    // disc has actually been sent (see maybeAppendOverflowDiscs). This can't eliminate the case entirely: a
+    // sliver produced by the LAST original disc sent has no later disc left to offer it to.
+    const candidateSurplusPieces = this.pendingOverflowPieces.concat(ownSurplusStats);
+    this.pendingOverflowPieces = [];
+    for (const surplusPiece of candidateSurplusPieces) {
+      if (discUsedBytes + surplusPiece.stats.size <= this.effectiveMediaCapacityInBytes) {
+        discUsedBytes += surplusPiece.stats.size;
+        finalStats.push(surplusPiece);
+      } else {
+        this.pendingOverflowPieces.push(surplusPiece);
+      }
+    }
 
     /* We rename the worker's "stats" field to match what used to come from the files-tree's own "extras" -
     same shape, now real/measured instead of an estimate. We also add the volume letter, normalized to
     OPTICAL_DRIVE_LETTER_CONVENTION (see disc-id-hash.ts for why). */
-    const selectedFiles = realStats.map(e => { return { "path": OPTICAL_DRIVE_LETTER_CONVENTION + e.path, "stats": e.stats } });
+    const selectedFiles = finalStats.map(e => { return { "path": OPTICAL_DRIVE_LETTER_CONVENTION + e.path, "stats": e.stats } });
 
     // Same disc-identification hash used during recovery (see getDiscIdHash / OpticalDiscBackupDataRetriever) -
     // computed here from the exact same OPTICAL_DRIVE_LETTER_CONVENTION-prefixed paths that are about to be written
@@ -498,17 +562,111 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       }
     });
 
-    this.sentDiscPartPaths[i] = realStats.filter(e => PART_FILE_PATTERN.test(e.path)).map(e => e.path);
+    this.sentDiscPartPaths[i] = finalStats.filter(e => PART_FILE_PATTERN.test(e.path)).map(e => e.path);
 
-    this.createIBB_file(i, realStats.map(e => e.path), this.backup.sourcePath).then(()=>{
+    this.createIBB_file(i, finalStats.map(e => e.path), this.backup.sourcePath).then(async ()=>{
       this.sentDiscs[i] = true;
       loadingDialogRef.close();
+      // Now that this disc has actually been sent, check whether every originally-planned disc has (so no
+      // further surplus slivers can still turn up) and, if pendingOverflowPieces is non-empty, append however
+      // many extra discs are needed to burn them too - see maybeAppendOverflowDiscs's own comment.
+      await this.maybeAppendOverflowDiscs();
     }).catch((error)=>{
       loadingDialogRef.close();
       const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
       errorDialog.componentInstance.title = "Error";
       errorDialog.componentInstance.message = `An error occurred while creating the ImgBurn project: ${error}`;
     })
+  }
+
+  /** Once every originally-planned disc has been sent to ImgBurn (so no more surplus slivers can still turn
+   *  up - see the capacity check in sendToImgBurn), packs any pendingOverflowPieces onto one or more freshly
+   *  appended discs so the user still gets to burn them, using a plain sequential-fill packer (these are at
+   *  most a handful of tiny sliver pieces - the sophistication of partitionBackupToOpticalMedia's own
+   *  First-Fit-Decreasing packer buys nothing here). By the time this runs, most slivers have usually already
+   *  been absorbed into a later original disc's own send (see the candidateSurplusPieces handling in
+   *  sendToImgBurn) - this is the last resort for whatever is still left over once there is no later original
+   *  disc left to offer it to. Each new disc goes through the exact same
+   *  select-files/"Send to ImgBurn"/"Confirm disc burned" lifecycle as any other - the pieces are already real,
+   *  materialized files by this point, so selecting and sending one merely re-discovers it as "already
+   *  materialized" (see materializeOpticalMediaDiscPieces), it is never split again.
+   *
+   *  This does mean the user can end up burning more discs than the number they were originally told they'd
+   *  need up front - an acceptable outcome of an already very rare case, but the user is told about it (see
+   *  the info dialog below) before the stepper grows, rather than just finding an extra step has appeared.
+   *
+   *  Safe to call after every disc send; it only does anything the first time both conditions are true, since
+   *  draining pendingOverflowPieces here is what stops it from doing anything again for the same pieces. */
+  private async maybeAppendOverflowDiscs(): Promise<void> {
+    const everyOriginalDiscSent = this.sentDiscs.slice(0, this.originalNumberOfDisksNeeded).every(sent => sent);
+    if (!everyOriginalDiscSent || this.pendingOverflowPieces.length === 0) {
+      return;
+    }
+
+    const overflowPartitions: filesMetadata[][] = [];
+    let currentPartition: filesMetadata[] = [];
+    let currentPartitionBytes = 0;
+    for (const piece of this.pendingOverflowPieces) {
+      if (currentPartition.length > 0 && currentPartitionBytes + piece.stats.size > this.effectiveMediaCapacityInBytes) {
+        overflowPartitions.push(currentPartition);
+        currentPartition = [];
+        currentPartitionBytes = 0;
+      }
+      currentPartition.push(piece);
+      currentPartitionBytes += piece.stats.size;
+    }
+    if (currentPartition.length > 0) {
+      overflowPartitions.push(currentPartition);
+    }
+    this.pendingOverflowPieces = [];
+
+    const previousTotal = this.totalNumberOfDisksNeeded;
+    const newTotal = previousTotal + overflowPartitions.length;
+
+    // Tell the user before the stepper grows underneath them, not after - a new step silently appearing in the
+    // list would be a far more confusing way to find out the estimate changed than being told upfront why it
+    // did. Only "Ok" is offered (nothing to decide here - the extra disc(s) need burning regardless).
+    await new Promise<void>((resolve) => {
+      const infoDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
+      infoDialog.disableClose = true;
+      infoDialog.componentInstance.title = "Disc count updated";
+      infoDialog.componentInstance.message =
+        `The estimated number of discs needed has changed: it was ${previousTotal}, but a rare file-splitting ` +
+        `edge case means ${overflowPartitions.length} more disc(s) are needed to fit everything. You will now ` +
+        `need ${newTotal} discs in total.`;
+      infoDialog.componentInstance.actionsNum = 1;
+      infoDialog.componentInstance.action1Label = "Ok";
+      infoDialog.componentInstance.action1Callback = () => {
+        infoDialog.close();
+        resolve();
+      }
+    });
+
+    const firstNewDiscIndex = this.totalNumberOfDisksNeeded;
+    for (const partition of overflowPartitions) {
+      this.backup.opticalMediaPartitioning.push(partition);
+      this.sentDiscs.push(false);
+      this.confirmedDiscs.push(false);
+      this.sentDiscPartPaths.push([]);
+    }
+    this.totalNumberOfDisksNeeded = newTotal;
+    this._disks = [...Array(this.totalNumberOfDisksNeeded).keys()];
+
+    // Wait for the newly appended mat-step/files-tree elements (one per new disc index just added to _disks)
+    // to actually mount before populating them - filesTrees (a QueryList) only reflects the new DOM after
+    // Angular re-checks the view, which detectChanges forces synchronously right here rather than waiting on
+    // zone.js to get around to it on its own.
+    const treesMounted = firstValueFrom(this.filesTrees.changes);
+    this.changeDetectorRef.detectChanges();
+    await treesMounted;
+
+    const treesArray = this.filesTrees.toArray();
+    for (let discIndex = firstNewDiscIndex; discIndex < this.totalNumberOfDisksNeeded; discIndex++) {
+      const partition = this.backup.opticalMediaPartitioning[discIndex];
+      await treesArray[discIndex].setTreeData(partition.map(x => x.path), partition.map(x => x.stats));
+      treesArray[discIndex].expandAllNodes();
+      treesArray[discIndex].selectAllNodes();
+    }
   }
 
   /** Marks disc i as confirmed-burned: deletes its real materialized split pieces (if any) from the temp

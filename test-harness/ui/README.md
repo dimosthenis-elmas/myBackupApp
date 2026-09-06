@@ -21,7 +21,12 @@ machinery to grab screenshots for the top-level README instead of verifying anyt
 - `test-add-missing-files.js` — the "Add missing files to optical media cold storage" wizard - see its own
   section below.
 
-**All seven pause 5 seconds after every click** (`WATCH_PAUSE_MS` near the top of each script's `step()` helper) -
+An eighth script, `test-backup-to-optical-media-overflow-disc.js`, covers a specific edge case within the
+"Backup to optical media" wizard rather than a whole feature - see its own section below. It deliberately does
+NOT follow the shared conventions described in this intro (own fixture-building, no `--random-tree`/`--json-tree`
+switch, a shorter click pause) since it's a narrow, mechanism-focused test rather than a full click-through demo.
+
+**All seven of the main scripts pause 5 seconds after every click** (`WATCH_PAUSE_MS` near the top of each script's `step()` helper) -
 purely so you can actually watch each step land on screen as it runs, not because the app needs it. Lower it (or
 remove the `await new Promise(...)` line) if you'd rather they run at full speed.
 
@@ -339,6 +344,28 @@ was confirmed first) is a real, explicit part of this feature's design that conf
 actually exercise. For each disc it checks that confirming deletes ONLY that disc's own real split-piece files
 (tracked per-disc, never the flattened all-discs list) - a different, not-yet-confirmed disc sharing the same
 source file must keep its own pending pieces untouched.
+
+## `test-backup-to-optical-media-overflow-disc.js`
+
+```
+node test-harness/ui/test-backup-to-optical-media-overflow-disc.js
+```
+
+Covers the capacity-safe surplus-sliver handling added to `sendToImgBurn`/`maybeAppendOverflowDiscs` in
+`backup-to-optical-media.component.ts` - a large-file split can rarely produce one real piece more than planned
+(see `worker-ipc/test-large-file-split-boundary.js`), and that surplus is no longer just attached to whichever
+disc triggers it regardless of whether it fits. Two phases, each its own fixture/app launch: **overflow** (the
+surplus fits nowhere, so a new disc is appended and the "Disc count updated" dialog appears before the stepper
+grows) and **absorption** (the surplus is rejected by the disc that triggers it, but a later, roomier disc picks
+it up instead - no new disc, no dialog).
+
+Uses a stub 7-Zip (redirected the same way `worker-ipc/test-large-file-split-boundary.js`'s "Part 2" does) that
+deliberately produces one extra piece of a size THIS script chooses, instead of relying on real 7-Zip's own tiny,
+unpredictable overhead - see the script's own header comment for exactly why (real overhead is nowhere near big
+enough to force either scenario deterministically) and for the full sizing math (both discs' spare room, and why
+send order doesn't matter here). Verifies the saved cold storage metadata JSON's exact per-disc entries, cross-
+checks the real `.ibb` files' own entry counts, and confirms every disc burned leaves no leftover split-piece
+files behind.
 
 ## `test-add-missing-files.js`
 

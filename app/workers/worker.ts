@@ -127,7 +127,7 @@ const isPathStrictlyInside = function (candidatePath: string, containerPath: str
 /** Matches this app's own large-file split volumes (e.g. "video.mp4.part.001") - one of the two kinds of file
  *  clearTempDataDirectory is willing to delete (see IBB_PROJECT_FILE_PATTERN for the other). Kept identical to
  *  the pattern used everywhere else in the app that recognizes these (e.g. groupSelectedPartialFiles in
- *  optical-disc-backup-data-retriever.component.ts, and checkForLeftoverPartialFilesInTempDirectory in
+ *  optical-disc-backup-data-retriever.component.ts, and clearTempDataDirectoryOnStartup in
  *  app.component.ts). */
 const PART_FILE_PATTERN = /\.part\.\d+$/i;
 
@@ -339,6 +339,21 @@ const readConfig = async function (): Promise<{ [key: string]: any }> {
   } catch (error) {
     return {};
   }
+}
+
+/** Applies config.json's maxOpticalMediumRepletionRatio to a medium's rated capacity, so a disc is never
+ *  planned to be filled all the way to its rated capacity. This is a general burn-safety margin - it exists
+ *  because packing right up to a medium's rated capacity is riskier in general (filesystem/UDF overhead,
+ *  media-to-media variance in actually-writable capacity, etc.), not because of any one particular feature.
+ *  In particular, this margin is NOT specifically reserved for or "spent by" large-file-split-piece surplus
+ *  slivers (see estimateLargeFileSplitPieces/materializeOpticalMediaDiscPieces) - callers reasoning about
+ *  whether something fits on a disc, including a surplus sliver, must always compare against this effective
+ *  capacity, never the medium's raw rated capacity, exactly like any other content being packed onto a disc.
+ *  Clamped to a hard maximum of 0.99 regardless of what's configured, so a config value close to or at 1.0 can
+ *  never remove this margin entirely. */
+const getEffectiveOpticalMediumCapacityInBytes = async function (rawCapacityInBytes: number): Promise<number> {
+  const parsedConfig = await readConfig();
+  return rawCapacityInBytes * Math.min(parsedConfig.maxOpticalMediumRepletionRatio, 0.99);
 }
 
 /** Checks the required executable paths in config.json (see REQUIRED_CONFIG_EXECUTABLE_PATHS) and reports
@@ -709,13 +724,9 @@ const partitionArrayBasedOnFilter = <T,>(
 const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, splitLargeFiles:boolean=false, filesMetadata?:filesMetadata[]): Promise<ColdStorageMetadata>{
   process.env._stop="NoStop";
 
-  //be on the save side, fill the disk at most up to a certain percentage (e.g. 95% or something).
-  const configJSON = fs.readFileSync(node_path_module.join(__dirname, `../../appData/config.json`));
-  const parsedConfig = JSON.parse(configJSON);
-  // Clamped to a hard maximum of 0.99 regardless of what's configured - this margin is what absorbs the small,
-  // unavoidable size uncertainty in estimateLargeFileSplitPieces' predictions (see its own comment), and a
-  // config value close to or at 1.0 would silently erase the very slack that safety net depends on.
-  mediaCapacityInBytes = mediaCapacityInBytes * Math.min(parsedConfig.maxOpticalMediumRepletionRatio, 0.99);
+  // Be on the safe side, fill the disk at most up to a certain percentage (e.g. 95% or something) - see
+  // getEffectiveOpticalMediumCapacityInBytes's own comment for why this margin exists.
+  mediaCapacityInBytes = await getEffectiveOpticalMediumCapacityInBytes(mediaCapacityInBytes);
   // Routes through ensureTempDataDirectoryIsAppOwned rather than just creating the directory on demand - see
   // its doc comment for why (the startup check normally catches an unowned directory before this is ever
   // reached - this is defense-in-depth for cacheDataDirectoryPath being changed to something pre-existing
@@ -946,11 +957,13 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
  *  freshly recomputed estimateLargeFileSplitPieces(realFileSize) for that same file (see that function's own
  *  comment for why this can, rarely, disagree with what planning predicted):
  *   - Equal: nothing further to do.
- *   - Real count is exactly one more than estimated: the one extra, unplanned piece is appended to the
- *     returned results too, even though it wasn't requested - the caller builds a disc's saved metadata from
- *     whatever this function returns, so the surplus rides along automatically and gets attached to whichever
- *     disc's send-to-ImgBurn action triggered this real split (always safe: that disc has definitely not been
- *     burned/confirmed yet). Reported exactly once, by the one call that actually performed the split.
+ *   - Real count is exactly one more than estimated: the one extra, unplanned piece ("sliver") is appended to
+ *     the returned results too, even though it wasn't requested - reported exactly once, by the one call that
+ *     actually performed the split. This function does NOT check whether that extra piece actually fits on
+ *     the disc whose send-to-ImgBurn action triggered the split - it has no notion of disc capacity at all.
+ *     That check, and what happens to a sliver that doesn't fit (deferred onto a later, appended disc rather
+ *     than silently written past the disc's margin-discounted capacity), is entirely the caller's
+ *     responsibility - see sendToImgBurn/maybeAppendOverflowDiscs in backup-to-optical-media.component.ts.
  *   - Any other difference: throws - genuinely unexpected, not the one known/reconciled case. */
 const materializeOpticalMediaDiscPieces = async function (dirPath: string, paths: Array<string>): Promise<filesMetadata[]> {
   const ownership = await ensureTempDataDirectoryIsAppOwned();
@@ -1968,6 +1981,14 @@ const init = function() : void
           }
         }).catch((err)=>{
           ipc.sendResponseToMain({ key: 'get-temp-data-directory-path', res: err, status: "error" });
+        });
+        break;
+      case 'get-effective-optical-medium-capacity':
+        console.log("(worker) in get-effective-optical-medium-capacity")
+        getEffectiveOpticalMediumCapacityInBytes(arg.params.rawCapacityInBytes).then((d)=>{
+          ipc.sendResponseToMain({ key: 'get-effective-optical-medium-capacity', res: d, status: "completed" });
+        }).catch((err)=>{
+          ipc.sendResponseToMain({ key: 'get-effective-optical-medium-capacity', res: err, status: "error" });
         });
         break;
       case 'read-json-from-disk':
