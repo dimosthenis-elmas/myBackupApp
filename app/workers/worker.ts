@@ -1820,6 +1820,24 @@ const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>
 }
 
 
+/** Launches ImgBurn (configured via config.json's imgBurnExecutablePath) against an already-written .ibb
+ *  project file - shared by createIBB_file (right after writing a brand new one) and
+ *  openExistingIBBFileInImgBurn (reopening one from an earlier send, completely unchanged) so there is a
+ *  single place that knows how ImgBurn is actually invoked. Deliberately not awaited by either caller - both
+ *  only need ImgBurn to have been STARTED, never for the user to have finished with it, before they themselves
+ *  report back as done (see the matching comment on the component side, e.g. createIBB_file in
+ *  backup-to-optical-media.component.ts). */
+const invokeImgBurnOnIBBFile = async function (pathToIBBFile: string): Promise<void> {
+  const util = require('util');
+  const exec = util.promisify(require('child_process').exec);
+  const configJSON = fs.readFileSync(node_path_module.join(__dirname, `../../appData/config.json`));
+  const imgBurnExecutablePath = JSON.parse(configJSON).imgBurnExecutablePath;
+
+  const { stdout, stderr } = await exec(`"${imgBurnExecutablePath}" /MODE BUILD /SRC ${pathToIBBFile}`);
+  console.log('stdout:', stdout);
+  console.log('stderr:', stderr);
+}
+
 /*
 A .ibb file is produced by ImgBurn in order to specify the files to be written to an optical disk.
 This function (createIBB_file) creates such a .ibb  for the files and directories specified in paths: Array<string>.
@@ -1887,24 +1905,46 @@ const createIBB_file = async function(disk_id: number, paths: Array<string>, sou
     { regEx: /VolumeLabel_UDF=/, dataToInsert: 'VolumeLabel_UDF=' + resolvedVolumeLabel }
   ]).then(() => {
       // Now the IBB file has been created. Open ImgBurn using this file as source list.
-      const util = require('util');
-      const exec = util.promisify(require('child_process').exec);
-
-      async function command() {
-        const configJSON = fs.readFileSync(node_path_module.join(__dirname, `../../appData/config.json`));
-        const imgBurnExecutablePath = JSON.parse(configJSON).imgBurnExecutablePath;
-
-        const { stdout, stderr } = await exec(`"${imgBurnExecutablePath}" /MODE BUILD /SRC ${pathToIBBFile}`);
-        console.log('stdout:', stdout);
-        console.log('stderr:', stderr);
-      }
-      command();
-
+      invokeImgBurnOnIBBFile(pathToIBBFile);
   }).catch(err => {
     console.log(err);
   });
 
   return logs
+}
+
+/** Checks whether this exact disc (disk_id, within this job's own session subfolder - see
+ *  SESSION_FOLDER_NAME_PATTERN's own comment) already has a Disk_<disk_id+1>.ibb file from an earlier send -
+ *  i.e. "Send to ImgBurn" is being clicked again for a disc that was already sent once before, during this
+ *  same job - and if so, just reopens ImgBurn on that EXACT SAME, already-built project file, rather than
+ *  recomputing anything (the disc's selection, its materialized split pieces, the cold storage metadata JSON
+ *  entry, or the .ibb file itself).
+ *
+ *  This matters because redoing the whole pipeline on a resend used to risk disagreeing with the first send:
+ *  which already-materialized "surplus" split-piece sliver(s) are still unclaimed (see the capacity check in
+ *  sendToImgBurn/pendingOverflowPieces in both wizard components) can change between two sends of the same
+ *  disc, since other discs may have been sent in between and absorbed some of them. A resend that recomputed
+ *  its own selection could then end up with a DIFFERENT surplus piece than the first send did, silently
+ *  orphaning the first send's own piece (never referenced again, so confirmDiscBurned would never delete it).
+ *  Reopening the untouched .ibb file sidesteps this entirely - nothing is recomputed, so there is nothing that
+ *  can disagree with the first send.
+ *
+ *  Returns `{opened: false, ...}` - not an error - when no such file exists yet; the caller is expected to fall
+ *  back to the normal, full pipeline in that case, which is always true for a disc's first send. */
+const openExistingIBBFileInImgBurn = async function (sessionId: string, disk_id: number): Promise<{ opened: boolean, message: string }> {
+  assertValidSessionId(sessionId);
+  const ownership = await ensureTempDataDirectoryIsAppOwned();
+  if (!ownership.ok) {
+    return { opened: false, message: 'Refusing to look for an existing .ibb file: ' + ownership.message };
+  }
+
+  const pathToIBBFile = node_path_module.join(ownership.path, sessionId, `Disk_${disk_id + 1}.ibb`);
+  if (!fs.existsSync(pathToIBBFile)) {
+    return { opened: false, message: 'No existing .ibb file found for this disc yet - this must be its first send.' };
+  }
+
+  invokeImgBurnOnIBBFile(pathToIBBFile);
+  return { opened: true, message: 'Reopened the existing .ibb file for this disc in ImgBurn, unchanged.' };
 }
 
 /** Applies each of `substitutions`, in order, to the .ibb template at `templateFilename`, and writes the
@@ -2022,6 +2062,14 @@ const init = function() : void
           }
         }).catch((err)=>{
           ipc.sendResponseToMain({ key: 'create-IBB-file', res: err, status: "error" });
+        });
+        break;
+      case 'open-existing-ibb-file':
+        console.log("(worker) in open-existing-ibb-file")
+        openExistingIBBFileInImgBurn(arg.params.sessionId, arg.params.disk_id).then((d)=>{
+          ipc.sendResponseToMain({ key: 'open-existing-ibb-file', res: d, status: "completed" });
+        }).catch((err)=>{
+          ipc.sendResponseToMain({ key: 'open-existing-ibb-file', res: err, status: "error" });
         });
         break;
       case 'materialize-optical-media-disc-pieces':

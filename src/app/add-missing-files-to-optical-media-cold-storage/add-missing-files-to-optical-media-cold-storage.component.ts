@@ -122,6 +122,13 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    *  touches the temp directory (planning, materializing split pieces, creating .ibb files), so they all agree
    *  on the exact same isolated subfolder. */
   private tempSessionId!: string;
+  /** True from the moment partition() starts (past its initial validation) until it returns or throws - guards
+   *  against a double-click on step_3's "Next" (nothing in the template disables that button while this is in
+   *  flight) running two overlapping partition() calls, which could otherwise leave tempSessionId and the
+   *  eventually-assigned this.partitions out of sync with each other (whichever call's session id was set last
+   *  vs. whichever call's result was assigned last, independently, since each happens on the far side of its
+   *  own separate await). */
+  private isPartitioning = false;
   isLinear = false;
   step='step_1';
   odbr_ref!: OpticalDiscBackupDataRetriever;
@@ -131,6 +138,15 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   /** Whether disc i (0-based within this.partitions, i.e. the NEW discs being added) has been sent to ImgBurn
    *  at least once yet - gates "Confirm disc burned". */
   public sentDiscs: boolean[] = [];
+  /** True from the moment sendToImgBurn(i) starts until it's fully done (including the fire-and-forget
+   *  createIBB_file chain, now awaited - see sendToImgBurn's own comment) - guards against a double-click on
+   *  "Send disk i+1 to ImgBurn" for the SAME disc (nothing in the template disables that button while a send
+   *  for it is in flight) running two overlapping sends before the first one has even written its .ibb file
+   *  yet, which could otherwise trigger two concurrent real 7-Zip splits of the same large file into the same
+   *  destination (materializeOpticalMediaDiscPieces's own existence check is not itself a lock). Does not block
+   *  sending a DIFFERENT disc at the same time - that's fine, each disc's send is independent. Same mechanism
+   *  as backup-to-optical-media.component.ts's identical field. */
+  private sendingDiscs: boolean[] = [];
   /** Whether the user has confirmed disc i was actually burned - see confirmDiscBurned(). Intentionally pure
    *  in-memory state, never persisted: if the app closes mid-job, the user starts over. That is an explicit
    *  decision (no resume support), not an oversight - please don't "fix" this into a persistence feature. */
@@ -499,6 +515,10 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   }
 
   async partition(){
+    // Guards against a double-click on step_3's "Next" (see isPartitioning's own doc comment) running two
+    // overlapping calls to this method.
+    if (this.isPartitioning) { return; }
+
     if (!this.coldStorageCollectionName.trim()) {
       const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
       infoDialog.disableClose = true;
@@ -510,72 +530,77 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       return;
     }
 
-    // Ask where to save the updated metadata JSON before doing any of the (potentially slow) partitioning
-    // work, so a canceled save dialog doesn't waste it. Defaults to a name/location distinct from the original
-    // externalMetadataJSONpath, and confirms before letting the user overwrite it anyway - see
-    // promptForUpdatedMetadataSavePath - so the original stays available (e.g. for testing) unless they really
-    // mean to replace it.
-    const chosenPath = await this.promptForUpdatedMetadataSavePath();
-    if (!chosenPath) {
-      return;
-    }
-    this.coldStorageMetadataJSONPathToSave = chosenPath;
-
-    let loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
-    let selectedPaths = this.filesTree.getSelectedData().map((m)=>{return this.backup.targetPath.concat(m)});
-
-    let selectedPathsWithMetadata: filesMetadata[] = [];
-    for (let index = 0; index < selectedPaths.length; index++) {
-      let itm = this.masterPathsWithStats.find((o)=> o.path==selectedPaths[index]);
-      if(itm!==undefined){
-        selectedPathsWithMetadata.push(itm);
+    this.isPartitioning = true;
+    try {
+      // Ask where to save the updated metadata JSON before doing any of the (potentially slow) partitioning
+      // work, so a canceled save dialog doesn't waste it. Defaults to a name/location distinct from the original
+      // externalMetadataJSONpath, and confirms before letting the user overwrite it anyway - see
+      // promptForUpdatedMetadataSavePath - so the original stays available (e.g. for testing) unless they really
+      // mean to replace it.
+      const chosenPath = await this.promptForUpdatedMetadataSavePath();
+      if (!chosenPath) {
+        return;
       }
+      this.coldStorageMetadataJSONPathToSave = chosenPath;
+
+      let loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+      let selectedPaths = this.filesTree.getSelectedData().map((m)=>{return this.backup.targetPath.concat(m)});
+
+      let selectedPathsWithMetadata: filesMetadata[] = [];
+      for (let index = 0; index < selectedPaths.length; index++) {
+        let itm = this.masterPathsWithStats.find((o)=> o.path==selectedPaths[index]);
+        if(itm!==undefined){
+          selectedPathsWithMetadata.push(itm);
+        }
+      }
+
+      //console.log(selectedPaths);
+
+      //console.log(this.masterPathsWithStats);
+      console.log(selectedPathsWithMetadata);
+
+      // Generated once per job (partition() is only ever called once per job - unlike backup-to-optical-
+      // media.component.ts's WriteToOpticalMediaProceed, there is no "try without splitting, retry with
+      // splitting" chain here to worry about reusing the same id across).
+      this.tempSessionId = 'session-' + Date.now();
+
+      // partitionBackupToOpticalMedia now plans using fast size ESTIMATES for any large-file split pieces
+      // (never invoking 7-Zip here) - the real split, and this.partitions' real sizes, only happen later, lazily,
+      // disc by disc, in sendToImgBurn - see its own comment and materializeOpticalMediaDiscPieces in worker.ts.
+      this.partitions =  (await ipc.partitionBackupToOpticalMedia(this.backup.targetPath, this.selected_optical_medium.capacity, true, this.tempSessionId, selectedPathsWithMetadata)).res;
+      console.log(this.partitions)
+
+      // Same effective (margin-discounted) capacity partitionBackupToOpticalMedia itself planned against - see
+      // getEffectiveOpticalMediumCapacityInBytes in worker.ts. sendToImgBurn/maybeAppendOverflowDiscs must judge
+      // whether a surplus sliver fits against this exact number, never the medium's raw capacity: that margin is
+      // a general burn-safety feature, not something reserved for or spent by handling surplus slivers.
+      this.effectiveMediaCapacityInBytes = (await ipc.getEffectiveOpticalMediumCapacity(this.selected_optical_medium.capacity)).res;
+      this.originalNumberOfDisksNeeded = this.partitions.length;
+
+      // Scaffold write: existing discs unchanged, plus one empty placeholder per new disc. Each new disc's real
+      // entry is patched in individually, in sendToImgBurn, once its pieces are actually materialized with real
+      // (not estimated) sizes - mirrors backup-to-optical-media.component.ts's identical scaffold-then-incremental
+      // pattern, rather than writing every new disc's (still-estimated) data in one shot up front, before any of
+      // them have actually been burned.
+      const scaffold: ColdStorageMetadata = (JSON.parse(JSON.stringify(this.entireColdStorageMetadata)) as ColdStorageMetadata)
+        .concat(Array(this.partitions.length).fill([]));
+      await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPathToSave, JSON.stringify(scaffold, null, 2));
+
+      this._disks = [...Array(this.partitions.length).keys()]
+      this.sentDiscs = Array(this.partitions.length).fill(false);
+      this.sendingDiscs = Array(this.partitions.length).fill(false);
+      this.confirmedDiscs = Array(this.partitions.length).fill(false);
+      this.sentDiscPartPaths = Array(this.partitions.length).fill(null).map(() => []);
+      this.step = "step_5";
+      loadingDialogRef.close();
+
+      let loadingDialogRef2 = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '600px'});
+      loadingDialogRef2.componentInstance.title = "Cold storage metadata prepared";
+      loadingDialogRef2.componentInstance.message = `A scaffold for the updated cold storage metadata (containing placeholders for the new missing files' discs) has been saved to ${this.coldStorageMetadataJSONPathToSave}.
+      It will be filled in, one disc at a time, as you send each new disc to ImgBurn below - once every disc has been sent, you may keep this .json file for future updates to your cold storage without having to input all the optical discs one by one again.`;
+    } finally {
+      this.isPartitioning = false;
     }
-
-    //console.log(selectedPaths);
-
-    //console.log(this.masterPathsWithStats);
-    console.log(selectedPathsWithMetadata);
-
-    // Generated once per job (partition() is only ever called once per job - unlike backup-to-optical-
-    // media.component.ts's WriteToOpticalMediaProceed, there is no "try without splitting, retry with
-    // splitting" chain here to worry about reusing the same id across).
-    this.tempSessionId = 'session-' + Date.now();
-
-    // partitionBackupToOpticalMedia now plans using fast size ESTIMATES for any large-file split pieces
-    // (never invoking 7-Zip here) - the real split, and this.partitions' real sizes, only happen later, lazily,
-    // disc by disc, in sendToImgBurn - see its own comment and materializeOpticalMediaDiscPieces in worker.ts.
-    this.partitions =  (await ipc.partitionBackupToOpticalMedia(this.backup.targetPath, this.selected_optical_medium.capacity, true, this.tempSessionId, selectedPathsWithMetadata)).res;
-    console.log(this.partitions)
-
-    // Same effective (margin-discounted) capacity partitionBackupToOpticalMedia itself planned against - see
-    // getEffectiveOpticalMediumCapacityInBytes in worker.ts. sendToImgBurn/maybeAppendOverflowDiscs must judge
-    // whether a surplus sliver fits against this exact number, never the medium's raw capacity: that margin is
-    // a general burn-safety feature, not something reserved for or spent by handling surplus slivers.
-    this.effectiveMediaCapacityInBytes = (await ipc.getEffectiveOpticalMediumCapacity(this.selected_optical_medium.capacity)).res;
-    this.originalNumberOfDisksNeeded = this.partitions.length;
-
-    // Scaffold write: existing discs unchanged, plus one empty placeholder per new disc. Each new disc's real
-    // entry is patched in individually, in sendToImgBurn, once its pieces are actually materialized with real
-    // (not estimated) sizes - mirrors backup-to-optical-media.component.ts's identical scaffold-then-incremental
-    // pattern, rather than writing every new disc's (still-estimated) data in one shot up front, before any of
-    // them have actually been burned.
-    const scaffold: ColdStorageMetadata = (JSON.parse(JSON.stringify(this.entireColdStorageMetadata)) as ColdStorageMetadata)
-      .concat(Array(this.partitions.length).fill([]));
-    await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPathToSave, JSON.stringify(scaffold, null, 2));
-
-    this._disks = [...Array(this.partitions.length).keys()]
-    this.sentDiscs = Array(this.partitions.length).fill(false);
-    this.confirmedDiscs = Array(this.partitions.length).fill(false);
-    this.sentDiscPartPaths = Array(this.partitions.length).fill(null).map(() => []);
-    this.step = "step_5";
-    loadingDialogRef.close();
-
-    let loadingDialogRef2 = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '600px'});
-    loadingDialogRef2.componentInstance.title = "Cold storage metadata prepared";
-    loadingDialogRef2.componentInstance.message = `A scaffold for the updated cold storage metadata (containing placeholders for the new missing files' discs) has been saved to ${this.coldStorageMetadataJSONPathToSave}.
-    It will be filled in, one disc at a time, as you send each new disc to ImgBurn below - once every disc has been sent, you may keep this .json file for future updates to your cold storage without having to input all the optical discs one by one again.`;
-
   }
 
   /** Unlike backup-to-optical-media.component.ts (a brand new cold storage, always starting at disc 1), discs
@@ -609,151 +634,174 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   }
 
   async sendToImgBurn(i: number){
-    let volumeFilePathsWithMetadata: Array<filesMetadata> = JSON.parse(JSON.stringify(this.partitions[i]))
-    // Trailing backslash ensured - see the identical fix/comment on tempPath in partition() above for why.
-    let tempDataDirectoryPath = (await ipc.getTempDataDirectoryPath()).res;
-    if (tempDataDirectoryPath[tempDataDirectoryPath.length - 1] != '\\') { tempDataDirectoryPath += '\\'; }
-    // This job's own session subfolder (see tempSessionId's own doc comment) - partitionBackupToOpticalMedia's
-    // predicted split-piece paths already have this baked into their absolute path, so it must be trimmed off
-    // here too, or it would leak into bareRelativePaths below (which must stay session-agnostic - see
-    // SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts for why that matters).
-    tempDataDirectoryPath += this.tempSessionId + '\\';
-    const nextDiscNumber = this.getNextDiscNumber(i);
-
-    /* the response from the worker returns the full paths relative to the host file system.
-      Since we are indifferent for the full system file structure we trim the 'this.backup.sourcePath'
-      part from all paths. This way our root becomes the directory chosen by the user in the dialog.
-      In case there are large files which have been splitted, the splits are stored in the temp data
-      directory which is different from the source directory (this.backup.targetPath), so both prefixes are
-      trimmed - the same "either/or" idiom this component already used before this disc's pieces could be
-      materialized lazily. */
-    const bareRelativePaths: string[] = volumeFilePathsWithMetadata.map((a: filesMetadata) =>
-      a.path.replace(this.backup.targetPath, "").replace(tempDataDirectoryPath, ""));
-
-    // No disc this wizard ever creates - neither an originally-planned one (partitionBackupToOpticalMedia never
-    // produces an empty partition) nor an overflow one (maybeAppendOverflowDiscs only ever appends non-empty
-    // partitions) - should legitimately have zero files here. Burning it anyway would silently produce a
-    // useless, empty .ibb and leave its real piece file undeleted forever (confirmDiscBurned only deletes what
-    // sentDiscPartPaths recorded, which would also be empty). Fail loudly and let the user retry instead.
-    if (bareRelativePaths.length === 0) {
-      const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
-      errorDialog.componentInstance.title = "Error";
-      errorDialog.componentInstance.message = `Disc ${i + 1} has no files to send - this should never happen. Please try clicking "Send to ImgBurn" again.`;
-      errorDialog.componentInstance.actionsNum = 1;
-      errorDialog.componentInstance.action1Label = "Ok";
-      errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
-      return;
-    }
-
-    // Materializes this disc's real large-file split pieces (if any), lazily, right now - this is the ONLY
-    // point a large file actually gets physically split, rather than the whole job's large files all being
-    // split up front before any disc is burned. The response can contain MORE entries than were requested (a
-    // rare, known boundary case surfaces one extra, unplanned "sliver" piece - see
-    // materializeOpticalMediaDiscPieces's own comment): whichever disc's send action happens to trigger a
-    // given large file's real split is offered that file's sliver first, purely as a byproduct of triggering
-    // the split - not because it's guaranteed to belong there. Whether it actually ends up on THIS disc is
-    // decided below, by the capacity check.
-    const realStats: filesMetadata[] = (await ipc.materializeOpticalMediaDiscPieces(this.backup.targetPath, bareRelativePaths, this.tempSessionId)).res;
-
-    // Split the response back into what this disc was actually planned to hold and any surplus sliver(s)
-    // riding along with it (see materializeOpticalMediaDiscPieces's own comment).
-    const requestedPaths = new Set(bareRelativePaths);
-    const normalStats = realStats.filter(e => requestedPaths.has(e.path));
-    const ownSurplusStats = realStats.filter(e => !requestedPaths.has(e.path));
-    let discUsedBytes = normalStats.reduce((sum, e) => sum + e.stats.size, 0);
-    const finalStats = normalStats.slice();
-
-    // A surplus piece is accepted onto THIS disc only if the disc's total real, materialized size still fits
-    // within effectiveMediaCapacityInBytes - the SAME margin-discounted capacity partitionBackupToOpticalMedia
-    // planned every disc against (see getEffectiveOpticalMediumCapacityInBytes in worker.ts), never the
-    // medium's raw capacity: that margin is a general burn-safety feature that applies to everything written
-    // to a disc, not something reserved for or spent by surplus slivers specifically.
-    //
-    // The candidates tried here are this disc's own fresh surplus AND any sliver an EARLIER disc's send
-    // already produced but couldn't fit at the time (pendingOverflowPieces) - not just the former. Without
-    // this, a sliver rejected by disc 1 would sit untouched until every original new disc is sent and then
-    // get a brand new, almost entirely empty disc all to itself, even if disc 2 (sent right after, with real
-    // content of its own and room to spare) could easily have carried it. Trying the accumulated backlog on
-    // every subsequent disc's send - oldest first, so a longer-waiting piece isn't starved by a newer one -
-    // means a new disc only ever gets created for whatever still doesn't fit anywhere once every originally-
-    // planned new disc has actually been sent (see maybeAppendOverflowDiscs). This can't eliminate the case
-    // entirely: a sliver produced by the LAST originally-planned disc sent has no later disc left to offer it to.
-    const candidateSurplusPieces = this.pendingOverflowPieces.concat(ownSurplusStats);
-    this.pendingOverflowPieces = [];
-    for (const surplusPiece of candidateSurplusPieces) {
-      if (discUsedBytes + surplusPiece.stats.size <= this.effectiveMediaCapacityInBytes) {
-        discUsedBytes += surplusPiece.stats.size;
-        finalStats.push(surplusPiece);
-      } else {
-        this.pendingOverflowPieces.push(surplusPiece);
-      }
-    }
-
-    // Same disc-identification hash used during recovery (see getDiscIdHash / OpticalDiscBackupDataRetriever) -
-    // computed from the exact same normalization used when writing this disc's entry into the cold storage
-    // metadata JSON below (this.opticalDiscVolumeLetter), so the label the user writes on the physical disc now
-    // will match what the app later checks against when that disc is inserted for a recovery.
-    const discIdHash = getDiscIdHash(
-      finalStats.map((e) => this.opticalDiscVolumeLetter + e.path).sort().toString()
-    );
-
-    await new Promise<void>((resolve) => {
-      const labelDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
-      labelDialog.disableClose = true;
-      labelDialog.componentInstance.title = "Disc label";
-      labelDialog.componentInstance.message =
-        `Please physically label this disc as disc ${nextDiscNumber}, with ID hash: ${discIdHash}. Both are ` +
-        `needed to identify this disc correctly during a future recovery.`;
-      labelDialog.componentInstance.actionsNum = 1;
-      labelDialog.componentInstance.action1Label = "Ok";
-      labelDialog.componentInstance.action1Callback = () => {
-        labelDialog.close();
-        resolve();
-      }
-    });
-
-    const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
-
-    // Enqueue this disc's read-modify-write onto the shared serial queue (see metadataUpdateQueue's own doc
-    // comment) and await its own turn specifically - not just whatever else is queued - so a later disc's
-    // call, enqueued after this one, can never run its own read until this write has actually finished. The
-    // scaffold written in partition() reserved index (existing disc count + i) for this exact disc.
-    //
-    // Unlike backup-to-optical-media.component.ts's equivalent (which only logs and continues), a failure here
-    // stops and surfaces a real error instead of silently proceeding to createIBB_file: this JSON is the
-    // permanent record recovery depends on, so burning a disc whose data never actually made it into that
-    // record would be a real, silent loss - worse than the merely-annoying stuck spinner this also prevents.
+    // Guards against a double-click on "Send disk i+1 to ImgBurn" for this SAME disc (see sendingDiscs's own
+    // doc comment) - not against sending a different disc at the same time, which is independent and fine. The
+    // whole method body is wrapped so the guard covers the once-fired-and-forgotten createIBB_file chain too
+    // (now awaited below) - resetting the flag before that had actually finished would reopen the exact narrow
+    // window (no .ibb written yet) this guard exists to close.
+    if (this.sendingDiscs[i]) { return; }
+    this.sendingDiscs[i] = true;
     try {
-      await this.metadataUpdateQueue.enqueue(async () => {
-        const updatedMetadataJSON: ColdStorageMetadata = (await ipc.readJSONfromDisk(this.coldStorageMetadataJSONPathToSave)).res;
-        updatedMetadataJSON[this.entireColdStorageMetadata.length + i] = finalStats.map((e) => {
-          return { path: this.opticalDiscVolumeLetter + e.path, stats: e.stats };
-        });
-        await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPathToSave, JSON.stringify(updatedMetadataJSON, null, 2));
+      // If this disc was already sent once during this job, its .ibb project file already exists under this
+      // job's own session subfolder - just reopen ImgBurn on that exact, untouched file instead of recomputing
+      // the selection, re-materializing pieces, and rewriting the metadata JSON (see
+      // openExistingIBBFileInImgBurn's own comment in worker.ts for why redoing all of that on a resend is
+      // risky). Nothing else below needs to run in that case - the disc is already fully recorded from its first
+      // send.
+      if ((await ipc.openExistingIBBFile(this.tempSessionId, i)).res.opened) {
+        return;
+      }
+
+      let volumeFilePathsWithMetadata: Array<filesMetadata> = JSON.parse(JSON.stringify(this.partitions[i]))
+      // Trailing backslash ensured - see the identical fix/comment on tempPath in partition() above for why.
+      let tempDataDirectoryPath = (await ipc.getTempDataDirectoryPath()).res;
+      if (tempDataDirectoryPath[tempDataDirectoryPath.length - 1] != '\\') { tempDataDirectoryPath += '\\'; }
+      // This job's own session subfolder (see tempSessionId's own doc comment) - partitionBackupToOpticalMedia's
+      // predicted split-piece paths already have this baked into their absolute path, so it must be trimmed off
+      // here too, or it would leak into bareRelativePaths below (which must stay session-agnostic - see
+      // SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts for why that matters).
+      tempDataDirectoryPath += this.tempSessionId + '\\';
+      const nextDiscNumber = this.getNextDiscNumber(i);
+
+      /* the response from the worker returns the full paths relative to the host file system.
+        Since we are indifferent for the full system file structure we trim the 'this.backup.sourcePath'
+        part from all paths. This way our root becomes the directory chosen by the user in the dialog.
+        In case there are large files which have been splitted, the splits are stored in the temp data
+        directory which is different from the source directory (this.backup.targetPath), so both prefixes are
+        trimmed - the same "either/or" idiom this component already used before this disc's pieces could be
+        materialized lazily. */
+      const bareRelativePaths: string[] = volumeFilePathsWithMetadata.map((a: filesMetadata) =>
+        a.path.replace(this.backup.targetPath, "").replace(tempDataDirectoryPath, ""));
+
+      // No disc this wizard ever creates - neither an originally-planned one (partitionBackupToOpticalMedia never
+      // produces an empty partition) nor an overflow one (maybeAppendOverflowDiscs only ever appends non-empty
+      // partitions) - should legitimately have zero files here. Burning it anyway would silently produce a
+      // useless, empty .ibb and leave its real piece file undeleted forever (confirmDiscBurned only deletes what
+      // sentDiscPartPaths recorded, which would also be empty). Fail loudly and let the user retry instead.
+      if (bareRelativePaths.length === 0) {
+        const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        errorDialog.componentInstance.title = "Error";
+        errorDialog.componentInstance.message = `Disc ${i + 1} has no files to send - this should never happen. Please try clicking "Send to ImgBurn" again.`;
+        errorDialog.componentInstance.actionsNum = 1;
+        errorDialog.componentInstance.action1Label = "Ok";
+        errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
+        return;
+      }
+
+      // Materializes this disc's real large-file split pieces (if any), lazily, right now - this is the ONLY
+      // point a large file actually gets physically split, rather than the whole job's large files all being
+      // split up front before any disc is burned. The response can contain MORE entries than were requested (a
+      // rare, known boundary case surfaces one extra, unplanned "sliver" piece - see
+      // materializeOpticalMediaDiscPieces's own comment): whichever disc's send action happens to trigger a
+      // given large file's real split is offered that file's sliver first, purely as a byproduct of triggering
+      // the split - not because it's guaranteed to belong there. Whether it actually ends up on THIS disc is
+      // decided below, by the capacity check.
+      const realStats: filesMetadata[] = (await ipc.materializeOpticalMediaDiscPieces(this.backup.targetPath, bareRelativePaths, this.tempSessionId)).res;
+
+      // Split the response back into what this disc was actually planned to hold and any surplus sliver(s)
+      // riding along with it (see materializeOpticalMediaDiscPieces's own comment).
+      const requestedPaths = new Set(bareRelativePaths);
+      const normalStats = realStats.filter(e => requestedPaths.has(e.path));
+      const ownSurplusStats = realStats.filter(e => !requestedPaths.has(e.path));
+      let discUsedBytes = normalStats.reduce((sum, e) => sum + e.stats.size, 0);
+      const finalStats = normalStats.slice();
+
+      // A surplus piece is accepted onto THIS disc only if the disc's total real, materialized size still fits
+      // within effectiveMediaCapacityInBytes - the SAME margin-discounted capacity partitionBackupToOpticalMedia
+      // planned every disc against (see getEffectiveOpticalMediumCapacityInBytes in worker.ts), never the
+      // medium's raw capacity: that margin is a general burn-safety feature that applies to everything written
+      // to a disc, not something reserved for or spent by surplus slivers specifically.
+      //
+      // The candidates tried here are this disc's own fresh surplus AND any sliver an EARLIER disc's send
+      // already produced but couldn't fit at the time (pendingOverflowPieces) - not just the former. Without
+      // this, a sliver rejected by disc 1 would sit untouched until every original new disc is sent and then
+      // get a brand new, almost entirely empty disc all to itself, even if disc 2 (sent right after, with real
+      // content of its own and room to spare) could easily have carried it. Trying the accumulated backlog on
+      // every subsequent disc's send - oldest first, so a longer-waiting piece isn't starved by a newer one -
+      // means a new disc only ever gets created for whatever still doesn't fit anywhere once every originally-
+      // planned new disc has actually been sent (see maybeAppendOverflowDiscs). This can't eliminate the case
+      // entirely: a sliver produced by the LAST originally-planned disc sent has no later disc left to offer it to.
+      const candidateSurplusPieces = this.pendingOverflowPieces.concat(ownSurplusStats);
+      this.pendingOverflowPieces = [];
+      for (const surplusPiece of candidateSurplusPieces) {
+        if (discUsedBytes + surplusPiece.stats.size <= this.effectiveMediaCapacityInBytes) {
+          discUsedBytes += surplusPiece.stats.size;
+          finalStats.push(surplusPiece);
+        } else {
+          this.pendingOverflowPieces.push(surplusPiece);
+        }
+      }
+
+      // Same disc-identification hash used during recovery (see getDiscIdHash / OpticalDiscBackupDataRetriever) -
+      // computed from the exact same normalization used when writing this disc's entry into the cold storage
+      // metadata JSON below (this.opticalDiscVolumeLetter), so the label the user writes on the physical disc now
+      // will match what the app later checks against when that disc is inserted for a recovery.
+      const discIdHash = getDiscIdHash(
+        finalStats.map((e) => this.opticalDiscVolumeLetter + e.path).sort().toString()
+      );
+
+      await new Promise<void>((resolve) => {
+        const labelDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
+        labelDialog.disableClose = true;
+        labelDialog.componentInstance.title = "Disc label";
+        labelDialog.componentInstance.message =
+          `Please physically label this disc as disc ${nextDiscNumber}, with ID hash: ${discIdHash}. Both are ` +
+          `needed to identify this disc correctly during a future recovery.`;
+        labelDialog.componentInstance.actionsNum = 1;
+        labelDialog.componentInstance.action1Label = "Ok";
+        labelDialog.componentInstance.action1Callback = () => {
+          labelDialog.close();
+          resolve();
+        }
       });
-    } catch (error) {
-      loadingDialogRef.close();
-      const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
-      errorDialog.componentInstance.title = "Error";
-      errorDialog.componentInstance.message = `Failed to update the cold storage metadata JSON for this disc - it was NOT sent to ImgBurn, so nothing was burned without being recorded in the JSON. Error: ${error}`;
-      return;
+
+      const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+
+      // Enqueue this disc's read-modify-write onto the shared serial queue (see metadataUpdateQueue's own doc
+      // comment) and await its own turn specifically - not just whatever else is queued - so a later disc's
+      // call, enqueued after this one, can never run its own read until this write has actually finished. The
+      // scaffold written in partition() reserved index (existing disc count + i) for this exact disc.
+      //
+      // Unlike backup-to-optical-media.component.ts's equivalent (which only logs and continues), a failure here
+      // stops and surfaces a real error instead of silently proceeding to createIBB_file: this JSON is the
+      // permanent record recovery depends on, so burning a disc whose data never actually made it into that
+      // record would be a real, silent loss - worse than the merely-annoying stuck spinner this also prevents.
+      try {
+        await this.metadataUpdateQueue.enqueue(async () => {
+          const updatedMetadataJSON: ColdStorageMetadata = (await ipc.readJSONfromDisk(this.coldStorageMetadataJSONPathToSave)).res;
+          updatedMetadataJSON[this.entireColdStorageMetadata.length + i] = finalStats.map((e) => {
+            return { path: this.opticalDiscVolumeLetter + e.path, stats: e.stats };
+          });
+          await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPathToSave, JSON.stringify(updatedMetadataJSON, null, 2));
+        });
+      } catch (error) {
+        loadingDialogRef.close();
+        const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
+        errorDialog.componentInstance.title = "Error";
+        errorDialog.componentInstance.message = `Failed to update the cold storage metadata JSON for this disc - it was NOT sent to ImgBurn, so nothing was burned without being recorded in the JSON. Error: ${error}`;
+        return;
+      }
+
+      this.sentDiscPartPaths[i] = finalStats.filter(e => PART_FILE_PATTERN.test(e.path)).map(e => e.path);
+
+      // Awaited (previously fired-and-forgotten): see sendingDiscs's own doc comment for why this guard needs
+      // this chain's real completion, not just its start, to reset on.
+      await this.createIBB_file(i, finalStats.map(e => e.path), this.backup.targetPath, nextDiscNumber).then(async ()=>{
+        this.sentDiscs[i] = true;
+        loadingDialogRef.close();
+        // Now that this disc has actually been sent, check whether every originally-planned new disc has (so no
+        // further surplus slivers can still turn up) and, if pendingOverflowPieces is non-empty, append however
+        // many extra discs are needed to burn them too - see maybeAppendOverflowDiscs's own comment.
+        await this.maybeAppendOverflowDiscs();
+      }).catch((error)=>{
+        loadingDialogRef.close();
+        const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
+        errorDialog.componentInstance.title = "Error";
+        errorDialog.componentInstance.message = `An error occurred while creating the ImgBurn project: ${error}`;
+      })
+    } finally {
+      this.sendingDiscs[i] = false;
     }
-
-    this.sentDiscPartPaths[i] = finalStats.filter(e => PART_FILE_PATTERN.test(e.path)).map(e => e.path);
-
-    this.createIBB_file(i, finalStats.map(e => e.path), this.backup.targetPath, nextDiscNumber).then(async ()=>{
-      this.sentDiscs[i] = true;
-      loadingDialogRef.close();
-      // Now that this disc has actually been sent, check whether every originally-planned new disc has (so no
-      // further surplus slivers can still turn up) and, if pendingOverflowPieces is non-empty, append however
-      // many extra discs are needed to burn them too - see maybeAppendOverflowDiscs's own comment.
-      await this.maybeAppendOverflowDiscs();
-    }).catch((error)=>{
-      loadingDialogRef.close();
-      const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
-      errorDialog.componentInstance.title = "Error";
-      errorDialog.componentInstance.message = `An error occurred while creating the ImgBurn project: ${error}`;
-    })
   }
 
   /** Once every originally-planned new disc has been sent to ImgBurn (so no more surplus slivers can still
@@ -825,6 +873,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     for (const partition of overflowPartitions) {
       this.partitions.push(partition);
       this.sentDiscs.push(false);
+      this.sendingDiscs.push(false);
       this.confirmedDiscs.push(false);
       this.sentDiscPartPaths.push([]);
     }

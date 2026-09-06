@@ -6,7 +6,8 @@ export type WorkerChannel =
 "read-json-from-disk" | "write-json-to-disk" | "merge-file-parts" | "clear-temp-data-directory" |
 "validate-config-paths" | "update-config" | "ensure-temp-directory-ownership" |
 "materialize-optical-media-disc-pieces" | "delete-materialized-pieces-for-disc" |
-"get-effective-optical-medium-capacity" | "check-temp-data-directory-for-leftovers";
+"get-effective-optical-medium-capacity" | "check-temp-data-directory-for-leftovers" |
+"open-existing-ibb-file";
 
 export interface WorkerRequest {
   key: WorkerChannel;

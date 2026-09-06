@@ -20,3 +20,15 @@
 .disc-confirmed {
   opacity: 0.6;
 }
+
+// Grays out a disc's files-tree once that disc has been sent to ImgBurn at least once (see
+// [class.disc-tree-locked]/[disabled] on <files-tree> in the template) - a resend just reopens the exact .ibb
+// file that first send already produced (see openExistingIBBFileInImgBurn's own comment in worker.ts) rather
+// than recomputing anything, so a selection change made after that point would silently have no effect. The
+// actual selection lock is the [disabled] input on <files-tree> (see its own doc comment) - a real
+// FilesTreeComponent @Input, disabling only its checkboxes, so expand/collapse and scrolling stay usable for
+// reviewing what was actually sent. This class is purely the visual "grayed out" cue on top of that -
+// deliberately NOT pointer-events:none, which would also have blocked mouse-wheel scrolling over the tree.
+.disc-tree-locked {
+  opacity: 0.6;
+}

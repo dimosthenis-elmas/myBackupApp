@@ -66,11 +66,14 @@
       <h3>Select the files you want to burn to the optical disc</h3>
     </div>
     <br>
-    <mat-checkbox [checked]="allFilesSelected" (change)="selectAllFiles(disk, $event.checked);"
-       (click)="$event.stopPropagation()" [disabled]="confirmedDiscs[disk]">
+    <mat-checkbox [checked]="allFilesSelected[disk]" (change)="selectAllFiles(disk, $event.checked);"
+       (click)="$event.stopPropagation()" [disabled]="sentDiscs[disk]">
        Select all
     </mat-checkbox>
-    <files-tree #cmp></files-tree>
+    <!-- Grayed out and its selection locked (expand/collapse and scrolling stay usable, for review) once this
+         disc has been sent at least once - see disc-tree-locked's own comment in the stylesheet for why the
+         selection must not change after that point. -->
+    <files-tree #cmp [disabled]="sentDiscs[disk]" [class.disc-tree-locked]="sentDiscs[disk]"></files-tree>
     <form [formGroup]="firstFormGroup">
       <ng-template matStepLabel>Optical disk {{disk + 1}}{{confirmedDiscs[disk] ? ' (confirmed)' : ''}}</ng-template>
       <br>

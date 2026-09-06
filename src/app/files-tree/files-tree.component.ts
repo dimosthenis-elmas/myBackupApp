@@ -109,8 +109,23 @@
 
     get data(): TodoItemNode[] { return this.dataChange.value; }
 
+    /** Deliberately does NOT call initialize() here (it used to). dataChange already starts at its own default
+     *  value ([]), which is exactly what initialize() would have (redundantly) recomputed from the still-empty
+     *  treeData at this point - so calling it here achieves nothing a caller could ever observe, while creating
+     *  a real race: initialize() is async (buildFileTree has its own ~20%-chance setTimeout(0) yield per tree
+     *  level - see its own comment), so this constructor-triggered call is still in flight, with nothing
+     *  forcing it to finish first, at the exact moment a caller can turn around and call setTreeData() on a
+     *  just-constructed instance (see backup-to-optical-media.component.ts's maybeAppendOverflowDiscs, which
+     *  does exactly that for a freshly-appended disc's tree). If THIS stray call happened to resolve AFTER
+     *  setTreeData()'s own initialize() call - plausible, since either can yield independently - its
+     *  dataChange.next([]) would fire last and silently wipe out the real data setTreeData() had just set,
+     *  leaving the tree looking (and actually being, per checklistSelection/treeControl.dataNodes) empty. This
+     *  was seen for real: a freshly-appended overflow disc's tree occasionally rendered empty, and
+     *  getSelectedFilePathsIncludingExtraInfo() correctly found nothing selected, tripping sendToImgBurn's own
+     *  "no files selected" guard - a genuine data-level empty selection, not just a cosmetic rendering gap.
+     *  Removing this call closes the race outright: only ever one initialize() in flight per instance
+     *  (whichever setTreeData() explicitly triggers), so there is nothing left for it to lose a race against. */
     constructor() {
-      this.initialize();
     }
 
     /** Replaces this instance's tree data and rebuilds the displayed tree from it - see
@@ -227,6 +242,16 @@
      *  ("<name>.part.<digits>") only ever shows up there, never in a backup-direction file picker, so this is a
      *  harmless no-op wherever it's left false (the default, for every <files-tree> usage that doesn't opt in). */
     @Input() groupPartialFiles = false;
+
+    /** When true, every checkbox in this tree is disabled - the tree can still be expanded/collapsed and
+     *  scrolled to review its contents, but its selection can no longer be changed. Used by
+     *  backup-to-optical-media.component.ts to lock a disc's tree once it has been sent to ImgBurn at least
+     *  once (see disc-tree-locked in that component's own stylesheet) - a resend just reopens the exact .ibb
+     *  file the first send already produced, so a selection change made afterwards would silently have no
+     *  effect; this makes that visible instead of confusing, without also preventing the user from still
+     *  scrolling through what was actually sent. Defaults to false, so every other <files-tree> usage
+     *  (unaffected, opt-in only) behaves exactly as before. */
+    @Input() disabled = false;
 
     /** Matches this app's own large-file split volume naming convention - see PART_FILE_PATTERN in
      *  app/workers/worker.ts and groupSelectedPartialFiles in optical-disc-backup-data-retriever.component.ts,

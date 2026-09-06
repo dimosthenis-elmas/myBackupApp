@@ -272,6 +272,17 @@ export class WorkerCommunicator {
         });
     }
 
+    /** Checks whether this exact disc (disk_id, within this job's own session subfolder - see
+     *  SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts) already has a Disk_<disk_id+1>.ibb file from an
+     *  earlier "Send to ImgBurn" this same job, and if so just reopens ImgBurn on that exact file rather than
+     *  rebuilding anything - see openExistingIBBFileInImgBurn's own comment in worker.ts for why a resend does
+     *  this instead of redoing the whole pipeline. `res.opened` is false (not an error) when there is no such
+     *  file yet - the caller should fall back to the normal pipeline (materialize/createIBB_file) in that case,
+     *  which is always true for a disc's first send. */
+    static openExistingIBBFile(sessionId: string, disk_id: number): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('open-existing-ibb-file', { sessionId: sessionId, disk_id: disk_id });
+    }
+
     static waitForOpticalDiskToBeMounted(): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('wait-for-optical-disk-to-be-mounted', {});
     }

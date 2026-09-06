@@ -42,6 +42,7 @@
       <button mat-icon-button disabled></button>
       <mat-checkbox class="checklist-leaf-node"
                     [checked]="checklistSelection.isSelected(node)"
+                    [disabled]="disabled"
                     (change)="todoLeafItemSelectionToggle(node)">
                     <mat-icon aria-hidden="false" aria-label="file">description</mat-icon>
                     {{node.item}}
@@ -58,13 +59,15 @@
       <mat-checkbox *ngIf="!isEmptyDir(node)"
                   [checked]="descendantsAllSelected(node)"
                   [indeterminate]="descendantsPartiallySelected(node)"
+                  [disabled]="disabled"
                   (change)="todoItemSelectionToggle(node)">
                   <mat-icon aria-hidden="false" aria-label="folder">folder</mat-icon>
                   {{node.item}}
       </mat-checkbox>
-      <mat-checkbox *ngIf="isEmptyDir(node)" 
+      <mat-checkbox *ngIf="isEmptyDir(node)"
                   [checked]="checklistSelection.isSelected(node)"
                   [indeterminate]="false"
+                  [disabled]="disabled"
                   (change)="todoItemSelectionToggle(node)">
                   <mat-icon aria-hidden="false" aria-label="folder">folder</mat-icon>
                   {{node.item}}
