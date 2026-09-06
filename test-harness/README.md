@@ -345,11 +345,12 @@ what each one does, since you'll see them imported (`require('../lib/...')`) at 
   JSON-driven source trees" section for the `--random-tree`/`--json-tree` flags this gives every one of those
   scripts.
 - **`startup-dialogs.js`** — `dismissStartupTempClearDialog(win)`, which every `ui/` script (and the two
-  `capture-*.js` utilities) calls right after `launchApp()`. Every real launch now shows a mandatory, modal
-  "Clearing temporary files" dialog before anything else on screen is usable (the app has no resume-across-
-  restarts support, so its temp/cache directory is unconditionally cleared at the start of every launch, with
-  the user told about it first - see `clearTempDataDirectoryOnStartup` in `app.component.ts`) - without clicking
-  past it first, every single click after `launchApp()` would hang against a covered-up screen.
+  `capture-*.js` utilities) calls right after `launchApp()`. Whenever the temp/cache directory actually has
+  real leftover content, a real launch shows a modal "Clearing temporary files" dialog before anything else on
+  screen is usable (the app has no resume-across-restarts support, so leftover content from an earlier session
+  is cleared, with the user told about it first - see `clearTempDataDirectoryOnStartup` in `app.component.ts`;
+  if it's already empty, nothing shows at all) - this helper tolerates either outcome, so every script can call
+  it unconditionally without knowing in advance whether this particular run has anything to report.
 
 ## Safety model (why this can't damage anything real)
 

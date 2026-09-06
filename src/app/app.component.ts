@@ -251,25 +251,29 @@ export class AppComponent implements OnInit {
     return false;
   }
 
-  /** On every startup, unconditionally clears the app's temp/cache directory (used as a buffer for large-file
-   *  splits, and for .ibb project files, before they are burned to optical media - see
-   *  partitionBackupToOpticalMedia and createIBB_file in worker.ts). This is not conditional on the directory
-   *  actually having anything left over in it (clearing an already-empty directory is a harmless no-op) - it
-   *  runs every time because nothing in there can ever safely carry over to a new session: a backup/burn job
-   *  has no resume support (see confirmedDiscs in backup-to-optical-media.component.ts), so a piece left behind
-   *  by an earlier, abandoned session is not a head start on a later one - it is stale, and reusing it could
-   *  even silently serve wrong data (e.g. if the source file it was split from has since changed).
+  /** On startup, clears the app's temp/cache directory (used as a buffer for large-file splits, and for .ibb
+   *  project files, before they are burned to optical media - see partitionBackupToOpticalMedia and
+   *  createIBB_file in worker.ts) whenever it actually has something left over in it - nothing in there can
+   *  ever safely carry over to a new session: a backup/burn job has no resume support (see confirmedDiscs in
+   *  backup-to-optical-media.component.ts), so a piece left behind by an earlier, abandoned session is not a
+   *  head start on a later one - it is stale, and reusing it could even silently serve wrong data (e.g. if the
+   *  source file it was split from has since changed). If the directory is already empty, this does nothing at
+   *  all - no dialog, no IPC call to actually clear it - since there would be nothing to tell the user about.
    *
-   *  The user is informed before it happens (itemizing exactly what will be removed, when there is anything),
-   *  but is not offered a way to decline - there is deliberately only one action ("Ok"), which triggers the
-   *  clear once clicked. Any failure here is logged and, unlike the happy path, does get its own dialog so a
-   *  real failure is not silently swallowed - but it never blocks app startup either way. */
+   *  When there IS something to clear, the user is informed first (itemizing exactly what will be removed) but
+   *  is not offered a way to decline - there is deliberately only one action ("Ok"), which triggers the clear
+   *  once clicked. Any failure here is logged and, unlike the happy path, does get its own dialog so a real
+   *  failure is not silently swallowed - but it never blocks app startup either way. */
   private async clearTempDataDirectoryOnStartup(): Promise<void> {
     try {
       const tempDataDirectoryPath = (await ipc.getTempDataDirectoryPath()).res;
       const filesWithStats: Array<{ path: string }> = (await ipc.getFilePathsWithStats(tempDataDirectoryPath)).res;
       const ibbProjectFilePattern = /Disk_\d+\.ibb$/i;
       const leftoverFiles = (filesWithStats || []).filter((f) => PART_FILE_PATTERN.test(f.path) || ibbProjectFilePattern.test(f.path));
+
+      if (leftoverFiles.length === 0) {
+        return;
+      }
 
       // Shown to the user so the dialog below lists exactly what will be removed, not just "the directory is
       // not empty" - strips the temp directory's own path prefix off each entry so the list reads as paths
@@ -288,11 +292,9 @@ export class AppComponent implements OnInit {
         infoDialog.disableClose = true;
         infoDialog.componentInstance.title = "Clearing temporary files";
         infoDialog.componentInstance.message =
-          `This app does not support resuming a backup/burn job across restarts, so its temporary directory ` +
-          `("${tempDataDirectoryPath}") is cleared at the start of every launch.` +
-          (leftoverFiles.length > 0
-            ? `\n\nThe following ${leftoverFiles.length} file(s) will be removed:\n${leftoverFilesList}`
-            : `\n\nIt is currently already empty - nothing to remove.`);
+          `This app does not support resuming a backup/burn job across restarts, so anything left over in its ` +
+          `temporary directory ("${tempDataDirectoryPath}") from an earlier session is cleared now, before ` +
+          `continuing.\n\nThe following ${leftoverFiles.length} file(s) will be removed:\n${leftoverFilesList}`;
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Ok";
         infoDialog.componentInstance.action1Callback = () => {
