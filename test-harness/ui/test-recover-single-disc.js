@@ -43,7 +43,6 @@ const { assertNoOpticalMediaAlreadyMounted, buildIso, mountIso, dismountIso } = 
 const { printTree } = require('../lib/print-tree');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
-const { dismissStartupTempClearDialog } = require('../lib/startup-dialogs');
 
 const SPEC_DIR = path.join(__dirname, 'tree-specs', 'test-recover-single-disc');
 
@@ -86,7 +85,6 @@ async function main() {
     // 3. Launch the app and stub the native folder-picker to return our scratch output folder.
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
-    await dismissStartupTempClearDialog(win);
     await app.evaluate(({ dialog }, dir) => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dir] });
     }, outputRoot);

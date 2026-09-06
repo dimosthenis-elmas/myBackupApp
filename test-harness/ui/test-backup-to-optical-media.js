@@ -81,12 +81,11 @@
 const fs = require('fs');
 const path = require('path');
 const { launchApp } = require('../worker-ipc/call-worker');
-const { assertRealTempDataDirectoryIsSafeToUse, resolveRealTempDataDirectory } = require('../worker-ipc/temp-dir-guard');
+const { assertRealTempDataDirectoryIsSafeToUse, resolveRealTempDataDirectory, waitForSessionSubdirectory } = require('../worker-ipc/temp-dir-guard');
 const { printTree } = require('../lib/print-tree');
 const { writeStubImgBurnBat, backupAndRedirectImgBurnPath, restoreConfig, waitForFile, parseIbbBackupList } = require('../lib/ibb-tools');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
-const { dismissStartupTempClearDialog } = require('../lib/startup-dialogs');
 
 const SPEC_DIR = path.join(__dirname, 'tree-specs', 'test-backup-to-optical-media');
 
@@ -168,10 +167,13 @@ async function main() {
 
   let app, win, originalConfigContent;
   const createdIbbPaths = [];
+  // Discovered once, right after the first disc's own send creates it (see the per-disc loop below) - every
+  // real split piece/.ibb file this job ever writes lives under this one session subfolder (see
+  // SESSION_FOLDER_NAME_PATTERN in worker.ts), not directly under realTempDir.
+  let sessionDir;
   try {
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
-    await dismissStartupTempClearDialog(win);
 
     await app.evaluate(({ dialog }, paths) => {
       const queue = [...paths];
@@ -287,7 +289,15 @@ async function main() {
       await step(`click "Ok" on the "Disc label" confirmation for disc ${i + 1}`, () =>
         win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
 
-      const ibbPath = path.join(realTempDir, `Disk_${i + 1}.ibb`);
+      if (!sessionDir) {
+        // Created by whichever disc's send is first to need it - this is always disc 1 here, but discovered
+        // rather than assumed, and cached for the rest of this loop either way.
+        process.stdout.write('  [ ] discover this job\'s real session subfolder ... ');
+        sessionDir = await waitForSessionSubdirectory(realTempDir, 15_000);
+        console.log(`done (${path.basename(sessionDir)})`);
+      }
+
+      const ibbPath = path.join(sessionDir, `Disk_${i + 1}.ibb`);
       process.stdout.write(`  [ ] wait for the real .ibb file for disc ${i + 1} to appear ... `);
       await waitForFile(ibbPath, 30_000);
       console.log('done');
@@ -447,6 +457,14 @@ async function main() {
     const splitPieceParentDirs = new Set(splitPieceFilesToCleanUp.map((p) => path.dirname(p)));
     for (const d of splitPieceParentDirs) {
       if (fs.existsSync(d) && fs.readdirSync(d).length === 0) { fs.rmdirSync(d); }
+    }
+    // This job's own session folder is now empty too (its .ibb files were already removed above, and
+    // "large-files" - if it existed - just was) - remove it regardless of pass/fail, unconditionally, same as
+    // the "large-files" cleanup just above. Left behind otherwise, it would make the NEXT script's
+    // assertRealTempDataDirectoryIsSafeToUse call refuse to run (it can't tell "an empty leftover session
+    // folder" apart from real pending data).
+    if (sessionDir && fs.existsSync(sessionDir) && fs.readdirSync(sessionDir).length === 0) {
+      fs.rmdirSync(sessionDir);
     }
 
     const verifyPassed = normalCheckPassed && splitCheckPassed && confirmCheckPassed;

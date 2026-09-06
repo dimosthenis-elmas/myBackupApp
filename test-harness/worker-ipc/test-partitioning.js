@@ -72,6 +72,7 @@ async function main() {
       rootPath: root,
       mediaCapacityInBytes: TEST_DISC_CAPACITY_BYTES,
       splitLargeFiles: false,
+      sessionId: 'session-' + Date.now(),
     });
   } finally {
     await app.close();

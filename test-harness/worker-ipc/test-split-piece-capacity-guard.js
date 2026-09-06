@@ -68,6 +68,7 @@ async function main() {
       rootPath: root,
       mediaCapacityInBytes: TINY_MEDIA_CAPACITY_BYTES,
       splitLargeFiles: true,
+      sessionId: 'session-' + Date.now(),
     }, CALL_TIMEOUT_MS);
     console.log('\nUNEXPECTED: the call resolved successfully instead of rejecting:', JSON.stringify(response.res));
   } catch (e) {

@@ -52,14 +52,19 @@ function writeExactSizeFile(filePath, sizeBytes) {
   fs.closeSync(fd);
 }
 
-/** Deletes any real temp-dir files matching `${baseName}.part.NNN`, directly under `tempDir` (both source files
- *  in this test live at the root of their own source tree, so their real pieces land directly under tempDir too
- *  - no subdirectory to also clean up, unlike a large file nested under e.g. "large-files/"). */
-function cleanupRealPieces(tempDir, baseName) {
+/** Deletes any real piece files matching `${baseName}.part.NNN`, directly under `sessionTempDir` (both source
+ *  files in this test live at the root of their own source tree, so their real pieces land directly under the
+ *  session's own temp subdirectory too - no further subdirectory to also clean up, unlike a large file nested
+ *  under e.g. "large-files/"). Then removes `sessionTempDir` itself if that leaves it empty - left behind
+ *  otherwise, it would make the NEXT script's assertRealTempDataDirectoryIsSafeToUse call refuse to run (it
+ *  can't tell "an empty leftover session folder" apart from real pending data). */
+function cleanupRealPieces(sessionTempDir, baseName) {
+  if (!fs.existsSync(sessionTempDir)) { return; }
   const pattern = new RegExp(`^${baseName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}\\.part\\.\\d+$`, 'i');
-  for (const f of fs.readdirSync(tempDir)) {
-    if (pattern.test(f)) { fs.rmSync(path.join(tempDir, f), { force: true }); }
+  for (const f of fs.readdirSync(sessionTempDir)) {
+    if (pattern.test(f)) { fs.rmSync(path.join(sessionTempDir, f), { force: true }); }
   }
+  try { if (fs.readdirSync(sessionTempDir).length === 0) { fs.rmdirSync(sessionTempDir); } } catch { /* not empty, or already gone - fine */ }
 }
 
 async function main() {
@@ -83,6 +88,12 @@ async function main() {
   writeExactSizeFile(boundaryFilePath, boundaryFileSize);
 
   let app, win;
+  // This script drives the worker directly over raw IPC (not through the app's own UI), so it generates its own
+  // session ID up front - see SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts for why every job needs one
+  // and what it isolates. Each of this script's two independent phases gets its own; declared outside the try so
+  // the finally block below can still find it for cleanup even if the try block fails before it's ever used.
+  const sessionId = 'session-' + Date.now();
+  const sessionTempDir = path.join(tempDir, sessionId);
   try {
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
@@ -96,17 +107,19 @@ async function main() {
       rootPath: boundarySourceRoot,
       mediaCapacityInBytes: 600_000_000,
       splitLargeFiles: true,
+      sessionId,
     }, 60 * 1000);
 
     const predictedPieces = planResponse.res.flat().filter((e) => /\.part\.\d+$/i.test(e.path));
     results.estimatedExactlyTwoPieces = predictedPieces.length === 2;
     console.log(`  estimated piece count: ${predictedPieces.length} (expected 2) - ${results.estimatedExactlyTwoPieces ? 'OK' : 'WRONG'}`);
 
-    const bareRelativePaths = predictedPieces.map((e) => path.relative(tempDir, e.path));
+    const bareRelativePaths = predictedPieces.map((e) => path.relative(sessionTempDir, e.path));
     console.log('\nCalling materialize-optical-media-disc-pieces (runs the real 7-Zip split)...');
     const materializeResponse = await callWorker(win, 'materialize-optical-media-disc-pieces', {
       dirPath: boundarySourceRoot,
       paths: bareRelativePaths,
+      sessionId,
     }, 5 * 60 * 1000);
 
     const realPieces = materializeResponse.res;
@@ -118,10 +131,10 @@ async function main() {
     results.realTotalMatchesOriginalPlusOverhead = totalRealBytes > boundaryFileSize && totalRealBytes <= boundaryFileSize + 4096;
     console.log(`  total real bytes: ${totalRealBytes.toLocaleString()} vs original ${boundaryFileSize.toLocaleString()} (+ up to 4096 bytes real 7z overhead allowed): ${results.realTotalMatchesOriginalPlusOverhead ? 'OK' : 'WRONG'}`);
 
-    printTree(tempDir, 'App temp dir after Part 1\'s materialize');
+    printTree(sessionTempDir, 'App temp session dir after Part 1\'s materialize');
   } finally {
     if (app) { await app.close().catch(() => {}); }
-    try { cleanupRealPieces(tempDir, 'boundary-file.bin'); } catch { /* best effort */ }
+    try { cleanupRealPieces(sessionTempDir, 'boundary-file.bin'); } catch { /* best effort */ }
   }
 
   // ============================================================================================================
@@ -160,6 +173,8 @@ async function main() {
 
   let originalConfigContent;
   let app2, win2;
+  const sessionId2 = 'session-' + Date.now();
+  const sessionTempDir2 = path.join(tempDir, sessionId2);
   try {
     originalConfigContent = backupAndRedirectConfigField('_7zipExecutablePath', stub7zPath);
 
@@ -172,11 +187,12 @@ async function main() {
       rootPath: throwSourceRoot,
       mediaCapacityInBytes: 600_000_000,
       splitLargeFiles: true,
+      sessionId: sessionId2,
     }, 60 * 1000);
     const predictedPieces2 = planResponse2.res.flat().filter((e) => /\.part\.\d+$/i.test(e.path));
     console.log(`  estimated piece count: ${predictedPieces2.length}`);
 
-    const bareRelativePaths2 = predictedPieces2.map((e) => path.relative(tempDir, e.path));
+    const bareRelativePaths2 = predictedPieces2.map((e) => path.relative(sessionTempDir2, e.path));
     console.log('\nCalling materialize-optical-media-disc-pieces (stub 7-Zip will produce 5 pieces, not 2)...');
     let threwAsExpected = false;
     let errorMessage = '';
@@ -184,6 +200,7 @@ async function main() {
       await callWorker(win2, 'materialize-optical-media-disc-pieces', {
         dirPath: throwSourceRoot,
         paths: bareRelativePaths2,
+        sessionId: sessionId2,
       }, 60 * 1000);
     } catch (err) {
       threwAsExpected = true;
@@ -195,7 +212,7 @@ async function main() {
   } finally {
     if (app2) { await app2.close().catch(() => {}); }
     if (originalConfigContent !== undefined) { restoreConfig(originalConfigContent); }
-    try { cleanupRealPieces(tempDir, 'throw-file.bin'); } catch { /* best effort */ }
+    try { cleanupRealPieces(sessionTempDir2, 'throw-file.bin'); } catch { /* best effort */ }
   }
 
   // ============================================================================================================

@@ -83,11 +83,18 @@ async function main() {
     // identical pause for the full explanation.
     await new Promise((r) => setTimeout(r, 3000));
 
+    // This script drives the worker directly over raw IPC (not through the app's own UI), so it generates its
+    // own session ID up front - see SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts for why every job
+    // needs one and what it isolates.
+    const sessionId = 'session-' + Date.now();
+    const sessionTempDir = path.join(tempDir, sessionId);
+
     console.log('\nCalling partition-backup-to-optical-media (planning only - no 7-Zip yet)...');
     const planResponse = await callWorker(win, 'partition-backup-to-optical-media', {
       rootPath: sourceRoot,
       mediaCapacityInBytes: MEDIA_CAPACITY_BYTES,
       splitLargeFiles: true,
+      sessionId,
     }, 60 * 1000);
 
     // Only the large-file-piece discs matter here - isolate discs that contain at least one predicted ".part."
@@ -122,11 +129,12 @@ async function main() {
 
       // 1 & 2: materialize ONLY the mixed disc's pieces - this should real-split BOTH files, so the two solo
       // discs' pieces should come into existence too, as a side effect, without ever being requested.
-      const mixedBarePaths = mixedDisc.entries.map((e) => path.relative(tempDir, e.path));
+      const mixedBarePaths = mixedDisc.entries.map((e) => path.relative(sessionTempDir, e.path));
       console.log('\nCalling materialize-optical-media-disc-pieces for ONLY the mixed disc\'s two pieces (runs real 7-Zip on BOTH files)...');
       const materializeResponse = await callWorker(win, 'materialize-optical-media-disc-pieces', {
         dirPath: sourceRoot,
         paths: mixedBarePaths,
+        sessionId,
       }, 5 * 60 * 1000);
       const realMixedPieces = materializeResponse.res;
       results.materializeReturnedExactlyTwoRealPieces = realMixedPieces.length === 2;
@@ -136,14 +144,14 @@ async function main() {
         p.stats.size >= REMAINDER_BYTES && p.stats.size <= REMAINDER_BYTES + 4096);
       results.materializedPiecesAreCorrectSize = realSizesWithinOverheadTolerance;
 
-      printTree(tempDir, 'App temp dir after materializing only the mixed disc');
+      printTree(sessionTempDir, 'App temp session dir after materializing only the mixed disc');
 
       // Both solo pieces' real names are predictable (file-a.bin.part.001 / file-b.bin.part.001, the only
       // full-volume piece each file has), and they land in the same temp subdirectory the mixed disc's own
       // pieces were just materialized into.
       const expectedSoloRealPaths = [
-        path.join(tempDir, 'large-files', 'file-a.bin.part.001'),
-        path.join(tempDir, 'large-files', 'file-b.bin.part.001'),
+        path.join(sessionTempDir, 'large-files', 'file-a.bin.part.001'),
+        path.join(sessionTempDir, 'large-files', 'file-b.bin.part.001'),
       ];
       const soloSideEffectExists = expectedSoloRealPaths.every((p) => fs.existsSync(p));
       results.soloDiscPiecesMaterializedAsSideEffect = soloSideEffectExists;
@@ -153,12 +161,12 @@ async function main() {
       // were NOT touched - scoped deletion must never remove a different, not-yet-confirmed disc's own pieces.
       console.log('\nCalling delete-materialized-pieces-for-disc for ONLY the mixed disc\'s two real pieces...');
       const deleteResponse = await callWorker(win, 'delete-materialized-pieces-for-disc', {
-        pieceAbsolutePaths: realMixedPieces.map((p) => path.join(tempDir, p.path)),
+        pieceAbsolutePaths: realMixedPieces.map((p) => path.join(sessionTempDir, p.path)),
       }, 30 * 1000);
       results.deleteReportedCleared = deleteResponse.res && deleteResponse.res.cleared === true;
       console.log(`  delete reported cleared: ${results.deleteReportedCleared}`);
 
-      const mixedPiecesGone = realMixedPieces.every((p) => !fs.existsSync(path.join(tempDir, p.path)));
+      const mixedPiecesGone = realMixedPieces.every((p) => !fs.existsSync(path.join(sessionTempDir, p.path)));
       results.mixedDiscPiecesActuallyDeleted = mixedPiecesGone;
       console.log(`  mixed disc's own two real pieces are gone: ${mixedPiecesGone}`);
 
@@ -166,13 +174,17 @@ async function main() {
       results.soloDiscPiecesSurvivedUntouched = soloPiecesSurvived;
       console.log(`  the OTHER two discs' pieces survived untouched: ${soloPiecesSurvived}`);
 
-      printTree(tempDir, 'App temp dir after deleting only the mixed disc\'s pieces');
+      printTree(sessionTempDir, 'App temp session dir after deleting only the mixed disc\'s pieces');
 
       // Clean up the two solo pieces this test's own scoped-delete call deliberately left behind (this test
-      // never "confirms" the other two discs - nothing else would clean them up).
+      // never "confirms" the other two discs - nothing else would clean them up), then this run's own session
+      // folder itself, if now empty - left behind otherwise, it would make the NEXT script's
+      // assertRealTempDataDirectoryIsSafeToUse call refuse to run (it can't tell "an empty leftover session
+      // folder" apart from real pending data).
       for (const p of expectedSoloRealPaths) { if (fs.existsSync(p)) { fs.rmSync(p, { force: true }); } }
-      const largeFilesDir = path.join(tempDir, 'large-files');
+      const largeFilesDir = path.join(sessionTempDir, 'large-files');
       try { if (fs.existsSync(largeFilesDir) && fs.readdirSync(largeFilesDir).length === 0) { fs.rmdirSync(largeFilesDir); } } catch { /* not empty, or already gone - fine */ }
+      try { if (fs.existsSync(sessionTempDir) && fs.readdirSync(sessionTempDir).length === 0) { fs.rmdirSync(sessionTempDir); } } catch { /* not empty, or already gone - fine */ }
     } else {
       results.mixedDiscPiecesAreBothRemainders = false;
       results.materializeReturnedExactlyTwoRealPieces = false;

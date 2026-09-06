@@ -144,12 +144,19 @@ async function main() {
     // mattered in practice; now that planning is near-instant pure arithmetic, it's hit far more reliably.
     await new Promise((r) => setTimeout(r, 3000));
 
+    // This script drives the worker directly over raw IPC (not through the app's own UI), so it generates its
+    // own session ID up front - see SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts for why every job
+    // needs one and what it isolates.
+    const sessionId = 'session-' + Date.now();
+    const sessionTempDir = path.join(tempDir, sessionId);
+
     console.log('\nCalling partition-backup-to-optical-media with splitLargeFiles=true (planning only - no 7-Zip yet)...');
     const response = await withHeartbeat(
       callWorker(win, 'partition-backup-to-optical-media', {
         rootPath: sourceRoot,
         mediaCapacityInBytes: MEDIA_CAPACITY_BYTES,
         splitLargeFiles: true,
+        sessionId,
       }, 60 * 1000), // planning is now pure arithmetic - should be near-instant even for a 700 MB file
       'partition-backup-to-optical-media',
     );
@@ -199,36 +206,38 @@ async function main() {
 
     // 4. Materialize this "disc"'s pieces - the ONLY point that actually invokes 7-Zip - passing bare-relative
     //    paths, the same convention materializeOpticalMediaDiscPieces expects and the real burn wizards already
-    //    hand it. Predicted split-piece paths (unlike ordinary files) are rooted under the TEMP directory, not
-    //    sourceRoot (see estimateLargeFileSplitPieces/partitionBackupToOpticalMedia in worker.ts) - so the
-    //    relative path has to be computed against tempDir, not sourceRoot, or path.relative() produces a
-    //    "../../.." climb between two unrelated trees instead of the short, sensible relative path the real
-    //    burn wizards already produce by stripping whichever of sourcePath/tempDataDirectoryPath actually
-    //    matches (see backup-to-optical-media.component.ts's WriteToOpticalMediaProceed for that exact idiom -
-    //    found for real testing this script against the actual worker).
-    const bareRelativePartPaths = predictedPartEntries.map((e) => path.relative(tempDir, e.path));
+    //    hand it. Predicted split-piece paths (unlike ordinary files) are rooted under the session's own temp
+    //    subdirectory, not sourceRoot (see estimateLargeFileSplitPieces/partitionBackupToOpticalMedia in
+    //    worker.ts) - so the relative path has to be computed against sessionTempDir, not sourceRoot, or
+    //    path.relative() produces a "../../.." climb between two unrelated trees instead of the short, sensible
+    //    relative path the real burn wizards already produce by stripping whichever of sourcePath/
+    //    tempDataDirectoryPath actually matches (see backup-to-optical-media.component.ts's
+    //    WriteToOpticalMediaProceed for that exact idiom - found for real testing this script against the actual
+    //    worker).
+    const bareRelativePartPaths = predictedPartEntries.map((e) => path.relative(sessionTempDir, e.path));
     console.log('\nCalling materialize-optical-media-disc-pieces (runs the real 7-Zip split)...');
     const materializeResponse = await withHeartbeat(
       callWorker(win, 'materialize-optical-media-disc-pieces', {
         dirPath: sourceRoot,
         paths: bareRelativePartPaths,
+        sessionId,
       }, 10 * 60 * 1000), // generous timeout - real disk I/O on ~515 MB
       'materialize-optical-media-disc-pieces',
     );
     const materializedEntries = materializeResponse.res;
 
-    // 5. Exactly 2 real part files, sitting in the app's real temp directory, with the exact sizes a genuine
-    //    "-v500m" split of this exact file size must produce - the actual point of this test. Separately
+    // 5. Exactly 2 real part files, sitting in the app's real session temp directory, with the exact sizes a
+    //    genuine "-v500m" split of this exact file size must produce - the actual point of this test. Separately
     //    double-checked (case-insensitively - Windows paths, don't want a spurious drive-letter-casing mismatch
-    //    to hide a real problem) that they really did land under the temp directory.
+    //    to hide a real problem) that they really did land under the session temp directory.
     const partEntries = materializedEntries
-      .map((e) => ({ path: path.join(tempDir, e.path), stats: e.stats }))
+      .map((e) => ({ path: path.join(sessionTempDir, e.path), stats: e.stats }))
       .sort((a, b) => a.path.localeCompare(b.path));
     results.exactlyTwoRealPartFilesProduced = partEntries.length === 2;
     console.log(`  real part files produced: ${partEntries.length} (expected 2)`);
-    const partsLandedInTempDir = partEntries.every((e) => e.path.toLowerCase().startsWith(tempDir.toLowerCase()));
+    const partsLandedInTempDir = partEntries.every((e) => e.path.toLowerCase().startsWith(sessionTempDir.toLowerCase()));
     results.partsLandedInRealTempDir = partsLandedInTempDir;
-    console.log(`  all part files under the real temp dir: ${partsLandedInTempDir}`);
+    console.log(`  all part files under the real session temp dir: ${partsLandedInTempDir}`);
     if (partEntries.length === 2) {
       const [first, second] = partEntries;
       // `-v500m -mx0` still wraps the data in a real 7z ARCHIVE (headers/CRC/filename metadata), not a raw
@@ -284,8 +293,11 @@ async function main() {
         // Also remove the subdirectory partitionBackupToOpticalMedia created for the split pieces (e.g.
         // "large-files\") if that left it empty - tidiness only, harmless either way since it's inside the
         // app's own disposable temp dir, but rmdirSync only succeeds on an empty directory so this is safe to
-        // attempt unconditionally.
+        // attempt unconditionally. Then remove this run's own now-empty session-<id> folder too - left behind
+        // otherwise, it would make the NEXT script's assertRealTempDataDirectoryIsSafeToUse call refuse to run
+        // (it can't tell "an empty leftover session folder" apart from real pending data).
         try { fs.rmdirSync(path.dirname(reassembledPath)); } catch { /* not empty, or already gone - fine */ }
+        try { fs.rmdirSync(sessionTempDir); } catch { /* not empty, or already gone - fine */ }
       }
     } else {
       results.partSizesAreExactlyRight = false;

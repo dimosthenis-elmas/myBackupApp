@@ -70,11 +70,10 @@
 const fs = require('fs');
 const path = require('path');
 const { launchApp } = require('../worker-ipc/call-worker');
-const { assertRealTempDataDirectoryIsSafeToUse, resolveRealTempDataDirectory } = require('../worker-ipc/temp-dir-guard');
+const { assertRealTempDataDirectoryIsSafeToUse, resolveRealTempDataDirectory, waitForSessionSubdirectory } = require('../worker-ipc/temp-dir-guard');
 const { printTree } = require('../lib/print-tree');
 const { writeStubImgBurnBat, backupAndRedirectConfigField, restoreConfig, waitForFile, parseIbbBackupList } = require('../lib/ibb-tools');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
-const { dismissStartupTempClearDialog } = require('../lib/startup-dialogs');
 
 const VOLUME_SIZE_BYTES = 500 * 1024 * 1024; // 524,288,000 - see LARGE_FILE_SPLIT_VOLUME_SIZE_MIB in worker.ts
 const LARGE_FILE_BYTES = 700_000_000; // same proven-safe constant as test-large-file-split.js
@@ -159,10 +158,10 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
   const results = {};
   let app, win, originalConfigContent;
   const createdIbbPaths = [];
+  let sessionDir;
   try {
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
-    await dismissStartupTempClearDialog(win);
 
     await app.evaluate(({ dialog }, paths) => {
       const queue = [...paths];
@@ -228,7 +227,16 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
       await step(`open the "Optical disk ${i + 1}" step`, () => win.getByRole('tab', { name: `Optical disk ${i + 1}`, exact: false }).click({ timeout: 30_000 }));
       await step(`click "Send to ImgBurn" for disc ${i + 1}`, () => win.getByRole('button', { name: 'Send to ImgBurn' }).click({ timeout: 30_000 }));
       await step(`click "Ok" on the "Disc label" confirmation for disc ${i + 1}`, () => win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 30_000 }));
-      const ibbPath = path.join(realTempDir, `Disk_${i + 1}.ibb`);
+
+      if (!sessionDir) {
+        // Created by whichever disc's send is first to need it - this is always disc 1 here, but discovered
+        // rather than assumed, and cached for the rest of this phase either way.
+        process.stdout.write('  [ ] discover this job\'s real session subfolder ... ');
+        sessionDir = await waitForSessionSubdirectory(realTempDir, 15_000);
+        console.log(`done (${path.basename(sessionDir)})`);
+      }
+
+      const ibbPath = path.join(sessionDir, `Disk_${i + 1}.ibb`);
       process.stdout.write(`  [ ] wait for the real .ibb file for disc ${i + 1} to appear ... `);
       await waitForFile(ibbPath, 30_000);
       console.log('done');
@@ -251,7 +259,7 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
       await step('open the "Optical disk 3" step', () => win.getByRole('tab', { name: 'Optical disk 3', exact: false }).click({ timeout: 30_000 }));
       await step('click "Send to ImgBurn" for disc 3', () => win.getByRole('button', { name: 'Send to ImgBurn' }).click({ timeout: 30_000 }));
       await step('click "Ok" on the "Disc label" confirmation for disc 3', () => win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 30_000 }));
-      const ibbPath3 = path.join(realTempDir, 'Disk_3.ibb');
+      const ibbPath3 = path.join(sessionDir, 'Disk_3.ibb');
       process.stdout.write('  [ ] wait for the real .ibb file for disc 3 to appear ... ');
       await waitForFile(ibbPath3, 30_000);
       console.log('done');
@@ -269,7 +277,7 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
       console.log(`  -> ${discCountAfterSends} disc step(s) rendered (expected still 2 - no new disc) - ${results.discCountStillTwo ? 'OK' : 'WRONG'}`);
     }
 
-    printTree(realTempDir, 'App temp dir (after) - real .ibb files and stub-generated split pieces');
+    printTree(sessionDir, 'App temp session dir (after) - real .ibb files and stub-generated split pieces');
 
     // --- verify the saved cold storage metadata JSON: exact entry count, and each entry's own sizes ---
     console.log('\nVerifying the saved cold storage metadata JSON...');
@@ -314,20 +322,22 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
       await step(`wait for disc ${i + 1} to show as confirmed`, () => win.getByRole('button', { name: 'Disc confirmed', exact: false }).waitFor({ timeout: 30_000 }));
     }
     await new Promise((r) => setTimeout(r, 1000)); // let the last confirm's real delete finish
-    const largeFilesTempDir = path.join(realTempDir, 'large-files');
+    const largeFilesTempDir = path.join(sessionDir, 'large-files');
     const leftoverPieces = fs.existsSync(largeFilesTempDir) ? fs.readdirSync(largeFilesTempDir).filter((f) => /\.part\.\d+$/i.test(f)) : [];
     results.noLeftoverPiecesAfterConfirming = leftoverPieces.length === 0;
     console.log(`  leftover split-piece files after confirming every disc: ${leftoverPieces.length} (expected 0) - ${results.noLeftoverPiecesAfterConfirming ? 'OK' : 'WRONG'}`);
     if (leftoverPieces.length > 0) { console.log(`    STILL PRESENT: ${leftoverPieces.join(', ')}`); }
 
-    // confirmDiscBurned deliberately never removes the now-empty "large-files" directory itself (see its own
-    // comment in worker.ts - a harmless leftover, cleaned up whenever clearTempDataDirectory next runs) - but
-    // this script runs TWO phases against the same real temp dir, and assertRealTempDataDirectoryIsSafeToUse
-    // (called at the start of the NEXT phase, before that phase's own app launch has a chance to clean it) can't
-    // tell "an empty leftover directory" apart from "real pending data" - so this script removes it itself here,
-    // between phases, rather than leaving that for the next phase to trip over.
-    if (fs.existsSync(largeFilesTempDir) && fs.readdirSync(largeFilesTempDir).length === 0) {
-      fs.rmdirSync(largeFilesTempDir);
+    // confirmDiscBurned deliberately never removes the now-empty "large-files" directory (or the session
+    // directory itself) - see its own comment in worker.ts - a harmless leftover, cleaned up whenever
+    // clearTempDataDirectory next runs. But this script runs TWO phases against the same real temp dir, and
+    // assertRealTempDataDirectoryIsSafeToUse (called at the start of the NEXT phase, before that phase's own app
+    // launch has a chance to create its own, different session folder) can't tell "an empty leftover session
+    // folder" apart from "real pending data" sitting directly under the temp dir - so this script removes this
+    // phase's whole session folder itself here, between phases, rather than leaving that for the next phase to
+    // trip over.
+    if (sessionDir && fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 
     const pass = Object.values(results).every(Boolean);

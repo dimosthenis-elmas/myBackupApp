@@ -137,6 +137,29 @@ const PART_FILE_PATTERN = /\.part\.\d+$/i;
  *  this can never end up recognizing something unrelated that merely happens to share the extension. */
 const IBB_PROJECT_FILE_PATTERN = /^Disk_\d+\.ibb$/i;
 
+/** Matches this app's own per-job temp session folders (e.g. "session-1788672345678"). Every "Backup to optical
+ *  media"/"Add missing files to cold storage" job generates exactly one of these (see backup-to-optical-
+ *  media.component.ts / add-missing-files-to-optical-media-cold-storage.component.ts) the first time it plans a
+ *  split, and reuses it consistently for every disc sent during that same job - so a job's real split pieces
+ *  and .ibb files always live under tempDataDirectory/session-<id>/, never directly under tempDataDirectory/
+ *  itself. This is what makes two different jobs' temp content fully isolated from each other: since a session
+ *  ID is only ever generated when a NEW job starts, and a job cannot span an app restart (no resume support -
+ *  see confirmedDiscs in backup-to-optical-media.component.ts), ANY session folder still present the next time
+ *  the app launches is unambiguously left over from a dead job - no content inspection needed to know it is
+ *  safe to remove (see checkTempDataDirectoryForLeftovers). */
+const SESSION_FOLDER_NAME_PATTERN = /^session-\d+$/;
+
+/** Validates a session ID received over IPC (ultimately renderer-controlled) actually matches
+ *  SESSION_FOLDER_NAME_PATTERN before it is ever used to build a filesystem path - defense in depth against a
+ *  malformed or crafted value (e.g. containing "..") being joined into a real path and escaping the temp
+ *  directory, the same reasoning isPathStrictlyInside exists for elsewhere in this file. Every function that
+ *  takes a sessionId parameter calls this before using it. */
+const assertValidSessionId = function (sessionId: string): void {
+  if (typeof sessionId !== 'string' || !SESSION_FOLDER_NAME_PATTERN.test(sessionId)) {
+    throw new Error(`Invalid temp session id: "${sessionId}" (expected something matching ${SESSION_FOLDER_NAME_PATTERN}).`);
+  }
+}
+
 /** True if `entryPath` is safe for clearTempDataDirectory to delete, given ownership of its containing temp
  *  directory has already been established (ensureTempDataDirectoryIsAppOwned): a symlink/junction (always
  *  safe - deleting it only ever removes the link entry itself, never follows it into whatever it points to);
@@ -551,6 +574,38 @@ const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, me
   };
 }
 
+/** Reports whether the temp directory currently has anything worth telling the user about at startup, and if
+ *  so, what - used by app.component.ts to decide whether to show its startup snackbar at all (never shown when
+ *  this reports nothing).
+ *
+ *  Only looks at DIRECT children of the temp directory, not a deep recursive walk: with per-job session
+ *  subfolders (see SESSION_FOLDER_NAME_PATTERN's own comment), every real leftover is either one of those
+ *  folders, or - for an install upgraded from before this feature existed - a stray loose .part.NNN/.ibb file
+ *  sitting directly at the root from an older version of this app. Either way, a session folder existing at
+ *  startup is unambiguously left over from a dead job (a job cannot span an app restart - no resume support),
+ *  so no content inspection is needed to know it's safe to offer clearing; this still runs entries through
+ *  isRecognizedTempContent before counting them, the same as clearTempDataDirectory itself, so anything
+ *  unrecognized is silently left out of the count/list rather than alarming the user about it. */
+const checkTempDataDirectoryForLeftovers = async function (): Promise<{ path: string, hasLeftovers: boolean, entryNames: string[] }> {
+  const ownership = await ensureTempDataDirectoryIsAppOwned();
+  if (!ownership.ok) {
+    throw new Error(ownership.message);
+  }
+  const tempDataDirectoryPath = ownership.path;
+
+  if (!fs.existsSync(tempDataDirectoryPath)) {
+    return { path: tempDataDirectoryPath, hasLeftovers: false, entryNames: [] };
+  }
+
+  const entries = fs.readdirSync(tempDataDirectoryPath, { withFileTypes: true });
+  const entryNames = entries
+    .filter((e) => e.name !== CACHE_DIRECTORY_OWNERSHIP_MARKER_FILENAME)
+    .filter((e) => isRecognizedTempContent(node_path_module.join(tempDataDirectoryPath, e.name), e.isSymbolicLink()))
+    .map((e) => e.name);
+
+  return { path: tempDataDirectoryPath, hasLeftovers: entryNames.length > 0, entryNames };
+}
+
 const readJSONfromDisk = async function(path: string): Promise<Object> {
   const file = fs.readFileSync(path); 
   const j: Object = JSON.parse(file);
@@ -720,8 +775,13 @@ const partitionArrayBasedOnFilter = <T,>(
 };
 
 // This function returns an array of string arrays. Each sub array contains the files to be written to on one of several optical disks depending on the total size of
-// the files to be backed-up and the capacity of the optical medium to be used.  
-const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, splitLargeFiles:boolean=false, filesMetadata?:filesMetadata[]): Promise<ColdStorageMetadata>{
+// the files to be backed-up and the capacity of the optical medium to be used.
+// `sessionId` (see SESSION_FOLDER_NAME_PATTERN's own comment) is only actually used when splitLargeFiles is
+// true (to predict split-piece paths under this job's own session subfolder) - still required either way, so
+// the same one value the caller generated for this job is always available regardless of which of the two
+// planning calls a wizard's own retry-without-then-with-splitting flow ends up needing it for.
+const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, splitLargeFiles:boolean=false, sessionId: string, filesMetadata?:filesMetadata[]): Promise<ColdStorageMetadata>{
+  assertValidSessionId(sessionId);
   process.env._stop="NoStop";
 
   // Be on the safe side, fill the disk at most up to a certain percentage (e.g. 95% or something) - see
@@ -842,7 +902,10 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
       const fileName = itm.path.split('\\').slice(-1)[0];
       const pathToLargeFileRelativeToOpticalMediumRoot = itm.path.replace(dirPath + "\\", "");
       const relativeDirOfLargeFile = pathToLargeFileRelativeToOpticalMediumRoot.split("\\").slice(0, -1).join("\\");
-      const pathToLargeFileSplitsInTempDirectory = node_path_module.join(tempDataDirectoryPath, relativeDirOfLargeFile);
+      // Predicted under this job's own session subfolder (see SESSION_FOLDER_NAME_PATTERN's own comment) -
+      // never directly under tempDataDirectoryPath itself, so a different job's real split pieces (past or
+      // concurrent) can never collide with this one's, by construction rather than by convention.
+      const pathToLargeFileSplitsInTempDirectory = node_path_module.join(tempDataDirectoryPath, sessionId, relativeDirOfLargeFile);
 
       const predictedPieces = estimateLargeFileSplitPieces(itm.stats.size);
       predictedPieces.forEach((piece, index) => {
@@ -965,12 +1028,15 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
  *     than silently written past the disc's margin-discounted capacity), is entirely the caller's
  *     responsibility - see sendToImgBurn/maybeAppendOverflowDiscs in backup-to-optical-media.component.ts.
  *   - Any other difference: throws - genuinely unexpected, not the one known/reconciled case. */
-const materializeOpticalMediaDiscPieces = async function (dirPath: string, paths: Array<string>): Promise<filesMetadata[]> {
+const materializeOpticalMediaDiscPieces = async function (dirPath: string, paths: Array<string>, sessionId: string): Promise<filesMetadata[]> {
+  assertValidSessionId(sessionId);
   const ownership = await ensureTempDataDirectoryIsAppOwned();
   if (!ownership.ok) {
     throw new Error(ownership.message);
   }
-  const tempDataDirectoryPath = ownership.path;
+  // This job's own session subfolder (see SESSION_FOLDER_NAME_PATTERN's own comment) - never the temp
+  // directory's root directly, so this job's real split pieces can never collide with a different job's.
+  const tempDataDirectoryPath = node_path_module.join(ownership.path, sessionId);
   if (dirPath.slice(-1) == '\\') { dirPath = dirPath.slice(0, -1); }
 
   const config = await readConfig();
@@ -1695,7 +1761,7 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
 
 //-----------
 
-const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>, index: number, source: string, target: string, logs: string[]): void {
+const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>, index: number, source: string, target: string, logs: string[], sessionId: string): void {
   if ((tokens.length - index) == 1) {
     tree[tokens[index]] = {}
     // Create file OR directory
@@ -1709,8 +1775,9 @@ const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>
       if(parentInOpticalDiskFileStructure == ''){ parentInOpticalDiskFileStructure =  '\\' }
       let fileFullSourcePath = source + target_path.slice(1);
       /* There is a possibility that the file is part of a splitted large file.
-         These splits are stored in the temp data directory. Thus the full path to this split (part file)
-         is created using a different 'source'. Here we take care of this case. If the fileFullSourcePath = source + target_path.slice(1);
+         These splits are stored in this job's own session subfolder under the temp data directory (see
+         SESSION_FOLDER_NAME_PATTERN's own comment). Thus the full path to this split (part file) is created
+         using a different 'source'. Here we take care of this case. If the fileFullSourcePath = source + target_path.slice(1);
          does not exist, then try using the temp directory path as the source dir. */
       if (!fs.existsSync(fileFullSourcePath)) {
         const configJSON = fs.readFileSync(node_path_module.join(__dirname, `../../appData/config.json`));
@@ -1719,7 +1786,7 @@ const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>
         // used (rather than string concatenation) to combine it with target_path.slice(1) so this is correct
         // regardless of whether either piece happens to have a leading/trailing separator.
         let tempDataDirectoryPath = resolveTempDataDirectoryPath(JSON.parse(configJSON));
-        fileFullSourcePath = node_path_module.join(tempDataDirectoryPath, target_path.slice(1));
+        fileFullSourcePath = node_path_module.join(tempDataDirectoryPath, sessionId, target_path.slice(1));
       }
       logs.push(`F|${fileName}|${parentInOpticalDiskFileStructure}|${fileFullSourcePath}`)
 
@@ -1730,7 +1797,7 @@ const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>
       // Create directory (only)
       let path_suffix = createPath(tokens, index)
       let target_path = target + path_suffix
-      
+
       const dirName = target_path.slice(1).split('\\').slice(-1)[0]
       const n_tokens = target_path.split('\\').length
       let dirParentInOpticalDiskFileStructure = target_path.split('\\').slice(0, n_tokens - 1).join('\\');
@@ -1741,14 +1808,14 @@ const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>
         const configJSON = fs.readFileSync(node_path_module.join(__dirname, `../../appData/config.json`));
         // See the matching comment in the file-path branch above.
         let tempDataDirectoryPath = resolveTempDataDirectoryPath(JSON.parse(configJSON));
-        dirFullSourcePath = node_path_module.join(tempDataDirectoryPath, target_path.slice(1));
+        dirFullSourcePath = node_path_module.join(tempDataDirectoryPath, sessionId, target_path.slice(1));
       }
       logs.push(`D|${dirName}|${dirParentInOpticalDiskFileStructure}|${dirFullSourcePath}`)
-      
+
     }
     let a = tokens[index]
     index += 1
-    insertBranch_for_IBB_creation(tree[a], tokens, index, source, target, logs);
+    insertBranch_for_IBB_creation(tree[a], tokens, index, source, target, logs, sessionId);
   }
 }
 
@@ -1761,7 +1828,8 @@ without resorting to enabling the "preserve full paths" option in ImgBurn. This 
 will create a file structure for our optical medium statring with \**\*\backup_dir.
 Instead of this we want our file structure inside the optical disk to start (root dir) from backup_dir\.
 */
-const createIBB_file = async function(disk_id: number, paths: Array<string>, sourcePath: string, volumeLabel?: string){
+const createIBB_file = async function(disk_id: number, paths: Array<string>, sourcePath: string, sessionId: string, volumeLabel?: string){
+  assertValidSessionId(sessionId);
   process.env._stop = "noStop";
 
   let target = "\\"
@@ -1779,7 +1847,7 @@ const createIBB_file = async function(disk_id: number, paths: Array<string>, sou
     }
     path = paths[index];
     let tokens = path.split('\\')
-    insertBranch_for_IBB_creation(tree, tokens, 0, sourcePath, target, logs);
+    insertBranch_for_IBB_creation(tree, tokens, 0, sourcePath, target, logs, sessionId);
     await holdOn();
   }
 
@@ -1807,7 +1875,12 @@ const createIBB_file = async function(disk_id: number, paths: Array<string>, sou
     console.error('Refusing to create the .ibb file: ' + ownership.message);
     return logs;
   }
-  const pathToIBBFile = node_path_module.join(ownership.path, `Disk_${disk_id + 1}.ibb`);
+  // This job's own session subfolder (see SESSION_FOLDER_NAME_PATTERN's own comment) - created here explicitly
+  // (recursive - it may not exist yet) rather than assuming materializeOpticalMediaDiscPieces already created
+  // it, since a disc made up entirely of ordinary files never calls that function's own directory-creating path.
+  const sessionDirectoryPath = node_path_module.join(ownership.path, sessionId);
+  fs.mkdirSync(sessionDirectoryPath, { recursive: true });
+  const pathToIBBFile = node_path_module.join(sessionDirectoryPath, `Disk_${disk_id + 1}.ibb`);
 
   await saveIBB_toDisk(pathToIBBFile, pathTo_IBB_Template, [
     { regEx: /\[START_BACKUP_LIST\]/g, dataToInsert: ["[START_BACKUP_LIST]"].concat(logs).join('\r\n') },
@@ -1929,7 +2002,7 @@ const init = function() : void
         break;
       case 'partition-backup-to-optical-media':
         console.log("(worker) in partition-backup-to-optical-media")
-        partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.splitLargeFiles, arg.params.filesMetadata).then((d)=>{
+        partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.splitLargeFiles, arg.params.sessionId, arg.params.filesMetadata).then((d)=>{
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'partition-backup-to-optical-media', res: d, status: "completed" });
           }else{
@@ -1941,7 +2014,7 @@ const init = function() : void
         break;
       case 'create-IBB-file':
         console.log("(worker) in create-IBB-file")
-        createIBB_file(arg.params.disk_id, arg.params.paths, arg.params.sourcePath, arg.params.volumeLabel).then((d)=>{
+        createIBB_file(arg.params.disk_id, arg.params.paths, arg.params.sourcePath, arg.params.sessionId, arg.params.volumeLabel).then((d)=>{
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'create-IBB-file', res: d, status: "completed" });
           }else{
@@ -1953,7 +2026,7 @@ const init = function() : void
         break;
       case 'materialize-optical-media-disc-pieces':
         console.log("(worker) in materialize-optical-media-disc-pieces")
-        materializeOpticalMediaDiscPieces(arg.params.dirPath, arg.params.paths).then((d)=>{
+        materializeOpticalMediaDiscPieces(arg.params.dirPath, arg.params.paths, arg.params.sessionId).then((d)=>{
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'materialize-optical-media-disc-pieces', res: d, status: "completed" });
           }else{
@@ -2083,6 +2156,14 @@ const init = function() : void
           ipc.sendResponseToMain({ key: 'clear-temp-data-directory', res: d, status: "completed" });
         }).catch((err)=>{
           ipc.sendResponseToMain({ key: 'clear-temp-data-directory', res: err, status: "error" });
+        });
+        break;
+      case 'check-temp-data-directory-for-leftovers':
+        console.log("(worker) in check-temp-data-directory-for-leftovers")
+        checkTempDataDirectoryForLeftovers().then((d)=>{
+          ipc.sendResponseToMain({ key: 'check-temp-data-directory-for-leftovers', res: d, status: "completed" });
+        }).catch((err)=>{
+          ipc.sendResponseToMain({ key: 'check-temp-data-directory-for-leftovers', res: err, status: "error" });
         });
         break;
       case 'validate-config-paths':

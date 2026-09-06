@@ -92,14 +92,13 @@
 const fs = require('fs');
 const path = require('path');
 const { launchApp, callWorker } = require('../worker-ipc/call-worker');
-const { assertRealTempDataDirectoryIsSafeToUse, resolveRealTempDataDirectory } = require('../worker-ipc/temp-dir-guard');
+const { assertRealTempDataDirectoryIsSafeToUse, resolveRealTempDataDirectory, waitForSessionSubdirectory } = require('../worker-ipc/temp-dir-guard');
 const { printTree } = require('../lib/print-tree');
 const { normalizeForMetadata, OPTICAL_DRIVE_LETTER_CONVENTION } = require('../lib/cold-storage-metadata');
 const { writeStubImgBurnBat, backupAndRedirectImgBurnPath, restoreConfig, waitForFile, parseIbbBackupList, parseIbbVolumeLabel } = require('../lib/ibb-tools');
 const { MARKER_FILE_NAME } = require('../lib/safety');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
-const { dismissStartupTempClearDialog } = require('../lib/startup-dialogs');
 
 const SPEC_DIR = path.join(__dirname, 'tree-specs', 'test-add-missing-files');
 
@@ -222,25 +221,21 @@ async function main() {
   let app, win, originalConfigContent, existingMetadata;
   const createdIbbPaths = [];
   const discLabelDialogTexts = [];
+  let sessionDir;
   try {
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
 
-    // Every app launch, app.component.ts's own clearTempDataDirectoryOnStartup() unconditionally calls the
-    // exact same 'get-file-paths-with-stats' IPC key this script is about to call next (to build the mandatory
-    // "Clearing temporary files" dialog's own message), then - once that dialog is dismissed below - a further
-    // 'clear-temp-data-directory' call. callWorker (worker-ipc/call-worker.js) matches responses by key alone -
-    // no per-request correlation ID exists anywhere in this IPC contract - so this script's own call, fired with
-    // no UI interaction in between, can race one of those and receive ITS response instead of its own. Found for
-    // real (2026-08-27): the returned "listing" was a single entry pointing at the app's own temp-dir ownership
-    // marker file, not anything under existingDisc1Dir. Every OTHER script here does several UI clicks (each
-    // with their own 5s watch pause) before ever making a raw callWorker call, which is why none of them ever
-    // hit this - by then the startup check has long since finished. This is specific to how this TEST HARNESS
-    // bypasses the app's own internal call queue for raw IPC calls - real UI-driven usage is naturally
-    // serialized through it instead - so the fix belongs here, not in the app. dismissStartupTempClearDialog
-    // already waits for the dialog itself (so the FIRST two calls are guaranteed done by the time it returns) -
-    // this pause covers the trailing clear-temp-data-directory call the "Ok" click just triggered.
-    await dismissStartupTempClearDialog(win);
+    // Every app launch, app.component.ts's own clearTempDataDirectoryOnStartup() fires a real
+    // 'check-temp-data-directory-for-leftovers' IPC call on its own (no UI interaction needed - it only shows a
+    // snackbar, and only if that check finds something; ignoring the snackbar, which every script here does, is
+    // enough to not need any click). WorkerCommunicator's own 'message-from-worker' listener calls
+    // ipcRenderer_removeAllListeners once ITS call resolves - so does callWorker's (worker-ipc/call-worker.js),
+    // used for this script's own raw IPC calls, which are NOT serialized through the app's internal call queue
+    // (real UI-driven usage is; that's why no other script here needs this pause - by the time any of them
+    // makes its first raw callWorker call, several UI clicks with their own watch pauses have already let the
+    // startup check finish). Whichever of the two settles first strands the other's listener, which would
+    // otherwise just hang until its own timeout. This short pause gives the startup check time to finish first.
     await new Promise((r) => setTimeout(r, 3000));
 
     // 2. Ask the app's own real IPC for the "existing disc 1" folder's real file listing + stats, then build a
@@ -418,7 +413,15 @@ async function main() {
       await step(`click "Ok" on disc ${i + 1}'s "Disc label" confirmation`, () =>
         win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
 
-      const ibbPath = path.join(realTempDir, `Disk_${i + 1}.ibb`);
+      if (!sessionDir) {
+        // Created by whichever disc's send is first to need it - this is always disc 1 here, but discovered
+        // rather than assumed, and cached for the rest of this loop either way.
+        process.stdout.write('  [ ] discover this job\'s real session subfolder ... ');
+        sessionDir = await waitForSessionSubdirectory(realTempDir, 15_000);
+        console.log(`done (${path.basename(sessionDir)})`);
+      }
+
+      const ibbPath = path.join(sessionDir, `Disk_${i + 1}.ibb`);
       process.stdout.write(`  [ ] wait for the real .ibb file for new disc ${i + 1} to appear ... `);
       await waitForFile(ibbPath, 30_000);
       console.log('done');
@@ -600,6 +603,14 @@ async function main() {
     const splitPieceParentDirs = new Set(splitPieceFilesToCleanUp.map((p) => path.dirname(p)));
     for (const d of splitPieceParentDirs) {
       if (fs.existsSync(d) && fs.readdirSync(d).length === 0) { fs.rmdirSync(d); }
+    }
+    // This job's own session folder is now empty too (its .ibb files were already removed above, and
+    // "large-files" - if it existed - just was) - remove it regardless of pass/fail, unconditionally, same as
+    // the "large-files" cleanup just above. Left behind otherwise, it would make the NEXT script's
+    // assertRealTempDataDirectoryIsSafeToUse call refuse to run (it can't tell "an empty leftover session
+    // folder" apart from real pending data).
+    if (sessionDir && fs.existsSync(sessionDir) && fs.readdirSync(sessionDir).length === 0) {
+      fs.rmdirSync(sessionDir);
     }
 
   // 4. Verify (b): the updated metadata JSON preserves the original disc's entries untouched and correctly

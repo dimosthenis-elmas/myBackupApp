@@ -117,6 +117,11 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    * from the existing cold storage metadata - retype the same name used originally to keep new discs'
    * labeling consistent with the rest of the collection. */
   coldStorageCollectionName: string = '';
+  /** This job's own temp-dir session subfolder name (see SESSION_FOLDER_NAME_PATTERN's own comment in
+   *  worker.ts) - generated once (see partition()) and reused for every worker call this job makes that
+   *  touches the temp directory (planning, materializing split pieces, creating .ibb files), so they all agree
+   *  on the exact same isolated subfolder. */
+  private tempSessionId!: string;
   isLinear = false;
   step='step_1';
   odbr_ref!: OpticalDiscBackupDataRetriever;
@@ -181,7 +186,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '600px'});
     loadingDialogRef.componentInstance.title = "Info";
     loadingDialogRef.componentInstance.message = `Since you want to burn your cold storage backup to a set of optical discs you may come across files which are too large to fit on any single optical disc. In such a case
-    we have to split those large files into multiple parts (chunks of 500 MB) in the temp data directory located in ${tempDataDirectoryPath}. Each large file's parts are only physically created when the disc that needs them is actually sent to ImgBurn, and are deleted again automatically once you confirm that disc was burned - so normally you don't need to clean this up yourself. If a disc's parts were created but never confirmed (e.g. the app was closed before you got to it, or sending that disc failed), they're harmless to delete by hand from that same directory.`;
+    we have to split those large files into multiple parts (chunks of 500 MB), in a subfolder created just for this job under the temp data directory located in ${tempDataDirectoryPath}. Each large file's parts are only physically created when the disc that needs them is actually sent to ImgBurn, and are deleted again automatically once you confirm that disc was burned - so normally you don't need to clean this up yourself. If this job ends before every disc is confirmed (e.g. the app was closed before you got to it), that whole subfolder is harmless to delete by hand, or the app will offer to clear it the next time it starts.`;
   }
 
   async chooseDirectory (): Promise<string>{
@@ -532,10 +537,15 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     //console.log(this.masterPathsWithStats);
     console.log(selectedPathsWithMetadata);
 
+    // Generated once per job (partition() is only ever called once per job - unlike backup-to-optical-
+    // media.component.ts's WriteToOpticalMediaProceed, there is no "try without splitting, retry with
+    // splitting" chain here to worry about reusing the same id across).
+    this.tempSessionId = 'session-' + Date.now();
+
     // partitionBackupToOpticalMedia now plans using fast size ESTIMATES for any large-file split pieces
     // (never invoking 7-Zip here) - the real split, and this.partitions' real sizes, only happen later, lazily,
     // disc by disc, in sendToImgBurn - see its own comment and materializeOpticalMediaDiscPieces in worker.ts.
-    this.partitions =  (await ipc.partitionBackupToOpticalMedia(this.backup.targetPath, this.selected_optical_medium.capacity, true, selectedPathsWithMetadata)).res;
+    this.partitions =  (await ipc.partitionBackupToOpticalMedia(this.backup.targetPath, this.selected_optical_medium.capacity, true, this.tempSessionId, selectedPathsWithMetadata)).res;
     console.log(this.partitions)
 
     // Same effective (margin-discounted) capacity partitionBackupToOpticalMedia itself planned against - see
@@ -603,6 +613,11 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     // Trailing backslash ensured - see the identical fix/comment on tempPath in partition() above for why.
     let tempDataDirectoryPath = (await ipc.getTempDataDirectoryPath()).res;
     if (tempDataDirectoryPath[tempDataDirectoryPath.length - 1] != '\\') { tempDataDirectoryPath += '\\'; }
+    // This job's own session subfolder (see tempSessionId's own doc comment) - partitionBackupToOpticalMedia's
+    // predicted split-piece paths already have this baked into their absolute path, so it must be trimmed off
+    // here too, or it would leak into bareRelativePaths below (which must stay session-agnostic - see
+    // SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts for why that matters).
+    tempDataDirectoryPath += this.tempSessionId + '\\';
     const nextDiscNumber = this.getNextDiscNumber(i);
 
     /* the response from the worker returns the full paths relative to the host file system.
@@ -615,6 +630,21 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     const bareRelativePaths: string[] = volumeFilePathsWithMetadata.map((a: filesMetadata) =>
       a.path.replace(this.backup.targetPath, "").replace(tempDataDirectoryPath, ""));
 
+    // No disc this wizard ever creates - neither an originally-planned one (partitionBackupToOpticalMedia never
+    // produces an empty partition) nor an overflow one (maybeAppendOverflowDiscs only ever appends non-empty
+    // partitions) - should legitimately have zero files here. Burning it anyway would silently produce a
+    // useless, empty .ibb and leave its real piece file undeleted forever (confirmDiscBurned only deletes what
+    // sentDiscPartPaths recorded, which would also be empty). Fail loudly and let the user retry instead.
+    if (bareRelativePaths.length === 0) {
+      const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+      errorDialog.componentInstance.title = "Error";
+      errorDialog.componentInstance.message = `Disc ${i + 1} has no files to send - this should never happen. Please try clicking "Send to ImgBurn" again.`;
+      errorDialog.componentInstance.actionsNum = 1;
+      errorDialog.componentInstance.action1Label = "Ok";
+      errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
+      return;
+    }
+
     // Materializes this disc's real large-file split pieces (if any), lazily, right now - this is the ONLY
     // point a large file actually gets physically split, rather than the whole job's large files all being
     // split up front before any disc is burned. The response can contain MORE entries than were requested (a
@@ -623,7 +653,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     // given large file's real split is offered that file's sliver first, purely as a byproduct of triggering
     // the split - not because it's guaranteed to belong there. Whether it actually ends up on THIS disc is
     // decided below, by the capacity check.
-    const realStats: filesMetadata[] = (await ipc.materializeOpticalMediaDiscPieces(this.backup.targetPath, bareRelativePaths)).res;
+    const realStats: filesMetadata[] = (await ipc.materializeOpticalMediaDiscPieces(this.backup.targetPath, bareRelativePaths, this.tempSessionId)).res;
 
     // Split the response back into what this disc was actually planned to hold and any surplus sliver(s)
     // riding along with it (see materializeOpticalMediaDiscPieces's own comment).
@@ -810,8 +840,10 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     if (!this.sentDiscs[i] || this.confirmedDiscs[i]) { return; }
     const partRelativePaths = this.sentDiscPartPaths[i] || [];
     if (partRelativePaths.length > 0) {
-      const tempDataDirectoryPath: string = (await ipc.getTempDataDirectoryPath()).res;
-      const tempDirNormalized = tempDataDirectoryPath.replace(/\\$/, '');
+      // This job's own session subfolder (see tempSessionId's own doc comment) - the same one materialize
+      // actually wrote these real pieces under, not the temp directory's bare root.
+      const rawTempDataDirectoryPath: string = (await ipc.getTempDataDirectoryPath()).res;
+      const tempDirNormalized = rawTempDataDirectoryPath.replace(/\\$/, '') + '\\' + this.tempSessionId;
       const piecePaths = partRelativePaths.map(p => tempDirNormalized + '\\' + p);
       await ipc.deleteMaterializedPiecesForDisc(piecePaths);
     }
@@ -848,7 +880,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     // finished building the .ibb file and invoking ImgBurn. Without awaiting it, this method (and therefore the
     // caller's .then()) resolved on the next microtick instead - closing the loading dialog and silently
     // dropping any failure before the real work was done.
-    await ipc.createIBB_file(disk_id, paths, sourcePath, volumeLabel);
+    await ipc.createIBB_file(disk_id, paths, sourcePath, this.tempSessionId, volumeLabel);
   }
 
 

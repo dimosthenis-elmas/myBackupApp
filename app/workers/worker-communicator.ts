@@ -247,20 +247,27 @@ export class WorkerCommunicator {
         }, 'response.res');
     }
 
-    static partitionBackupToOpticalMedia(rootPath: string, mediaCapacityInBytes: number, splitLargeFiles: boolean = false, filesMetadata?: filesMetadata[]): Promise<OpticalMediaPartitioning<WorkerResponse>> {
+    /** `sessionId` (see SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts) must be the one value generated
+     *  once per job and reused consistently across every call this same job makes (this one, createIBB_file,
+     *  and materializeOpticalMediaDiscPieces) - it is what keeps this job's real split pieces and .ibb files
+     *  isolated from any other job's, past or concurrent. */
+    static partitionBackupToOpticalMedia(rootPath: string, mediaCapacityInBytes: number, splitLargeFiles: boolean = false, sessionId: string, filesMetadata?: filesMetadata[]): Promise<OpticalMediaPartitioning<WorkerResponse>> {
         return this.sendAndAwaitResponse<OpticalMediaPartitioning<WorkerResponse>>('partition-backup-to-optical-media', {
             rootPath: rootPath,
             mediaCapacityInBytes: mediaCapacityInBytes,
             splitLargeFiles: splitLargeFiles,
+            sessionId: sessionId,
             filesMetadata: filesMetadata
         });
     }
 
-    static createIBB_file(disk_id: number, paths: Array<string>, sourcePath: string, volumeLabel?: string): Promise<WorkerResponse> {
+    /** See partitionBackupToOpticalMedia's own comment on sessionId - the same one value for this whole job. */
+    static createIBB_file(disk_id: number, paths: Array<string>, sourcePath: string, sessionId: string, volumeLabel?: string): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('create-IBB-file', {
             disk_id: disk_id,
             paths: paths,
             sourcePath: sourcePath,
+            sessionId: sessionId,
             volumeLabel: volumeLabel
         });
     }
@@ -314,13 +321,20 @@ export class WorkerCommunicator {
         return this.sendAndAwaitResponse('clear-temp-data-directory', {});
     }
 
+    /** See clearTempDataDirectoryOnStartup in app.component.ts - used to decide whether the startup snackbar
+     *  should show at all (only when `res.hasLeftovers` is true). */
+    static checkTempDataDirectoryForLeftovers(): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('check-temp-data-directory-for-leftovers', {});
+    }
+
     /** Physically splits (via real 7-Zip) whichever large files `paths` references that haven't been split yet,
      *  and returns fresh, real stats for every path - see materializeOpticalMediaDiscPieces in worker.ts. The
      *  response's `res` array can be longer than `paths` (a rare, known boundary case surfaces one extra,
      *  unplanned piece - see that function's own comment) - callers should build their disc's saved metadata
-     *  from the full response, not by zipping it against the original request. */
-    static materializeOpticalMediaDiscPieces(dirPath: string, paths: Array<string>): Promise<WorkerResponse> {
-        return this.sendAndAwaitResponse('materialize-optical-media-disc-pieces', { dirPath: dirPath, paths: paths });
+     *  from the full response, not by zipping it against the original request. `sessionId` must be the same
+     *  one value used for every other call this job makes - see partitionBackupToOpticalMedia's own comment. */
+    static materializeOpticalMediaDiscPieces(dirPath: string, paths: Array<string>, sessionId: string): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('materialize-optical-media-disc-pieces', { dirPath: dirPath, paths: paths, sessionId: sessionId });
     }
 
     /** Deletes exactly the given real, absolute temp-dir piece paths - see deleteMaterializedPiecesForDisc in

@@ -4,9 +4,9 @@ import { TranslateService } from '@ngx-translate/core';
 import { APP_CONFIG } from '../environments/environment';
 import { Router } from '@angular/router';
 import { MatDialog } from '@angular/material/dialog';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { ConfirmationDialogComponent } from './shared/components/confirmation-dialog/confirmation-dialog.component';
 import { WorkerCommunicator as ipc } from '../../app/workers/worker-communicator';
-import { PART_FILE_PATTERN } from './shared/utils/part-file-pattern';
 
 interface StringIndexedObject {
   [key: string]: string;
@@ -32,7 +32,8 @@ export class AppComponent implements OnInit {
     private electronService: ElectronService,
     private translate: TranslateService,
     public router: Router,
-    private dialog: MatDialog
+    private dialog: MatDialog,
+    private snackBar: MatSnackBar
   ) {
 
 
@@ -251,70 +252,50 @@ export class AppComponent implements OnInit {
     return false;
   }
 
-  /** On startup, clears the app's temp/cache directory (used as a buffer for large-file splits, and for .ibb
-   *  project files, before they are burned to optical media - see partitionBackupToOpticalMedia and
-   *  createIBB_file in worker.ts) whenever it actually has something left over in it - nothing in there can
-   *  ever safely carry over to a new session: a backup/burn job has no resume support (see confirmedDiscs in
-   *  backup-to-optical-media.component.ts), so a piece left behind by an earlier, abandoned session is not a
-   *  head start on a later one - it is stale, and reusing it could even silently serve wrong data (e.g. if the
-   *  source file it was split from has since changed). If the directory is already empty, this does nothing at
-   *  all - no dialog, no IPC call to actually clear it - since there would be nothing to tell the user about.
+  /** On startup, OFFERS to clear the app's temp/cache directory (used as a buffer for large-file splits, and
+   *  for .ibb project files, before they are burned to optical media - see partitionBackupToOpticalMedia and
+   *  createIBB_file in worker.ts) whenever it actually has something left over in it. This is purely a disk-
+   *  space courtesy, not a correctness requirement: every "Backup to optical media"/"Add missing files" job
+   *  generates its own per-job session subfolder there (see SESSION_FOLDER_NAME_PATTERN in worker.ts) and only
+   *  ever reads/writes inside it, so a leftover subfolder from an earlier, abandoned job can never be mistaken
+   *  for - or silently reused as - anything belonging to a new job. If the directory is already empty, this
+   *  does nothing at all - no snackbar, no IPC call.
    *
-   *  When there IS something to clear, the user is informed first (itemizing exactly what will be removed) but
-   *  is not offered a way to decline - there is deliberately only one action ("Ok"), which triggers the clear
-   *  once clicked. Any failure here is logged and, unlike the happy path, does get its own dialog so a real
-   *  failure is not silently swallowed - but it never blocks app startup either way. */
+   *  When there IS something to clear, a snackbar (not a blocking dialog - nothing here needs the user's
+   *  permission, since leaving it alone is completely safe) offers a "Clear" action, shown for 10 seconds and
+   *  then auto-dismissed if left untouched - ignoring it costs nothing but some disk space, and the same offer
+   *  simply reappears next launch. Only actually clicking "Clear" deletes anything. */
   private async clearTempDataDirectoryOnStartup(): Promise<void> {
     try {
-      const tempDataDirectoryPath = (await ipc.getTempDataDirectoryPath()).res;
-      const filesWithStats: Array<{ path: string }> = (await ipc.getFilePathsWithStats(tempDataDirectoryPath)).res;
-      const ibbProjectFilePattern = /Disk_\d+\.ibb$/i;
-      const leftoverFiles = (filesWithStats || []).filter((f) => PART_FILE_PATTERN.test(f.path) || ibbProjectFilePattern.test(f.path));
-
-      if (leftoverFiles.length === 0) {
+      const check: { path: string, hasLeftovers: boolean, entryNames: string[] } = (await ipc.checkTempDataDirectoryForLeftovers()).res;
+      if (!check.hasLeftovers) {
         return;
       }
 
-      // Shown to the user so the dialog below lists exactly what will be removed, not just "the directory is
-      // not empty" - strips the temp directory's own path prefix off each entry so the list reads as paths
-      // relative to it, which is what the user actually recognizes (part-file/ibb names), rather than the full
-      // absolute path repeated on every line.
-      const relativeLeftoverPaths = leftoverFiles.map((f) => {
-        const p = f.path;
-        return p.startsWith(tempDataDirectoryPath)
-          ? p.slice(tempDataDirectoryPath.length).replace(/^[\\/]+/, '')
-          : p;
-      });
-      const leftoverFilesList = relativeLeftoverPaths.map((p) => `  • ${p}`).join('\n');
+      const snackBarRef = this.snackBar.open(
+        `Found ${check.entryNames.length} leftover item(s) from a previous session in the temp directory.`,
+        'Clear',
+        { duration: 10_000, horizontalPosition: 'end', verticalPosition: 'top' }
+      );
 
-      await new Promise<void>((resolve) => {
-        const infoDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
-        infoDialog.disableClose = true;
-        infoDialog.componentInstance.title = "Clearing temporary files";
-        infoDialog.componentInstance.message =
-          `This app does not support resuming a backup/burn job across restarts, so anything left over in its ` +
-          `temporary directory ("${tempDataDirectoryPath}") from an earlier session is cleared now, before ` +
-          `continuing.\n\nThe following ${leftoverFiles.length} file(s) will be removed:\n${leftoverFilesList}`;
-        infoDialog.componentInstance.actionsNum = 1;
-        infoDialog.componentInstance.action1Label = "Ok";
-        infoDialog.componentInstance.action1Callback = () => {
-          infoDialog.close();
-          resolve();
+      snackBarRef.onAction().subscribe(async () => {
+        try {
+          const response = await ipc.clearTempDataDirectory();
+          const result: { cleared: boolean; message: string; deletedItems: string[] } = response.res;
+          if (!result.cleared) {
+            const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
+            errorDialog.componentInstance.title = "Could not clear temp directory";
+            errorDialog.componentInstance.message = result.message;
+            errorDialog.componentInstance.actionsNum = 1;
+            errorDialog.componentInstance.action1Label = "Ok";
+            errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); }
+          }
+        } catch (error) {
+          console.error('Failed to clear the temp data directory after the startup snackbar\'s "Clear" action', error);
         }
       });
-
-      const response = await ipc.clearTempDataDirectory();
-      const result: { cleared: boolean; message: string; deletedItems: string[] } = response.res;
-      if (!result.cleared) {
-        const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
-        errorDialog.componentInstance.title = "Could not clear temp directory";
-        errorDialog.componentInstance.message = result.message;
-        errorDialog.componentInstance.actionsNum = 1;
-        errorDialog.componentInstance.action1Label = "Ok";
-        errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); }
-      }
     } catch (error) {
-      console.error('Failed to clear the temp data directory on startup', error);
+      console.error('Failed to check the temp data directory for leftovers on startup', error);
     }
   }
 

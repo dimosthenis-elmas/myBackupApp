@@ -55,4 +55,46 @@ function assertRealTempDataDirectoryIsSafeToUse() {
   return dir;
 }
 
-module.exports = { resolveRealTempDataDirectory, assertRealTempDataDirectoryIsSafeToUse, MARKER_FILENAME };
+/** Matches this app's own per-job temp session folders - see SESSION_FOLDER_NAME_PATTERN's own comment in
+ *  worker.ts (kept in sync with it by hand, the same way PART_FILE_PATTERN/IBB_PROJECT_FILE_PATTERN already are
+ *  between worker.ts and various renderer-side files). */
+const SESSION_FOLDER_NAME_PATTERN = /^session-\d+$/;
+
+/** Finds the exact one session subfolder currently sitting directly under `tempDir` (see
+ *  SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts) and returns its full path. Every "Backup to optical
+ *  media"/"Add missing files to cold storage" job creates its own the first time it plans a split or sends a
+ *  disc, and a UI test script that called assertRealTempDataDirectoryIsSafeToUse before launching the app (as
+ *  they all do) is guaranteed the temp dir held nothing at all beforehand - so by the time the wizard has
+ *  planned/sent anything, there can only ever be the ONE session folder that job itself just created. Throws
+ *  with a clear, actionable message instead of silently guessing if that assumption is ever wrong (zero found -
+ *  too early to call this; more than one found - something is unexpectedly sharing this temp dir). */
+function resolveSessionSubdirectory(tempDir) {
+  const matches = fs.readdirSync(tempDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && SESSION_FOLDER_NAME_PATTERN.test(e.name))
+    .map((e) => e.name);
+  if (matches.length !== 1) {
+    throw new Error(
+      `Expected exactly one session-<id> subfolder directly under "${tempDir}", found ${matches.length}` +
+      (matches.length > 0 ? `: ${matches.join(', ')}` : '') +
+      '. Either called too early (before the wizard has planned/sent anything yet), or something unexpected is in the temp directory.'
+    );
+  }
+  return path.join(tempDir, matches[0]);
+}
+
+/** Polls resolveSessionSubdirectory until it succeeds (the session folder is created by whichever disc's send
+ *  first needs it - materializeOpticalMediaDiscPieces/createIBB_file both ensure it exists - so it may not be
+ *  there yet the instant a "Send to ImgBurn" click returns), or throws its last error once `timeoutMs` passes. */
+async function waitForSessionSubdirectory(tempDir, timeoutMs = 15_000) {
+  const deadlineAt = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return resolveSessionSubdirectory(tempDir);
+    } catch (error) {
+      if (Date.now() > deadlineAt) { throw error; }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+}
+
+module.exports = { resolveRealTempDataDirectory, assertRealTempDataDirectoryIsSafeToUse, resolveSessionSubdirectory, waitForSessionSubdirectory, MARKER_FILENAME };
