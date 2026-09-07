@@ -10,6 +10,7 @@ import { Subject } from 'rxjs';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
 import { getDiscIdHash } from '../shared/utils/disc-id-hash';
+import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 
 import {FormBuilder, Validators, FormsModule, ReactiveFormsModule} from '@angular/forms';
 import {MatButtonModule} from '@angular/material/button';
@@ -466,10 +467,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         This operation cannot proceed and you are advised to re-create your cold storage again. We will now cancel the operation.`;
         errorDialog.afterClosed().subscribe(()=>{
           // Exit to main menu.
-          this.router.navigate(['main-menu'])
-            .then(() => {
-            window.location.reload();
-          });
+          goToMainMenuAndReload(this.router);
         });
       } else {
         return false // backed up
@@ -482,17 +480,20 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     }
 
     if(missingFiles.length == 0){
-        const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
-        loadingDialogRef.componentInstance.title = "Info";
-        loadingDialogRef.componentInstance.message = `It looks like your cold storage is already up to date. There are no new files in your 'master'
+        // Stop here, same as the outOfSync case above - otherwise this fell through to building and briefly
+        // showing an empty step_3 "select files to burn" tree underneath this dialog before the navigate-away
+        // actually happened. Named infoDialog (not loadingDialogRef) so it doesn't shadow the outer
+        // LoadingDialogComponent reference, which still needs closing on its own right here.
+        loadingDialogRef.close();
+        const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
+        infoDialog.componentInstance.title = "Info";
+        infoDialog.componentInstance.message = `It looks like your cold storage is already up to date. There are no new files in your 'master'
         that are missing from your cold storage.`;
-        loadingDialogRef.afterClosed().subscribe(()=>{
+        infoDialog.afterClosed().subscribe(()=>{
           // Exit to main menu.
-          this.router.navigate(['main-menu'])
-            .then(() => {
-            window.location.reload();
-          });
+          goToMainMenuAndReload(this.router);
         });
+        return;
     }
 
     missingFiles = missingFiles.map((itm, i) => {

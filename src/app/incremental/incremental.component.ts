@@ -9,6 +9,7 @@ import { LoadingDialogComponent } from '../shared/components/loading-dialog/load
 import { Subject } from 'rxjs';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
+import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 
 @Component({
   selector: 'app-incremental',
@@ -210,17 +211,17 @@ export class IncrementalComponent implements OnInit, OnDestroy {
       errorDialog.componentInstance.message = `An error occurred while comparing the directories: ${error}`;
       errorDialog.componentInstance.action1Callback = () => {
         errorDialog.close();
-        this.router.navigate(['main-menu']);
+        goToMainMenuAndReload(this.router);
       }
     })
-    
+
 
     loadingDialogRef.afterClosed().subscribe(result => {
       if(result == false){
         console.log("Sending stop")
         ipc.stop();
         diffPromise.then(()=>{
-          this.router.navigate(['main-menu']);
+          goToMainMenuAndReload(this.router);
         })
       }
     });

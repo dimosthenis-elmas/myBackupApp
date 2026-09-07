@@ -23,6 +23,7 @@ import { create } from 'domain';
 import { BlobOptions } from 'buffer';
 import { ScrollableListComponent } from '../scrollable-list/scrollable-list.component';
 import { compileSchema, JsonSchema, SchemaNode } from "json-schema-library";
+import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 const mySchema =require('../schemas/filesMetadata.schema.json');
 
 @Component({
@@ -79,7 +80,7 @@ export class RecoverDataFromOpticalMediaComponent implements OnInit, OnDestroy{
   }
 
   goToMainMenu(){
-    this.router.navigate(['main-menu']);
+    goToMainMenuAndReload(this.router);
   }
 
 

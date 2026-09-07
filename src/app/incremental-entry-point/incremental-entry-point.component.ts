@@ -5,6 +5,7 @@ import { BackupService } from '../core/services/backup/backup.service'
 import { LoadingDialogComponent } from '../shared/components';
 import { ConfirmationDialogComponent } from '../shared/components';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
+import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 
 
 @Component({
@@ -35,7 +36,7 @@ export class IncrementalEntryPointComponent {
   selected_optical_medium!: {value: string, viewValue: string, capacity: number};
 
   goToMainMenu(){
-    this.router.navigate(['main-menu']);
+    goToMainMenuAndReload(this.router);
   }
 
   async chooseDirectory (): Promise<string>{

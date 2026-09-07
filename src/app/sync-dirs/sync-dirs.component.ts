@@ -10,6 +10,7 @@ import { MyDataSource, ScrollableListComponent } from '../scrollable-list/scroll
 import { DialogRef } from '@angular/cdk/dialog';
 import { throwError } from 'rxjs';
 import { error } from 'console';
+import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 
 
 
@@ -98,7 +99,7 @@ export class SyncDirsComponent {
   }
 
   goToMainMenu() {
-    this.router.navigate(['main-menu']);
+    goToMainMenuAndReload(this.router);
   }
 
   displayWarning(): Promise<string> {
@@ -269,7 +270,7 @@ export class SyncDirsComponent {
         errorDialog.componentInstance.message = `An error occurred while comparing the directories: ${error}`;
         errorDialog.componentInstance.action1Callback = () => {
           errorDialog.close();
-          this.router.navigate(['main-menu']);
+          goToMainMenuAndReload(this.router);
         }
       }
       return;

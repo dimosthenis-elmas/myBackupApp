@@ -7,6 +7,7 @@ import { MatDialog } from '@angular/material/dialog';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { ConfirmationDialogComponent } from './shared/components/confirmation-dialog/confirmation-dialog.component';
 import { WorkerCommunicator as ipc } from '../../app/workers/worker-communicator';
+import { goToMainMenuAndReload } from './shared/utils/go-to-main-menu';
 
 interface StringIndexedObject {
   [key: string]: string;
@@ -300,9 +301,6 @@ export class AppComponent implements OnInit {
   }
 
   reloadAppAndGoToMainMenu(){
-    this.router.navigate(['main-menu'])
-    .then(() => {
-        window.location.reload();
-    });
+    goToMainMenuAndReload(this.router);
   }
 }

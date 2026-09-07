@@ -6,6 +6,7 @@ import { BackupService } from '../core/services/backup/backup.service';
 import { MatDialog } from '@angular/material/dialog';
 import { ConfirmationDialogComponent } from '../shared/components/confirmation-dialog/confirmation-dialog.component';
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
+import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 
 @Component({
   selector: 'app-incremental-copying',
@@ -125,7 +126,7 @@ export class IncrementalCopyingComponent implements OnInit, OnDestroy {
   }
 
   goToMainMenu(){
-    this.router.navigate(['main-menu'])
+    goToMainMenuAndReload(this.router);
   }
 
 }

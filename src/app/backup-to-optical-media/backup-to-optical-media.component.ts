@@ -13,6 +13,7 @@ import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfa
 import { filesMetadata } from '../../types/interface';
 import { SerialQueue } from '../shared/utils/serial-queue';
 import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
+import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 
 import {FormBuilder, Validators, FormsModule, ReactiveFormsModule} from '@angular/forms';
 import {MatButtonModule} from '@angular/material/button';
@@ -189,14 +190,14 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       if(result == false){
         console.log("Sending stop")
         ipc.stop();
-        this.router.navigate(['main-menu']);
+        goToMainMenuAndReload(this.router);
       }
     });
-  
+
   }
 
   goToMainMenu(){
-    this.router.navigate(['main-menu']);
+    goToMainMenuAndReload(this.router);
   }
 
   async goToStep2(): Promise<void> {
@@ -449,7 +450,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       if(result == false){
         console.log("Sending stop")
         ipc.stop();
-        this.router.navigate(['main-menu']);
+        goToMainMenuAndReload(this.router);
       }
     });
   }
@@ -781,7 +782,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   }
 
   goToHomePage(){
-    this.router.navigate(['main-menu']);
+    goToMainMenuAndReload(this.router);
   }
 
 }

@@ -11,6 +11,7 @@ import { ScrollableListComponent } from '../scrollable-list/scrollable-list.comp
 import { filesMetadata } from '../../types/interface';
 import { ColdStorageMetadata } from '../../../app/workers/ipc.interfaces';
 import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
+import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
  
   @Component({
     selector: 'optical-disc-backup-data-retriever',
@@ -228,7 +229,7 @@ import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/
     };
 
     goToMainMenu(){
-      this.router.navigate(['main-menu']);
+      goToMainMenuAndReload(this.router);
     }
 
     async chooseDirectory (): Promise<string>{
@@ -436,12 +437,9 @@ import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/
             confirmDialog.close();
             this.readAllDiscsToReconstructTheCompleteBackupFilePaths();
           }
-          confirmDialog.componentInstance.action1Callback = () => { 
+          confirmDialog.componentInstance.action1Callback = () => {
             confirmDialog.close();
-                this.router.navigate(['main-menu'])
-                  .then(() => {
-                    window.location.reload();
-                  });
+            goToMainMenuAndReload(this.router);
           }
       }
 
@@ -892,7 +890,7 @@ import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/
     }
 
     goToHomePage(){
-      this.router.navigate(['main-menu']);
+      goToMainMenuAndReload(this.router);
     }
 
   }
