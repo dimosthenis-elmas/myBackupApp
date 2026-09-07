@@ -95,13 +95,6 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    *  against the JSON as the user actually asked. Bound to the "Next" button's [disabled] in the template, and
    *  checked again in step1() itself as a second guard against anything that might invoke it directly. */
   loadingExternalMetadataJSON = false;
-  /** Total number of discs already in the existing cold storage, as confirmed by the user themselves - only
-   * asked for (and only used) when useExternalMetadata is false. Without a JSON, the number of discs the user
-   * physically inserted while rebuilding entireColdStorageMetadata (readAllDiscsToReconstructTheComplete-
-   * BackupFilePaths) cannot be trusted as the true total: the user can click "All disks have been processed"
-   * after any number of discs, with nothing to check that count against. Asking for the real total directly
-   * lets new discs still be numbered correctly ("Disc N") in this path too - see createIBB_file. */
-  existingColdStorageDiscCount: number | null = null;
   opticalDiscVolumeLetter!:string;
   selected_optical_medium = this.optical_media_choices[1];
   entireColdStorageMetadata!: ColdStorageMetadata;
@@ -409,8 +402,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     }
     if(
       !this.backup.targetPath ||
-      (this.useExternalMetadata && !this.externalMetadataJSONpath) ||
-      (!this.useExternalMetadata && !(this.existingColdStorageDiscCount && this.existingColdStorageDiscCount >= 1))
+      (this.useExternalMetadata && !this.externalMetadataJSONpath)
     ){
       const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
       loadingDialogRef.componentInstance.title = "Missing fileds";
@@ -605,18 +597,19 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
 
   /** Unlike backup-to-optical-media.component.ts (a brand new cold storage, always starting at disc 1), discs
    * added here go onto the END of an already-existing collection - "Disc N" has to account for however many
-   * discs already exist, not just disk_id within this session.
+   * discs already exist, not just disk_id within this session. That existing count is always
+   * entireColdStorageMetadata.length: with a JSON, that's trustworthy since json_coldStorageFilesMetadata is
+   * schema-validated up front (see seedFromExternalMetadata/step1); without one, entireColdStorageMetadata IS
+   * the disc-by-disc reconstruction the user just built by physically inserting every disc
+   * (readAllDiscsToReconstructTheCompleteBackupFilePaths) - there's no separate "confirm the real total"
+   * number to reconcile against, since the user inserting every disc is what makes that reconstruction
+   * trustworthy in the first place (there used to be a second, manually-typed total for this - dropped since
+   * it duplicated exactly what entireColdStorageMetadata.length already answers correctly here, and had no way
+   * to actually stay in sync with it if the two ever disagreed).
    *
-   * With a JSON, that existing count is entireColdStorageMetadata.length - trustworthy since
-   * json_coldStorageFilesMetadata is schema-validated up front (see seedFromExternalMetadata/step1), so it's
-   * guaranteed to be the JSON's actual full, correct disc count.
-   *
-   * Without a JSON, entireColdStorageMetadata is instead built by having the user manually insert discs one at a
-   * time (readAllDiscsToReconstructTheCompleteBackupFilePaths) - nothing enforces that they inserted every single
-   * one before proceeding (they can click "All disks have been processed" after any number of discs), so
-   * entireColdStorageMetadata.length there cannot be trusted as the real total. Instead,
-   * existingColdStorageDiscCount - the total the user was directly asked to confirm in step_1 specifically
-   * because of this - is used for the same offset.
+   * This is also exactly the same count partition()'s own metadata-JSON scaffold is built from
+   * (JSON.parse(JSON.stringify(this.entireColdStorageMetadata)).concat(...)), so a disc's label here and its
+   * actual position in the saved JSON can never disagree with each other - both come from the same value.
    *
    * Computed ONCE here (rather than separately in both sendToImgBurn's on-screen label message and
    * createIBB_file's actual burned volume label, as it used to be) so the two can never drift apart again -
@@ -627,10 +620,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    * real mislabeled disc (this app's own recovery flow depends on discs being labeled to match their JSON order
    * - see the root README). */
   private getNextDiscNumber(disk_id: number): number {
-    const existingDiscCount = this.json_coldStorageFilesMetadata
-      ? this.entireColdStorageMetadata.length
-      : (this.existingColdStorageDiscCount || 0);
-    return existingDiscCount + disk_id + 1;
+    return this.entireColdStorageMetadata.length + disk_id + 1;
   }
 
   async sendToImgBurn(i: number){

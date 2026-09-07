@@ -37,13 +37,6 @@
                         </mat-chip-set>
                         <div *ngIf="loadingExternalMetadataJSON">Reading and validating the JSON file...</div>
                         </div>
-                        <div *ngIf="!useExternalMetadata">
-                            <mat-form-field style="width: 350px;" subscriptSizing="dynamic">
-                                <mat-label>Total number of discs currently in this cold storage</mat-label>
-                                <input matInput type="number" min="1" step="1" [(ngModel)]="existingColdStorageDiscCount" name="existingColdStorageDiscCount">
-                                <mat-hint>Since you're not providing a JSON, the app has no reliable way to know how many discs already exist (you can stop inserting discs at any point below) - so it needs you to confirm the real total yourself, to correctly number any new discs.</mat-hint>
-                            </mat-form-field>
-                        </div>
                         <div>
                             Note for this checkbox: For this application to determine the new files, i.e. files missing from your cold storage but present in your 'master'
                             (as in a cumulative backup fashion) we need to read all the metadata (path, file size etc.) for all the files in each one
