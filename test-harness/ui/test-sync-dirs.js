@@ -9,6 +9,13 @@
  * assertions - this script's job is proving the SCREEN itself (buttons, dialogs, the disabled-until-preview-
  * finishes proceed button) wires up to that already-proven engine correctly, not re-proving the engine.
  *
+ * Also asserts something the final-state manifest check (below) can't: that the rendered log list (both the
+ * preview dialog's own copy and the inline one shown during the real commit) always lists every "add" (copy/
+ * create) line before any "delete" line, never interleaved - see checkAddsBeforeDeletes. sync-dirs.component.ts
+ * only ever starts the delete phase after fully awaiting the copy phase, specifically to guarantee this; a
+ * regression that broke that (e.g. running both phases concurrently) would still leave the final directory
+ * contents correct, so only a check on the log's own order - not just the end result - would catch it.
+ *
  * ============================================================================================================
  * SAFETY - this is the one UI test that can genuinely delete real files, same reason as worker-ipc/test-sync-dirs.js
  * ============================================================================================================
@@ -45,6 +52,37 @@ const SPEC_DIR = path.join(__dirname, 'tree-specs', 'test-sync-dirs');
 
 function sha256File(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+/** Classifies each rendered log line (as shown by app-scrollable-list, in DOM/arrival order - see that
+ *  component's own MyDataSource, which never reorders anything, only ever appends) as "add" (a copy/create
+ *  operation - see the exact wording insertBranch in worker.ts pushes) or "delete" (see
+ *  insertBranchForDirSyncDeletions's own wording), then checks that every add line comes before every delete
+ *  line - the guarantee sync-dirs.component.ts is supposed to provide by always fully awaiting the copy phase
+ *  before ever starting the delete phase. Returns enough detail to print a useful failure message, not just a
+ *  bare true/false. */
+function checkAddsBeforeDeletes(lines) {
+  // Matches both the preview wording (insertBranch/insertBranchForDirSyncDeletions with doCopy/commit=false -
+  // "will copy file", "will update existing file", "will delete file", "will delete directory") and the real
+  // commit wording (doCopy/commit=true - "copied file", "updated existing file", "deleted file", "deleted
+  // directory") - the verb stem is the same either way, only the tense/prefix differs.
+  const addPattern = /cop(?:y|ied) file|updat(?:e|ed) existing file|creat(?:e|ed) directory/i;
+  const deletePattern = /delet(?:e|ed) (?:file|directory)/i;
+  const addLines = [];
+  const deleteLines = [];
+  let lastAddIndex = -1;
+  let firstDeleteIndex = -1;
+  lines.forEach((line, i) => {
+    if (deletePattern.test(line)) {
+      deleteLines.push(line);
+      if (firstDeleteIndex === -1) { firstDeleteIndex = i; }
+    } else if (addPattern.test(line)) {
+      addLines.push(line);
+      lastAddIndex = i;
+    }
+  });
+  const ok = addLines.length > 0 && deleteLines.length > 0 && lastAddIndex < firstDeleteIndex;
+  return { ok, addLines, deleteLines, lastAddIndex, firstDeleteIndex };
 }
 
 async function clickMainMenuButton(win, labelText) {
@@ -166,14 +204,39 @@ async function main() {
       if (!stillThere) { throw new Error('Leftover files were removed from disk before any commit confirmation - aborting.'); }
     });
 
-    await step('wait for preview to finish, click "Write to the backup" (up to 30s)', () =>
-      win.getByRole('button', { name: 'Write to the backup' }).click({ timeout: 30_000 }));
+    // {trial: true} runs every actionability check (visible, enabled, stable, receives events) WITHOUT
+    // actually clicking - so this waits for the preview to finish (the button starts disabled until then)
+    // while leaving the preview dialog open long enough to read its log list, below.
+    await step('wait for preview to finish (up to 30s)', () =>
+      win.getByRole('button', { name: 'Write to the backup' }).click({ timeout: 30_000, trial: true }));
+
+    await step('verify the preview log lists every "add" line before any "delete" line', async () => {
+      const lines = await win.locator('app-incremental-dialog .example-item').allTextContents();
+      const check = checkAddsBeforeDeletes(lines);
+      console.log(`  ${check.addLines.length} add line(s), ${check.deleteLines.length} delete line(s)`);
+      if (!check.ok) { console.log(`  lines seen (in order): ${JSON.stringify(lines)}`); }
+      results.previewLogAddsBeforeDeletes = check.ok;
+    });
+
+    await step('click "Write to the backup"', () =>
+      win.getByRole('button', { name: 'Write to the backup' }).click({ timeout: 15_000 }));
 
     await step('click "Yes, continue" on the sync confirmation', () =>
       win.getByRole('button', { name: 'Yes, continue', exact: true }).click({ timeout: 15_000 }));
 
     await step('wait for the sync to finish, click "Ok" on "Directory synchronization completed successfully" (up to 60s)', () =>
       win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 60_000 }));
+
+    // The commit phase's own log list is rendered inline on the sync-dirs screen itself (not inside a dialog -
+    // see showCommitedOperationsLogs in sync-dirs.component.html), and stays on screen after the "completed
+    // successfully" dialog above is dismissed, so it's still readable here.
+    await step('verify the commit log lists every "add" line before any "delete" line', async () => {
+      const lines = await win.locator('sync-dirs .example-item').allTextContents();
+      const check = checkAddsBeforeDeletes(lines);
+      console.log(`  ${check.addLines.length} add line(s), ${check.deleteLines.length} delete line(s)`);
+      if (!check.ok) { console.log(`  lines seen (in order): ${JSON.stringify(lines)}`); }
+      results.commitLogAddsBeforeDeletes = check.ok;
+    });
 
     console.log('Wizard completed.');
   } finally {

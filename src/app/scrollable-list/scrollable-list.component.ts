@@ -118,6 +118,18 @@ export class MyDataSource extends DataSource<string | undefined> {
   }
 
   connect(collectionViewer: CollectionViewer): Observable<(string | undefined)[]> {
+    // Tear down any subscription from a PREVIOUS connect() call first. connect() can be called more than
+    // once on the same MyDataSource instance without an intervening disconnect() - see restartConnection()
+    // in incremental-dialog.component.ts, used to reconnect after resetStream() swaps in a fresh
+    // previewLogsStream mid-operation (sync-dirs' preview phase does this between its copy and delete
+    // sub-phases). Without this, each re-connect left the PREVIOUS subscription (to a stream that's already
+    // completed and can never emit again anyway) still registered alongside the new one - harmless to the
+    // data shown, but one extra dead subscription accumulating per re-connect for the lifetime of this
+    // instance. _cachedData/totalLogsCount/restOfLogs are deliberately NOT reset here - they're meant to keep
+    // accumulating across reconnects, showing one continuous combined log rather than starting over.
+    this._subscription.unsubscribe();
+    this._subscription = new Subscription();
+
     this.streamFinished = false;
     let afterLogsCompleted = () => {
       this._subscription.add(collectionViewer.viewChange.subscribe(range => {
