@@ -9,8 +9,9 @@
  *   1. Empty temp dir -> no snackbar at all.
  *   2. Leftover content -> snackbar appears, mentioning the leftover count -> ignored (never clicked) -> auto-
  *      dismisses on its own after ~10s -> the leftover content is still there, completely untouched.
- *   3. Leftover content again -> snackbar appears -> its "Clear" action is clicked -> the temp dir actually
- *      gets cleared.
+ *   3. Leftover content again -> snackbar appears -> its "Clear" action is clicked -> a non-cancelable "Please
+ *      wait" loading dialog blocks the app for the duration of the real delete, then disappears -> the temp dir
+ *      actually gets cleared.
  *
  * No app source touched, no UI clicking beyond the snackbar's own "Clear" action in scenario 3 - the leftover
  * fixture itself is seeded directly on disk (a session-<id> folder holding one real-looking .ibb file, the
@@ -106,8 +107,22 @@ async function main() {
     await win.getByText(SNACKBAR_TEXT_FRAGMENT, { exact: false }).waitFor({ timeout: 15_000 });
     console.log('  clicking "Clear"...');
     await win.getByRole('button', { name: 'Clear', exact: true }).click({ timeout: 5000 });
-    // Give the real clear-temp-data-directory IPC round trip a moment to finish.
-    await new Promise((r) => setTimeout(r, 2000));
+
+    // Clicking "Clear" must block the app behind a non-cancelable loading dialog for the duration of the real
+    // delete - see the comment on the "Clear" subscription in app.component.ts for why (a new job started while
+    // the delete is still running could otherwise have its own just-created files swept up by it). Checked here,
+    // not just inferred from the end state below, since a regression that dropped the blocking dialog entirely
+    // would still leave the temp dir empty afterward and pass an end-state-only check.
+    console.log('  waiting for the "Please wait" loading dialog to appear...');
+    await win.getByText('Please wait', { exact: false }).waitFor({ timeout: 5000 });
+    results.loadingDialogAppearsWhileClearing = true;
+    console.log('  loading dialog appeared - OK');
+
+    console.log('  waiting for the loading dialog to disappear once the clear finishes...');
+    await win.getByText('Please wait', { exact: false }).waitFor({ state: 'hidden', timeout: 15_000 });
+    results.loadingDialogDisappearsWhenDone = true;
+    console.log('  loading dialog disappeared - OK');
+
     const remaining = realEntries(tempDir);
     results.clearActionEmptiesTempDir = remaining.length === 0;
     console.log(`  real entries remaining after "Clear": ${remaining.length} (expected 0) - ${results.clearActionEmptiesTempDir ? 'OK' : 'WRONG'}`);

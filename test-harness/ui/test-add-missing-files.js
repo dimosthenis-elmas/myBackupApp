@@ -399,6 +399,20 @@ async function main() {
       await step(`click "Send disk ${i + 1} to ImgBurn"`, () =>
         win.getByRole('button', { name: `Send disk ${i + 1} to ImgBurn` }).click({ timeout: 15_000 }));
 
+      // sendingDiscs[i] (add-missing-files-to-optical-media-cold-storage.component.ts) is meant to disable this
+      // exact button for the whole time a send is in flight - not just guard against it silently in TypeScript -
+      // so this asserts the template's own [disabled] binding, not just the guard's existence. Stays true from
+      // the moment the click above lands until well after the "Disc label" confirmation below is dismissed
+      // (sendingDiscs[i] only resets once createIBB_file's own chain finishes), so there is no timing race to
+      // win here - EXCEPT that the "Disc label" dialog is very likely already open by now, and Angular
+      // Material's dialog overlay marks the rest of the page aria-hidden="true" while open, which hides this
+      // button from getByRole entirely (an accessibility-tree query), not because it's actually gone - a plain
+      // CSS locator sees it regardless.
+      await step(`verify "Send disk ${i + 1} to ImgBurn" is disabled while its send is in flight`, async () => {
+        const isDisabled = await win.locator('button', { hasText: `Send disk ${i + 1} to ImgBurn` }).isDisabled();
+        if (!isDisabled) { throw new Error(`"Send disk ${i + 1} to ImgBurn" was still enabled right after being clicked - the sendingDiscs in-flight guard is not actually disabling it.`); }
+      });
+
       // Capture the "Disc label" dialog's own visible text before dismissing it - this is the exact real-bug
       // regression check for the on-screen-instruction-vs-real-volume-label mismatch found while building this
       // script (see getNextDiscNumber's own doc comment in add-missing-files-to-optical-media-cold-storage.

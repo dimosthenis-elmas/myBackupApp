@@ -286,6 +286,33 @@ async function main() {
       await step(`click "Send to ImgBurn" for disc ${i + 1}`, () =>
         win.getByRole('button', { name: 'Send to ImgBurn' }).click({ timeout: 15_000 }));
 
+      // sendingDiscs[i] (backup-to-optical-media.component.ts) is meant to disable this exact button for the
+      // whole time a send is in flight - not just guard against it silently in TypeScript - so this asserts the
+      // template's own [disabled] binding, not just the guard's existence. Stays true from the moment the click
+      // above lands until well after the "Disc label" confirmation below is dismissed (sendingDiscs[i] only
+      // resets once createIBB_file's own chain finishes), so there is no timing race to win here - EXCEPT that
+      // the "Disc label" dialog is very likely already open by now, and Angular Material's dialog overlay marks
+      // the rest of the page aria-hidden="true" while open, which hides this button from getByRole entirely
+      // (an accessibility-tree query), not because it's actually gone - a plain CSS locator sees it regardless.
+      //
+      // Every disc's button shares the exact same "Send to ImgBurn" text (unlike test-add-missing-files.js's
+      // own per-disc "Send disk N to ImgBurn" wording), and the vertical mat-stepper keeps every step's content
+      // in the DOM at once (collapsed, not removed, for whichever isn't currently expanded) - so the plain CSS
+      // locator matches all discCount buttons, not just this one. Rather than pick out this specific disc's own
+      // button (which would need a scoping locator resilient to the same aria-hidden issue - not worth it here),
+      // this checks the property that actually matters: exactly one of them is disabled at a time (never zero,
+      // which would mean the guard isn't disabling anything; never more than one, which would mean a previous
+      // disc's button never got re-enabled).
+      await step(`verify exactly one "Send to ImgBurn" button is disabled while disc ${i + 1}'s send is in flight`, async () => {
+        const buttons = win.locator('button', { hasText: 'Send to ImgBurn' });
+        const total = await buttons.count();
+        let disabledCount = 0;
+        for (let b = 0; b < total; b++) {
+          if (await buttons.nth(b).isDisabled()) { disabledCount++; }
+        }
+        if (disabledCount !== 1) { throw new Error(`Expected exactly 1 of the ${total} "Send to ImgBurn" button(s) to be disabled while disc ${i + 1}'s send is in flight, found ${disabledCount}.`); }
+      });
+
       await step(`click "Ok" on the "Disc label" confirmation for disc ${i + 1}`, () =>
         win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
 
