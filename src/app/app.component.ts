@@ -268,7 +268,15 @@ export class AppComponent implements OnInit {
    *  then auto-dismissed if left untouched - ignoring it costs nothing but some disk space, and the same offer
    *  simply reappears next launch. Only actually clicking "Clear" deletes anything, and doing so DOES then
    *  block the app behind a non-cancelable loading dialog for the duration of the delete - see the comment
-   *  on the "Clear" subscription below for why. */
+   *  on the "Clear" subscription below for why.
+   *
+   *  Deliberately a main-menu-only offer: MainMenuComponent's own goToFeature() dismisses this snackbar
+   *  synchronously before navigating to any of the 5 features, since MatSnackBar is a root-provided singleton -
+   *  no reference-passing needed for that dismiss() to reach the exact snackbar opened here. This component
+   *  itself never lives long enough for a stale offer to be an issue (the app fully reloads - see
+   *  goToMainMenuAndReload - every time the user returns to the main menu), but the snackbar's own 10-second
+   *  auto-dismiss timer alone would otherwise let it linger on top of whatever feature screen the user
+   *  navigated to in the meantime. */
   private async clearTempDataDirectoryOnStartup(): Promise<void> {
     try {
       const check: { path: string, hasLeftovers: boolean, entryNames: string[] } = (await ipc.checkTempDataDirectoryForLeftovers()).res;
