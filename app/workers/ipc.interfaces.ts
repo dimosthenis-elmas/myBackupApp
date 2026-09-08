@@ -7,7 +7,7 @@ export type WorkerChannel =
 "validate-config-paths" | "update-config" | "ensure-temp-directory-ownership" |
 "materialize-optical-media-disc-pieces" | "delete-materialized-pieces-for-disc" |
 "get-effective-optical-medium-capacity" | "check-temp-data-directory-for-leftovers" |
-"open-existing-ibb-file";
+"open-existing-ibb-file" | "imgburn-launch-failed";
 
 export interface WorkerRequest {
   key: WorkerChannel;

@@ -84,11 +84,11 @@
             <mat-label>Cold storage collection name</mat-label>
             <input matInput [(ngModel)]="coldStorageCollectionName" name="coldStorageCollectionName" placeholder="e.g. My Backup">
             <mat-hint *ngIf="useExternalMetadata">Burned onto each new disc's label as "{{coldStorageCollectionName || '...'}} Disc N" (continuing the numbering from your provided JSON) - use the same name as when this cold storage was first created.</mat-hint>
-            <mat-hint *ngIf="!useExternalMetadata">Burned onto each new disc's label as "{{coldStorageCollectionName || '...'}} Disc N" (continuing the numbering from the total you confirmed in the previous step) - use the same name as when this cold storage was first created.</mat-hint>
+            <mat-hint *ngIf="!useExternalMetadata">Burned onto each new disc's label as "{{coldStorageCollectionName || '...'}} Disc N" (continuing the numbering from however many discs you just inserted to reconstruct the existing cold storage) - use the same name as when this cold storage was first created.</mat-hint>
           </mat-form-field>
         </div>
         <div class="flex-centered">
-            <button mat-flat-button color="primary" (click)="partition();">Next</button>
+            <button mat-flat-button color="primary" (click)="partition();" [disabled]="isPartitioning">Next</button>
         </div>
         <br>
         <br>           
@@ -114,7 +114,7 @@
                 </div>
                 <br>
                 <div>
-                    <button mat-flat-button color="primary" mat-button (click)="sendToImgBurn(disk)" [disabled]="confirmedDiscs[disk]">Send disk {{disk + 1}} to ImgBurn</button>
+                    <button mat-flat-button color="primary" mat-button (click)="sendToImgBurn(disk)" [disabled]="confirmedDiscs[disk] || sendingDiscs[disk]">Send disk {{disk + 1}} to ImgBurn</button>
                     <button mat-flat-button color="accent" mat-button (click)="confirmDiscBurned(disk)"
                             [disabled]="!sentDiscs[disk] || confirmedDiscs[disk]" style="margin-left: 8px;">
                       {{ confirmedDiscs[disk] ? 'Disc confirmed ✓' : 'Confirm disc burned' }}

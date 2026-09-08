@@ -44,7 +44,7 @@
             <mat-divider></mat-divider>
             <br>
             <mat-card-actions align="start">
-                <button mat-flat-button color="primary" (click)="WriteToOpticalMediaProceed();">Next</button>
+                <button mat-flat-button color="primary" (click)="WriteToOpticalMediaProceed();" [disabled]="isPartitioning">Next</button>
             </mat-card-actions>
             <br>
             <br>
@@ -79,7 +79,7 @@
       <br>
       <br>
       <div>
-        <button mat-flat-button color="primary" mat-button (click)="sendToImgBurn(disk)" [disabled]="confirmedDiscs[disk]">Send to ImgBurn</button>
+        <button mat-flat-button color="primary" mat-button (click)="sendToImgBurn(disk)" [disabled]="confirmedDiscs[disk] || sendingDiscs[disk]">Send to ImgBurn</button>
         <button mat-flat-button color="accent" mat-button (click)="confirmDiscBurned(disk)"
                 [disabled]="!sentDiscs[disk] || confirmedDiscs[disk]" style="margin-left: 8px;">
           {{ confirmedDiscs[disk] ? 'Disc confirmed ✓' : 'Confirm disc burned' }}

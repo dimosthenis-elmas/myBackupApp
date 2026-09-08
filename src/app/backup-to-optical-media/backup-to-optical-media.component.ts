@@ -102,13 +102,14 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    *  it) - it is still the same logical job. */
   private tempSessionId!: string;
   /** True from the moment WriteToOpticalMediaProceed starts partitioning until the worker call actually settles
-   *  (success, cancel, or error) - guards against a double-click on "Next" (nothing in the template disables
-   *  that button while this is in flight) running two overlapping partition calls, which could otherwise leave
-   *  tempSessionId and the eventually-assigned this.backup.opticalMediaPartitioning out of sync with each other
-   *  (whichever call's session id was set last vs. whichever call's result was assigned last, independently).
-   *  Deliberately does NOT block WriteToOpticalMediaProceed's own "Yes, split the large files" retry - by the
-   *  time that retry runs, the failed first call has already reset this back to false. */
-  private isPartitioning = false;
+   *  (success, cancel, or error) - guards against a double-click on "Next" (also bound to the template's own
+   *  [disabled] on that button, so this is a backstop, not the only thing preventing it) running two overlapping
+   *  partition calls, which could otherwise leave tempSessionId and the eventually-assigned
+   *  this.backup.opticalMediaPartitioning out of sync with each other (whichever call's session id was set last
+   *  vs. whichever call's result was assigned last, independently). Deliberately does NOT block
+   *  WriteToOpticalMediaProceed's own "Yes, split the large files" retry - by the time that retry runs, the
+   *  failed first call has already reset this back to false. Public so the template can bind to it. */
+  public isPartitioning = false;
   /** Full path (folder + file name), chosen by the user via a save dialog, where the cold storage metadata
    * JSON is written/updated for this session. See chooseSaveFile(). */
   private coldStorageMetadataJSONPath!: string;
@@ -121,12 +122,13 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   public sentDiscs: boolean[] = [];
   /** True from the moment sendToImgBurn(i) starts until it's fully done (including the fire-and-forget
    *  createIBB_file chain, now awaited - see sendToImgBurn's own comment) - guards against a double-click on
-   *  "Send to ImgBurn" for the SAME disc (nothing in the template disables that button while a send for it is
-   *  in flight) running two overlapping sends before the first one has even written its .ibb file yet, which
-   *  could otherwise trigger two concurrent real 7-Zip splits of the same large file into the same destination
-   *  (materializeOpticalMediaDiscPieces's own existence check is not itself a lock). Does not block sending a
-   *  DIFFERENT disc at the same time - that's fine, each disc's send is independent. */
-  private sendingDiscs: boolean[] = [];
+   *  "Send to ImgBurn" for the SAME disc (also bound to that button's own [disabled] in the template, so this
+   *  is a backstop, not the only thing preventing it) running two overlapping sends before the first one has
+   *  even written its .ibb file yet, which could otherwise trigger two concurrent real 7-Zip splits of the same
+   *  large file into the same destination (materializeOpticalMediaDiscPieces's own existence check is not
+   *  itself a lock). Does not block sending a DIFFERENT disc at the same time - that's fine, each disc's send
+   *  is independent. Public so the template can bind to it. */
+  public sendingDiscs: boolean[] = [];
   /** Whether the user has confirmed disc i was actually burned - see confirmDiscBurned(). Intentionally pure
    *  in-memory state, never persisted: if the app closes mid-job, the user starts over. That is an explicit
    *  decision (no resume support), not an oversight - please don't "fix" this into a persistence feature. */
@@ -508,6 +510,24 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
               console.log(response)
             }
             break;
+          case 'imgburn-launch-failed': {
+            // Pushed independently by invokeImgBurnOnIBBFile (worker.ts), asynchronously - by the time ImgBurn
+            // actually fails to launch, createIBB_file/openExistingIBBFile have already resolved successfully
+            // (see that function's own doc comment), so this can arrive well after either of those calls
+            // returned, not as part of their own response. Nothing about the sent/materialized/metadata-JSON
+            // state for this disc is trustworthy once ImgBurn itself never actually opened, so send the user
+            // back to the main menu rather than leaving them on a screen that looks like the send succeeded.
+            const failureDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+            failureDialog.componentInstance.title = "Error";
+            failureDialog.componentInstance.message = `ImgBurn could not be launched: ${response.res.message}`;
+            failureDialog.componentInstance.actionsNum = 1;
+            failureDialog.componentInstance.action1Label = "Ok";
+            failureDialog.componentInstance.action1Callback = () => {
+              failureDialog.close();
+              goToMainMenuAndReload(this.router);
+            };
+            break;
+          }
           default:
             console.error('Got unknown message from ipcMain.')
             break;
@@ -537,7 +557,21 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       // openExistingIBBFileInImgBurn's own comment in worker.ts for why redoing all of that on a resend is
       // risky). Nothing else below needs to run in that case - the disc is already fully recorded from its first
       // send.
-      if ((await ipc.openExistingIBBFile(this.tempSessionId, i)).res.opened) {
+      //
+      // Wrapped in its own try/catch (unlike every other await below, which lets a rejection fall through to
+      // the finally block and out of this method) because a rejection here used to fail completely silently -
+      // no dialog, nothing but a console warning - since nothing else in this method would have caught it either.
+      try {
+        if ((await ipc.openExistingIBBFile(this.tempSessionId, i)).res.opened) {
+          return;
+        }
+      } catch (error) {
+        const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        errorDialog.componentInstance.title = "Error";
+        errorDialog.componentInstance.message = `Could not check whether disc ${i + 1} was already sent: ${error}`;
+        errorDialog.componentInstance.actionsNum = 1;
+        errorDialog.componentInstance.action1Label = "Ok";
+        errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
         return;
       }
 
@@ -548,13 +582,12 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
 
       // No disc this app ever creates - neither an originally-planned one (partitionBackupToOpticalMedia never
       // produces an empty partition) nor an overflow one (maybeAppendOverflowDiscs only ever appends non-empty
-      // partitions) - should legitimately have zero files selected here. Seen once for real (a one-off, never
-      // reproduced across 5 further attempts): disc 3, freshly appended by maybeAppendOverflowDiscs, sent with
-      // nothing selected - burning it anyway would have silently produced a useless, empty .ibb and left its real
-      // piece file undeleted forever (confirmDiscBurned only deletes what sentDiscPartPaths recorded, which would
-      // also be empty). Fail loudly and let the user retry instead - by the time they click again, whatever
-      // timing issue caused this (this disc's tree still finishing being seeded, most likely) has almost
-      // certainly resolved.
+      // partitions) - should legitimately have zero files selected here. If it happens anyway - e.g. a
+      // freshly-appended overflow disc sent before its own tree has finished being seeded - burning it would
+      // silently produce a useless, empty .ibb and leave its real piece file undeleted forever (confirmDiscBurned
+      // only deletes what sentDiscPartPaths recorded, which would also be empty). Fail loudly and let the user
+      // retry instead - by the time they click again, whatever timing issue caused this has almost certainly
+      // resolved.
       if (selectedRelativePaths.length === 0) {
         const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
         errorDialog.componentInstance.title = "Error";

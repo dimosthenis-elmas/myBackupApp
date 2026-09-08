@@ -119,11 +119,11 @@
      *  does exactly that for a freshly-appended disc's tree). If THIS stray call happened to resolve AFTER
      *  setTreeData()'s own initialize() call - plausible, since either can yield independently - its
      *  dataChange.next([]) would fire last and silently wipe out the real data setTreeData() had just set,
-     *  leaving the tree looking (and actually being, per checklistSelection/treeControl.dataNodes) empty. This
-     *  was seen for real: a freshly-appended overflow disc's tree occasionally rendered empty, and
-     *  getSelectedFilePathsIncludingExtraInfo() correctly found nothing selected, tripping sendToImgBurn's own
-     *  "no files selected" guard - a genuine data-level empty selection, not just a cosmetic rendering gap.
-     *  Removing this call closes the race outright: only ever one initialize() in flight per instance
+     *  leaving the tree looking (and actually being, per checklistSelection/treeControl.dataNodes) empty - e.g. a
+     *  freshly-appended overflow disc's tree rendering empty, with getSelectedFilePathsIncludingExtraInfo()
+     *  correctly finding nothing selected and tripping sendToImgBurn's own "no files selected" guard - a genuine
+     *  data-level empty selection, not just a cosmetic rendering gap. Removing this call closes the race outright:
+     *  only ever one initialize() in flight per instance
      *  (whichever setTreeData() explicitly triggers), so there is nothing left for it to lose a race against. */
     constructor() {
     }

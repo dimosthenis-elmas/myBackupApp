@@ -6,6 +6,7 @@ import { Router } from '@angular/router';
 import { MatDialog } from '@angular/material/dialog';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { ConfirmationDialogComponent } from './shared/components/confirmation-dialog/confirmation-dialog.component';
+import { LoadingDialogComponent } from './shared/components/loading-dialog/loading-dialog.component';
 import { WorkerCommunicator as ipc } from '../../app/workers/worker-communicator';
 import { goToMainMenuAndReload } from './shared/utils/go-to-main-menu';
 
@@ -265,7 +266,9 @@ export class AppComponent implements OnInit {
    *  When there IS something to clear, a snackbar (not a blocking dialog - nothing here needs the user's
    *  permission, since leaving it alone is completely safe) offers a "Clear" action, shown for 10 seconds and
    *  then auto-dismissed if left untouched - ignoring it costs nothing but some disk space, and the same offer
-   *  simply reappears next launch. Only actually clicking "Clear" deletes anything. */
+   *  simply reappears next launch. Only actually clicking "Clear" deletes anything, and doing so DOES then
+   *  block the app behind a non-cancelable loading dialog for the duration of the delete - see the comment
+   *  on the "Clear" subscription below for why. */
   private async clearTempDataDirectoryOnStartup(): Promise<void> {
     try {
       const check: { path: string, hasLeftovers: boolean, entryNames: string[] } = (await ipc.checkTempDataDirectoryForLeftovers()).res;
@@ -279,10 +282,19 @@ export class AppComponent implements OnInit {
         { duration: 10_000, horizontalPosition: 'end', verticalPosition: 'top' }
       );
 
+      // Blocks on a non-cancelable loading dialog for the duration of the actual delete, rather than leaving
+      // the app fully interactive while it runs: clearTempDataDirectory() deletes EVERY recognized entry
+      // present in the temp directory at the moment it runs, not just the ones this check reported - so a
+      // brand new job started (and far enough along to have created its own session subfolder there) while
+      // this runs would have its own in-progress files deleted right out from under it. Blocking the app for
+      // this one short operation closes that off.
       snackBarRef.onAction().subscribe(async () => {
+        const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+        loadingDialogRef.componentInstance.showCancelButton = false;
         try {
           const response = await ipc.clearTempDataDirectory();
           const result: { cleared: boolean; message: string; deletedItems: string[] } = response.res;
+          loadingDialogRef.close();
           if (!result.cleared) {
             const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
             errorDialog.componentInstance.title = "Could not clear temp directory";
@@ -292,6 +304,7 @@ export class AppComponent implements OnInit {
             errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); }
           }
         } catch (error) {
+          loadingDialogRef.close();
           console.error('Failed to clear the temp data directory after the startup snackbar\'s "Clear" action', error);
         }
       });

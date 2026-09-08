@@ -117,12 +117,12 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    *  on the exact same isolated subfolder. */
   private tempSessionId!: string;
   /** True from the moment partition() starts (past its initial validation) until it returns or throws - guards
-   *  against a double-click on step_3's "Next" (nothing in the template disables that button while this is in
-   *  flight) running two overlapping partition() calls, which could otherwise leave tempSessionId and the
-   *  eventually-assigned this.partitions out of sync with each other (whichever call's session id was set last
-   *  vs. whichever call's result was assigned last, independently, since each happens on the far side of its
-   *  own separate await). */
-  private isPartitioning = false;
+   *  against a double-click on step_3's "Next" (also bound to that button's own [disabled] in the template, so
+   *  this is a backstop, not the only thing preventing it) running two overlapping partition() calls, which
+   *  could otherwise leave tempSessionId and the eventually-assigned this.partitions out of sync with each other
+   *  (whichever call's session id was set last vs. whichever call's result was assigned last, independently,
+   *  since each happens on the far side of its own separate await). Public so the template can bind to it. */
+  public isPartitioning = false;
   isLinear = false;
   step='step_1';
   odbr_ref!: OpticalDiscBackupDataRetriever;
@@ -134,13 +134,14 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   public sentDiscs: boolean[] = [];
   /** True from the moment sendToImgBurn(i) starts until it's fully done (including the fire-and-forget
    *  createIBB_file chain, now awaited - see sendToImgBurn's own comment) - guards against a double-click on
-   *  "Send disk i+1 to ImgBurn" for the SAME disc (nothing in the template disables that button while a send
-   *  for it is in flight) running two overlapping sends before the first one has even written its .ibb file
-   *  yet, which could otherwise trigger two concurrent real 7-Zip splits of the same large file into the same
-   *  destination (materializeOpticalMediaDiscPieces's own existence check is not itself a lock). Does not block
-   *  sending a DIFFERENT disc at the same time - that's fine, each disc's send is independent. Same mechanism
-   *  as backup-to-optical-media.component.ts's identical field. */
-  private sendingDiscs: boolean[] = [];
+   *  "Send disk i+1 to ImgBurn" for the SAME disc (also bound to that button's own [disabled] in the template,
+   *  so this is a backstop, not the only thing preventing it) running two overlapping sends before the first
+   *  one has even written its .ibb file yet, which could otherwise trigger two concurrent real 7-Zip splits of
+   *  the same large file into the same destination (materializeOpticalMediaDiscPieces's own existence check is
+   *  not itself a lock). Does not block sending a DIFFERENT disc at the same time - that's fine, each disc's
+   *  send is independent. Same mechanism as backup-to-optical-media.component.ts's identical field. Public so
+   *  the template can bind to it. */
+  public sendingDiscs: boolean[] = [];
   /** Whether the user has confirmed disc i was actually burned - see confirmDiscBurned(). Intentionally pure
    *  in-memory state, never persisted: if the app closes mid-job, the user starts over. That is an explicit
    *  decision (no resume support), not an oversight - please don't "fix" this into a persistence feature. */
@@ -639,7 +640,21 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       // openExistingIBBFileInImgBurn's own comment in worker.ts for why redoing all of that on a resend is
       // risky). Nothing else below needs to run in that case - the disc is already fully recorded from its first
       // send.
-      if ((await ipc.openExistingIBBFile(this.tempSessionId, i)).res.opened) {
+      //
+      // Wrapped in its own try/catch (unlike every other await below, which lets a rejection fall through to
+      // the finally block and out of this method) because a rejection here used to fail completely silently -
+      // no dialog, nothing but a console warning - since nothing else in this method would have caught it either.
+      try {
+        if ((await ipc.openExistingIBBFile(this.tempSessionId, i)).res.opened) {
+          return;
+        }
+      } catch (error) {
+        const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        errorDialog.componentInstance.title = "Error";
+        errorDialog.componentInstance.message = `Could not check whether disc ${i + 1} was already sent: ${error}`;
+        errorDialog.componentInstance.actionsNum = 1;
+        errorDialog.componentInstance.action1Label = "Ok";
+        errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
         return;
       }
 
@@ -909,6 +924,24 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
               console.log(response)
             }
             break;
+          case 'imgburn-launch-failed': {
+            // Pushed independently by invokeImgBurnOnIBBFile (worker.ts), asynchronously - by the time ImgBurn
+            // actually fails to launch, createIBB_file/openExistingIBBFile have already resolved successfully
+            // (see that function's own doc comment), so this can arrive well after either of those calls
+            // returned, not as part of their own response. Nothing about the sent/materialized/metadata-JSON
+            // state for this disc is trustworthy once ImgBurn itself never actually opened, so send the user
+            // back to the main menu rather than leaving them on a screen that looks like the send succeeded.
+            const failureDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+            failureDialog.componentInstance.title = "Error";
+            failureDialog.componentInstance.message = `ImgBurn could not be launched: ${response.res.message}`;
+            failureDialog.componentInstance.actionsNum = 1;
+            failureDialog.componentInstance.action1Label = "Ok";
+            failureDialog.componentInstance.action1Callback = () => {
+              failureDialog.close();
+              goToMainMenuAndReload(this.router);
+            };
+            break;
+          }
           default:
             console.error('Got unknown message from ipcMain.')
             break;

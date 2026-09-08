@@ -1830,12 +1830,22 @@ const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>
 const invokeImgBurnOnIBBFile = async function (pathToIBBFile: string): Promise<void> {
   const util = require('util');
   const exec = util.promisify(require('child_process').exec);
-  const configJSON = fs.readFileSync(node_path_module.join(__dirname, `../../appData/config.json`));
-  const imgBurnExecutablePath = JSON.parse(configJSON).imgBurnExecutablePath;
+  try {
+    const configJSON = fs.readFileSync(node_path_module.join(__dirname, `../../appData/config.json`));
+    const imgBurnExecutablePath = JSON.parse(configJSON).imgBurnExecutablePath;
 
-  const { stdout, stderr } = await exec(`"${imgBurnExecutablePath}" /MODE BUILD /SRC ${pathToIBBFile}`);
-  console.log('stdout:', stdout);
-  console.log('stderr:', stderr);
+    const { stdout, stderr } = await exec(`"${imgBurnExecutablePath}" /MODE BUILD /SRC ${pathToIBBFile}`);
+    console.log('stdout:', stdout);
+    console.log('stderr:', stderr);
+  } catch (error) {
+    // Neither caller awaits or catches this function's own promise (see the doc comment above) - both have
+    // already resolved and reported success by the time ImgBurn is actually invoked, so a launch failure here
+    // (e.g. a bad imgBurnExecutablePath in config.json, or ImgBurn itself failing to start) can only be
+    // surfaced as its own independent push message, not as part of either caller's response. Left uncaught,
+    // this would otherwise be an unhandled promise rejection, which crashes the whole worker process by default.
+    const message = error && (error as any).message ? (error as any).message : String(error);
+    ipc.sendResponseToMain({ key: 'imgburn-launch-failed', res: { message }, status: 'error' });
+  }
 }
 
 /*
