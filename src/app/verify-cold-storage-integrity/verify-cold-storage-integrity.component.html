@@ -1,0 +1,53 @@
+<br>
+<div *ngIf="step=='step_1'">
+  <mat-card appearance="raised">
+    <div class="flex-centered">
+      <div>
+        <mat-icon class="home-icons">verified</mat-icon>
+      </div>
+      <h2>Verify integrity of cold storage disc</h2>
+      <p style="max-width: 500px; text-align: center;">
+        Choose the cold storage metadata JSON for the discs you want to check. Each disc you insert afterwards
+        is read directly - nothing is copied anywhere - and every one of its files is re-hashed and compared
+        against the SHA-256 recorded for it at backup time.
+      </p>
+      <br>
+      <button mat-flat-button color="primary" class="file-chooser-btn" (click)="getJSON()" [disabled]="loadingJSON">Choose metadata JSON</button>
+    </div>
+    <br>
+    <mat-divider></mat-divider>
+    <br>
+    <mat-card-actions align="start">
+      <button mat-flat-button (click)="goToHomePage()">Back to main menu</button>
+    </mat-card-actions>
+  </mat-card>
+</div>
+
+<div *ngIf="step=='step_2'">
+  <mat-card appearance="raised">
+    <div class="flex-centered">
+      <div style="display: flex; flex-direction: row; flex:1;">
+        <mat-icon class="home-icons">album</mat-icon>
+        <mat-icon class="home-icons">arrow_right_alt</mat-icon>
+        <mat-icon class="home-icons">verified</mat-icon>
+      </div>
+      <br>
+      <mat-divider></mat-divider>
+      <br>
+      <div *ngIf="!opticalMediumLoaded" style="display: ruby;">
+        <h2>Waiting for a disc to be inserted</h2>
+        <span class="dots"><span><h2>.</h2></span><span><h2>.</h2></span><span><h2>.</h2></span></span>
+      </div>
+      <div *ngIf="opticalMediumLoaded && readingDisc" style="display: ruby;">
+        <h2>Reading and identifying the inserted disc</h2>
+        <span class="dots"><span><h2>.</h2></span><span><h2>.</h2></span><span><h2>.</h2></span></span>
+      </div>
+    </div>
+    <br>
+    <mat-divider></mat-divider>
+    <br>
+    <mat-card-actions align="start">
+      <button mat-flat-button (click)="goToHomePage()">Back to main menu</button>
+    </mat-card-actions>
+  </mat-card>
+</div>

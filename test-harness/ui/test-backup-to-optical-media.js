@@ -210,8 +210,10 @@ async function main() {
     await step('wait for the chosen source path to appear on screen', () =>
       win.getByText(sourceRoot, { exact: true }).waitFor({ timeout: 10_000 }));
 
+    // .first() - step 1 now has a second combobox too (the "File integrity data" toggle, added alongside the
+    // SHA-256 integrity-checksum feature); "Optical medium type" is always the first one in DOM order.
     await step('open the "Optical medium type" dropdown', () =>
-      win.getByRole('combobox').click({ timeout: 15_000 }));
+      win.getByRole('combobox').first().click({ timeout: 15_000 }));
 
     await step('select "CD (700 MB)"', () =>
       win.getByRole('option', { name: 'CD (700 MB)' }).click({ timeout: 15_000 }));

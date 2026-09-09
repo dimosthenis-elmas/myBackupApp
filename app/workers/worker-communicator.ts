@@ -249,7 +249,7 @@ export class WorkerCommunicator {
 
     /** `sessionId` (see SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts) must be the one value generated
      *  once per job and reused consistently across every call this same job makes (this one, createIBB_file,
-     *  and materializeOpticalMediaDiscPieces) - it is what keeps this job's real split pieces and .ibb files
+     *  and createOpticalMediaDiscPartials) - it is what keeps this job's real split partials and .ibb files
      *  isolated from any other job's, past or concurrent. */
     static partitionBackupToOpticalMedia(rootPath: string, mediaCapacityInBytes: number, splitLargeFiles: boolean = false, sessionId: string, filesMetadata?: filesMetadata[]): Promise<OpticalMediaPartitioning<WorkerResponse>> {
         return this.sendAndAwaitResponse<OpticalMediaPartitioning<WorkerResponse>>('partition-backup-to-optical-media', {
@@ -277,7 +277,7 @@ export class WorkerCommunicator {
      *  earlier "Send to ImgBurn" this same job, and if so just reopens ImgBurn on that exact file rather than
      *  rebuilding anything - see openExistingIBBFileInImgBurn's own comment in worker.ts for why a resend does
      *  this instead of redoing the whole pipeline. `res.opened` is false (not an error) when there is no such
-     *  file yet - the caller should fall back to the normal pipeline (materialize/createIBB_file) in that case,
+     *  file yet - the caller should fall back to the normal pipeline (create/createIBB_file) in that case,
      *  which is always true for a disc's first send. */
     static openExistingIBBFile(sessionId: string, disk_id: number): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('open-existing-ibb-file', { sessionId: sessionId, disk_id: disk_id });
@@ -339,20 +339,42 @@ export class WorkerCommunicator {
     }
 
     /** Physically splits (via real 7-Zip) whichever large files `paths` references that haven't been split yet,
-     *  and returns fresh, real stats for every path - see materializeOpticalMediaDiscPieces in worker.ts. The
+     *  and returns fresh, real stats for every path - see createOpticalMediaDiscPartials in worker.ts. The
      *  response's `res` array can be longer than `paths` (a rare, known boundary case surfaces one extra,
-     *  unplanned piece - see that function's own comment) - callers should build their disc's saved metadata
+     *  unplanned partial - a "sliver", see that function's own comment) - callers should build their disc's
+     *  saved metadata
      *  from the full response, not by zipping it against the original request. `sessionId` must be the same
      *  one value used for every other call this job makes - see partitionBackupToOpticalMedia's own comment. */
-    static materializeOpticalMediaDiscPieces(dirPath: string, paths: Array<string>, sessionId: string): Promise<WorkerResponse> {
-        return this.sendAndAwaitResponse('materialize-optical-media-disc-pieces', { dirPath: dirPath, paths: paths, sessionId: sessionId });
+    static createOpticalMediaDiscPartials(dirPath: string, paths: Array<string>, sessionId: string): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('create-optical-media-disc-partials', { dirPath: dirPath, paths: paths, sessionId: sessionId });
     }
 
-    /** Deletes exactly the given real, absolute temp-dir piece paths - see deleteMaterializedPiecesForDisc in
-     *  worker.ts. Never deletes a whole file's other pieces if they belong to a different, not-yet-confirmed
+    /** Deletes exactly the given real, absolute temp-dir partial paths - see deletePartialsForDisc in
+     *  worker.ts. Never deletes a whole file's other partials if they belong to a different, not-yet-confirmed
      *  disc - only the exact paths passed in. */
-    static deleteMaterializedPiecesForDisc(pieceAbsolutePaths: Array<string>): Promise<WorkerResponse> {
-        return this.sendAndAwaitResponse('delete-materialized-pieces-for-disc', { pieceAbsolutePaths: pieceAbsolutePaths });
+    static deletePartialsForDisc(partialAbsolutePaths: Array<string>): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('delete-partials-for-disc', { partialAbsolutePaths: partialAbsolutePaths });
+    }
+
+    /** Computes a SHA-256 hash for each of `paths` (bare-relative to `dirPath`, same convention as
+     *  createOpticalMediaDiscPartials) - see computeSha256ForBackedUpFiles in worker.ts. Must only be called
+     *  after createOpticalMediaDiscPartials has already created every one of these paths for real.
+     *  While in flight, separate `status: 'running'` pushes on this same channel carry one progress line per
+     *  file ("Calculating SHA-256 for file: ... (n of m files)") - see LoadingDialogComponent's `message` and
+     *  this method's callers for how those are shown. `sessionId` must be the same one value used for every
+     *  other call this job makes - see partitionBackupToOpticalMedia's own comment. */
+    static computeSha256ForBackedUpFiles(dirPath: string, paths: Array<string>, sessionId: string): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('compute-sha256-for-backed-up-files', { dirPath: dirPath, paths: paths, sessionId: sessionId });
+    }
+
+    /** Computes a SHA-256 hash for each real, absolute path in `files`, optionally comparing it against an
+     *  `expectedSha256` per entry (adding a `matched` boolean to that entry's result) - see verifyFileHashes in
+     *  worker.ts. Shared by the recovery flow's post-recovery integrity check and the standalone "verify
+     *  integrity of cold storage disc" wizard, since this doesn't care whether a path is a file already copied
+     *  to a target directory or one still sitting directly on a mounted optical disc. Progress lines arrive the
+     *  same way as computeSha256ForBackedUpFiles's. */
+    static verifyFileHashes(files: Array<{ absolutePath: string, expectedSha256?: string }>): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('verify-file-hashes', { files: files });
     }
 
     static validateConfigPaths(): Promise<WorkerResponse> {

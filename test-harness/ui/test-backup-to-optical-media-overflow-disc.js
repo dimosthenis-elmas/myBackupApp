@@ -193,7 +193,9 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
     await step('main menu -> Backup to optical media', () => clickMainMenuButton(win, 'Backup to optical media'));
     await step('click "Path to backup"', () => win.getByRole('button', { name: 'Path to backup' }).click({ timeout: 30_000 }));
     await step('wait for the chosen source path to appear on screen', () => win.getByText(sourceRoot, { exact: true }).waitFor({ timeout: 10_000 }));
-    await step('open the "Optical medium type" dropdown', () => win.getByRole('combobox').click({ timeout: 30_000 }));
+    // .first() - step 1 now has a second combobox too (the "File integrity data" toggle, added alongside the
+    // SHA-256 integrity-checksum feature); "Optical medium type" is always the first one in DOM order.
+    await step('open the "Optical medium type" dropdown', () => win.getByRole('combobox').first().click({ timeout: 30_000 }));
     await step('select "CD (700 MB)"', () => win.getByRole('option', { name: 'CD (700 MB)' }).click({ timeout: 30_000 }));
     await step('type the cold storage collection name', () => win.getByPlaceholder('e.g. My Backup').fill(`Overflow-disc test (${phaseName})`));
     await step('click "Next" (expected to hit the "too large" error)', () => win.getByRole('button', { name: 'Next', exact: true }).click({ timeout: 30_000 }));

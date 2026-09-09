@@ -27,6 +27,16 @@ export const OPTICAL_DRIVE_LETTER_CONVENTION = "D:\\";
  * that it must exactly match what gets computed later, when that disc is used for a recovery. A second, drifted
  * copy of this algorithm would silently break that guarantee.
  */
+/** Wraps getDiscIdHash's own "sort the disc's file paths, then hash their joined string" convention in one
+ *  place, for callers that start from a disc's own list of paths rather than an already-joined string. Not yet
+ *  adopted by every existing call site that reimplements this same sort-then-hash step inline (recovery's own
+ *  two methods, and both burn-time wizards' disc-labeling) - see the SHA-256 integrity feature's own plan notes
+ *  on why that consolidation is deliberately left as its own, separately-tested cleanup rather than a side
+ *  effect of adding a new caller. New callers (e.g. the standalone verify wizard) should use this directly. */
+export function getDiscIdHashForPaths(paths: string[], seed = 0): number {
+  return getDiscIdHash(paths.slice().sort().toString(), seed);
+}
+
 export function getDiscIdHash(str: string, seed = 0): number {
   let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
   for(let i = 0, ch; i < str.length; i++) {

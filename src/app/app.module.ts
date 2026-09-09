@@ -21,6 +21,7 @@ import { IncrementalCopyingModule } from './incremental-copying/incremental-copy
 import { BackupToOpticalMediaRoutingModule } from './backup-to-optical-media/backup-to-optical-media-routing.module';
 import { AddMissigFilesToOpticalMediaColdStorageRoutingModule } from './add-missing-files-to-optical-media-cold-storage/add-missing-files-to-optical-media-cold-storage-routing.module';
 import { MainMenuRoutingModule } from './main-menu/main-menu-routing.module';
+import { VerifyColdStorageIntegrityRoutingModule } from './verify-cold-storage-integrity/verify-cold-storage-integrity-routing.module';
 
 import {MatIconModule} from '@angular/material/icon';
 import {MatButtonModule} from '@angular/material/button';
@@ -51,6 +52,7 @@ export function HttpLoaderFactory(http: HttpClient): TranslateHttpLoader {
     BackupToOpticalMediaRoutingModule,
     AddMissigFilesToOpticalMediaColdStorageRoutingModule,
     MainMenuRoutingModule,
+    VerifyColdStorageIntegrityRoutingModule,
     AppRoutingModule,
     MatIconModule,
     MatButtonModule,

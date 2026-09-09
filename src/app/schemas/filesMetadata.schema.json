@@ -21,6 +21,9 @@
             },
             "isDirectory": {
               "type": "boolean"
+            },
+            "sha256": {
+              "type": "string"
             }
           },
           "required": [

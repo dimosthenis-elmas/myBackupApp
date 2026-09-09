@@ -47,5 +47,8 @@ export class MainMenuComponent implements OnInit{
     this.goToFeature('add-missing-files-to-optical-media-cold-storage');
   }
 
+  goToVerifyColdStorageIntegrity(){
+    this.goToFeature('verify-cold-storage-integrity');
+  }
 
 }

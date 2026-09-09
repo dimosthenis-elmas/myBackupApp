@@ -679,12 +679,44 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
      *  another file when filling up a disc) - so we can only be sure every part the user selected has actually
      *  been copied to this.backup.targetPath once the whole recovery is complete. */
     private async finishRecoveryAfterOptionalMerge(): Promise<void> {
+      // MUST run before offerToMergeAnyPartialFiles, not after: a successful merge DELETES the individual
+      // .partNNN pieces it just reassembled (see mergePartialFileGroupSilently), and there is no separate
+      // recorded hash for the reassembled WHOLE file to check instead - only each physical piece has one (see
+      // the granularity decision this feature was built around). Verifying after the merge would find those
+      // piece paths simply gone and report every merged file as FAILED, always, regardless of whether anything
+      // was ever actually wrong - checking the raw, still-on-disk copied pieces first (closest to what was
+      // actually read off the disc) avoids that entirely, and is arguably the more correct place for it anyway:
+      // this confirms the COPY was byte-correct, independently of the merge's own separate 7-Zip integrity test.
+      const integrity = await this.verifyRecoveredFileIntegrity();
       await this.offerToMergeAnyPartialFiles();
 
-      const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
+      const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '600px'});
       infoDialog.disableClose = true;
-      infoDialog.componentInstance.title = `Data recovery successful`;
-      infoDialog.componentInstance.message = `The recovery of your data has been completed successfully!`;
+      const anyFailed = !!integrity && integrity.failed.length > 0;
+      // Never say plain "successful" if any file FAILED integrity verification - same rule offerToMergeAnyPartialFiles's
+      // own summary follows (see showMergeSummary), so a real problem can never be masked by an upbeat title.
+      infoDialog.componentInstance.title = anyFailed ? `Data recovery finished with integrity FAILURES` : `Data recovery successful`;
+      let message = `The recovery of your data has been completed successfully!`;
+      if (integrity) {
+        const truncate = (names: string[]): string => {
+          const shown = names.slice(0, 15);
+          const rest = names.length - shown.length;
+          return shown.join(', ') + (rest > 0 ? `, and ${rest} more` : '');
+        };
+        const lines: string[] = [];
+        if (integrity.failed.length) {
+          lines.push(`FAILED integrity check (${integrity.failed.length}) - this can mean real data corruption (a bad drive read, disc handling damage): ${truncate(integrity.failed)}.`);
+        }
+        lines.push(`Verified (${integrity.verified.length}): ${integrity.verified.length ? truncate(integrity.verified) : 'none'}.`);
+        if (integrity.noData.length) {
+          lines.push(`No integrity data available, not checked (${integrity.noData.length}): ${truncate(integrity.noData)}.`);
+        }
+        message = (anyFailed
+          ? `The recovery finished, but SHA-256 integrity verification found one or more problems. `
+          : `The recovery of your data has been completed successfully, and SHA-256 integrity verification confirmed every file with recorded hash data matches. `)
+          + lines.join('  ');
+      }
+      infoDialog.componentInstance.message = message;
       infoDialog.componentInstance.actionsNum = 1;
       infoDialog.componentInstance.action1Label = "Ok";
       infoDialog.componentInstance.action1Callback = () => {
@@ -692,6 +724,118 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
           this.finishedCopyingFiles = true;
           this.recoveredAllFilesFromAllDiscs = true;
         }
+    }
+
+    /** Runs SHA-256 integrity verification (see verifyFileHashes in worker.ts) over every recovered file that
+     *  has a stored hash. Grouped by LOGICAL file - reuses the same .partNNN grouping groupSelectedPartialFiles
+     *  already uses for the merge offer, so a large file split across several pieces reports as ONE line: it is
+     *  "verified" only if every one of its constituent pieces that HAD a stored hash actually matched, and
+     *  "FAILED" if any did not. An ordinary (non-split) file is just its own one-piece group. A group where NONE
+     *  of its pieces carry a stored hash at all (an old cold storage metadata JSON, or the "None" integrity
+     *  option was used at backup time) reports as "no integrity data available" - NOT a failure.
+     *  @return undefined (nothing to show) if nothing selected carries any stored hash at all - callers should
+     *  skip showing an integrity summary entirely for a recovery that simply never had hash data to check,
+     *  rather than a summary that's all "no data". */
+    private async verifyRecoveredFileIntegrity(): Promise<{ verified: string[], noData: string[], failed: string[] } | undefined> {
+      // Built once as a Map (bare path -> hash) rather than a per-call Array.find() scan - a cold storage with
+      // many discs/files otherwise makes this an O(files selected * files in cold storage) scan, done twice
+      // over (once building filesToHash, once tallying results below).
+      const hashByBarePath = new Map<string, string>();
+      this.coldStorageMetadataForAllOpticalDiscs.flat().forEach((e) => {
+        if (e.stats.sha256) { hashByBarePath.set(e.path.replace(OPTICAL_DRIVE_LETTER_CONVENTION, ''), e.stats.sha256); }
+      });
+      const findExpectedHash = (barePath: string): string | undefined => hashByBarePath.get(barePath);
+
+      let target = this.backup.targetPath;
+      if (target[target.length - 1] != '\\') { target += '\\'; }
+
+      const partFilePattern = /^(.+)\.part\.\d+$/i;
+      const groups = new Map<string, { label: string, barePaths: string[] }>();
+      (this.selectedFilePathsWithExtraInfo || []).forEach((entry) => {
+        const lastSlash = entry.path.lastIndexOf('\\');
+        const dir = lastSlash >= 0 ? entry.path.substring(0, lastSlash + 1) : '';
+        const fileName = lastSlash >= 0 ? entry.path.substring(lastSlash + 1) : entry.path;
+        const match = partFilePattern.exec(fileName);
+        const label = match ? dir + match[1] : entry.path;
+        if (!groups.has(label)) { groups.set(label, { label, barePaths: [] }); }
+        groups.get(label)!.barePaths.push(entry.path);
+      });
+
+      const filesToHash: Array<{ absolutePath: string, expectedSha256: string }> = [];
+      const groupHasAnyHash = new Map<string, boolean>();
+      groups.forEach((group) => {
+        let anyHash = false;
+        group.barePaths.forEach((barePath) => {
+          const expected = findExpectedHash(barePath);
+          if (expected) {
+            anyHash = true;
+            filesToHash.push({ absolutePath: target + barePath, expectedSha256: expected });
+          }
+        });
+        groupHasAnyHash.set(group.label, anyHash);
+      });
+
+      if (filesToHash.length === 0) {
+        return undefined;
+      }
+
+      const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+      loadingDialogRef.componentInstance.showCancelButton = false;
+      let results: Array<{ path: string, sha256: string, matched?: boolean }> = [];
+      const listener = ipc.onResponseFromWorker((event, response) => {
+        this.ngZone.run(() => {
+          if (response.key === 'verify-file-hashes' && response.status === 'running') {
+            const lines: string[] = response.res;
+            if (lines.length) { loadingDialogRef.componentInstance.message = lines[lines.length - 1]; }
+          }
+        });
+      });
+      try {
+        results = (await ipc.verifyFileHashes(filesToHash)).res;
+      } catch (error) {
+        // A per-file read/hash problem is already caught inside verifyFileHashes itself (worker.ts) and comes
+        // back as a normal FAILED result, not a rejection here - so a rejection reaching this catch is a
+        // worker/IPC-level problem (e.g. a queueing error), not a finding about any specific file. The actual
+        // recovered files already copied successfully by this point (this only runs after every disc's copy
+        // completed) - only the OPTIONAL verification step itself couldn't run - so this must not be left to
+        // propagate as an unhandled rejection: without this, the caller (finishRecoveryAfterOptionalMerge) would
+        // never show ANY final dialog at all, leaving a successful recovery looking like the app hung. Tell the
+        // user integrity verification itself couldn't run, then fall through as if there was nothing to check
+        // (undefined) - the recovery itself still gets its normal "Data recovery successful" dialog afterward.
+        listener.removeListener();
+        loadingDialogRef.close();
+        await new Promise<void>((resolve) => {
+          const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+          errorDialog.disableClose = true;
+          errorDialog.componentInstance.title = "Integrity verification could not run";
+          errorDialog.componentInstance.message = `Your files were recovered successfully, but the SHA-256 integrity check itself could not complete: ${error}`;
+          errorDialog.componentInstance.actionsNum = 1;
+          errorDialog.componentInstance.action1Label = "Ok";
+          errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); resolve(); };
+        });
+        return undefined;
+      }
+      listener.removeListener();
+      loadingDialogRef.close();
+
+      const matchedByAbsolutePath = new Map<string, boolean>(results.map(r => [r.path, !!r.matched]));
+
+      const verified: string[] = [];
+      const noData: string[] = [];
+      const failed: string[] = [];
+      groups.forEach((group) => {
+        if (!groupHasAnyHash.get(group.label)) {
+          noData.push(group.label);
+          return;
+        }
+        const everyHashedPieceMatched = group.barePaths.every((barePath) => {
+          const expected = findExpectedHash(barePath);
+          return !expected || matchedByAbsolutePath.get(target + barePath) === true;
+        });
+        (everyHashedPieceMatched ? verified : failed).push(group.label);
+      });
+
+      return { verified, noData, failed };
     }
 
     /** Detects groups of selected partial files (fileName.ext.part.001, fileName.ext.part.002, ...) and, if any

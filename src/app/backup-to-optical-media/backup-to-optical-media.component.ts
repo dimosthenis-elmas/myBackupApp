@@ -96,7 +96,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   private tempDataDirectoryPath!: string;
   /** This job's own temp-dir session subfolder name (see SESSION_FOLDER_NAME_PATTERN's own comment in
    *  worker.ts) - generated once (see WriteToOpticalMediaProceed) and reused for every worker call this job
-   *  makes that touches the temp directory (planning, materializing split pieces, creating .ibb files), so
+   *  makes that touches the temp directory (planning, creating split partials, creating .ibb files), so
    *  they all agree on the exact same isolated subfolder. Never regenerated once set, even though
    *  WriteToOpticalMediaProceed can itself run again (its own "Yes, split the large files" confirmation retries
    *  it) - it is still the same logical job. */
@@ -125,7 +125,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    *  "Send to ImgBurn" for the SAME disc (also bound to that button's own [disabled] in the template, so this
    *  is a backstop, not the only thing preventing it) running two overlapping sends before the first one has
    *  even written its .ibb file yet, which could otherwise trigger two concurrent real 7-Zip splits of the same
-   *  large file into the same destination (materializeOpticalMediaDiscPieces's own existence check is not
+   *  large file into the same destination (createOpticalMediaDiscPartials's own existence check is not
    *  itself a lock). Does not block sending a DIFFERENT disc at the same time - that's fine, each disc's send
    *  is independent. Public so the template can bind to it. */
   public sendingDiscs: boolean[] = [];
@@ -133,9 +133,9 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    *  in-memory state, never persisted: if the app closes mid-job, the user starts over. That is an explicit
    *  decision (no resume support), not an oversight - please don't "fix" this into a persistence feature. */
   public confirmedDiscs: boolean[] = [];
-  /** For each disc i, the bare-relative (relative to this.backup.sourcePath) large-file-split-piece paths that
-   *  were actually materialized and burned for that disc - captured once in sendToImgBurn, since it can include
-   *  a rare surplus piece (see materializeOpticalMediaDiscPieces) that was never part of the tree's own
+  /** For each disc i, the bare-relative (relative to this.backup.sourcePath) large-file-split-partial paths that
+   *  were actually created and burned for that disc - captured once in sendToImgBurn, since it can include
+   *  a rare surplus partial (a "sliver" - see createOpticalMediaDiscPartials) that was never part of the tree's own
    *  selection and so cannot be recovered later by re-querying the tree. confirmDiscBurned reads this to know
    *  exactly which real temp-dir files to delete. */
   private sentDiscPartPaths: string[][] = [];
@@ -144,11 +144,11 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    * same backup carry a recognizable, shared label. */
   public coldStorageCollectionName: string = '';
   /** How many discs the initial plan (partitionBackupToOpticalMedia) actually called for - fixed once
-   *  goToStep2 runs, even though totalNumberOfDisksNeeded/_disks can later grow (see pendingOverflowPieces).
+   *  goToStep2 runs, even though totalNumberOfDisksNeeded/_disks can later grow (see pendingOverflowPartials).
    *  Needed to tell "every originally-planned disc has now been sent" apart from "every disc there currently
    *  is, including ones already appended for overflow, has been sent" - see maybeAppendOverflowDiscs. */
   private originalNumberOfDisksNeeded!: number;
-  /** Real, already-materialized large-file split pieces ("slivers" - see the capacity check in sendToImgBurn)
+  /** Real, already-created large-file split partials ("slivers" - see the capacity check in sendToImgBurn)
    *  that have not yet found a disc with room for them. A sliver is first offered to the disc whose "Send to
    *  ImgBurn" action produced it; if that disc is already too full, it lands here instead of immediately
    *  forcing a new disc into existence - every SUBSEQUENT original disc's send also tries to absorb whatever
@@ -157,12 +157,22 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    *  which also tells the user their estimated disc count just changed before growing the stepper with the new
    *  disc(s). This CAN happen even so: a sliver produced by the last original disc sent has no later disc left
    *  to try. */
-  private pendingOverflowPieces: filesMetadata[] = [];
+  private pendingOverflowPartials: filesMetadata[] = [];
   /** The selected medium's raw capacity, discounted by config.json's maxOpticalMediumRepletionRatio - see
    *  getEffectiveOpticalMediumCapacityInBytes in worker.ts. Fetched once in goToStep2 and used as the one
    *  capacity every later fit check (surplus slivers included) compares against, instead of the medium's raw
    *  selected_optical_medium.capacity. */
   private effectiveMediaCapacityInBytes!: number;
+
+  /** "File integrity data" toggle offered at step 1, default SHA-256 - recorded into each disc's cold storage
+   *  metadata entry (see attachSha256HashesToDiscFiles) so a later recovery, or the standalone "verify integrity of
+   *  cold storage disc" wizard, can check a file's bytes weren't silently corrupted (a drive read error, disc
+   *  handling damage) independent of the optical medium's own error correction. */
+  public integrityDataOptions: {value: 'sha256' | 'none', viewValue: string}[] = [
+    {value: 'sha256', viewValue: 'SHA-256'},
+    {value: 'none', viewValue: 'None'}
+  ];
+  public selectedIntegrityDataOption: {value: 'sha256' | 'none', viewValue: string} = this.integrityDataOptions[0];
 
   optical_media_choices: {value: string, viewValue: string, capacity: number}[] = [
     {value: 'cd', viewValue: 'CD (700 MB)', capacity: 0.7e9},
@@ -318,7 +328,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
           const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
           infoDialog.componentInstance.title = "Backup to optical medium";
           // "Estimated": the real count can still grow later, in the rare case a large file's real split turns
-          // out to need one more piece than planning predicted and that surplus doesn't fit on the disc that
+          // out to need one more partial than planning predicted and that surplus doesn't fit on the disc that
           // triggers it - see maybeAppendOverflowDiscs, which is what actually updates the count if that happens.
           const info_msg = `To burn the backup to the optical medium of your choice (${this.selected_optical_medium.viewValue}) you will need an estimated ${response.res.length} discs in total.`
           infoDialog.componentInstance.message = info_msg;
@@ -357,7 +367,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
                 this.splitLargeFiles = true;
                 this.tempDataDirectoryPath = (await ipc.getTempDataDirectoryPath()).res;
                 // Trailing backslash ensured the same way this.backup.sourcePath already is (see the "+ '\\'"
-                // right above, in the un-split trim a few lines up) - without it, a split piece's real path
+                // right above, in the un-split trim a few lines up) - without it, a split partial's real path
                 // (e.g. "...\tempFilesCanBeDeleted\large-files\file.bin.part.001") loses only the directory NAME
                 // when this.tempDataDirectoryPath is stripped out of it below, leaving a stray LEADING backslash
                 // behind ("\large-files\file.bin.part.001") - which corrupts the real .ibb file's own directory
@@ -368,8 +378,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
                 if (this.tempDataDirectoryPath[this.tempDataDirectoryPath.length - 1] != '\\') { this.tempDataDirectoryPath += '\\'; }
                 // This job's own session subfolder (see tempSessionId's own doc comment) - appended AFTER the
                 // trailing-backslash fix above (not before), so the same fix also covers the boundary between
-                // the root and this segment. Everything downstream (trimming predicted piece paths, the later
-                // materialize/createIBB_file/confirmDiscBurned calls) treats this combined path as simply "the"
+                // the root and this segment. Everything downstream (trimming predicted partial paths, the later
+                // create/createIBB_file/confirmDiscBurned calls) treats this combined path as simply "the"
                 // temp directory for this job - it is never mixed up with the bare root elsewhere in this file.
                 this.tempDataDirectoryPath += this.tempSessionId + '\\';
                 console.log(this.tempDataDirectoryPath);
@@ -514,7 +524,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
             // Pushed independently by invokeImgBurnOnIBBFile (worker.ts), asynchronously - by the time ImgBurn
             // actually fails to launch, createIBB_file/openExistingIBBFile have already resolved successfully
             // (see that function's own doc comment), so this can arrive well after either of those calls
-            // returned, not as part of their own response. Nothing about the sent/materialized/metadata-JSON
+            // returned, not as part of their own response. Nothing about the sent/created/metadata-JSON
             // state for this disc is trustworthy once ImgBurn itself never actually opened, so send the user
             // back to the main menu rather than leaving them on a screen that looks like the send succeeded.
             const failureDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
@@ -542,6 +552,78 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     await ipc.createIBB_file(disk_id, paths, sourcePath, this.tempSessionId, volumeLabel);
   }
 
+  /** If the "File integrity data" option is set to SHA-256, computes and attaches a `sha256` hash to every
+   *  non-directory entry of `finalStats` (mutated in place) - see computeSha256ForBackedUpFiles in worker.ts.
+   *  Must be called after createOpticalMediaDiscPartials has already produced this disc's real, final file
+   *  list (every entry must already exist on disk), and before anything else about this disc (its label hash,
+   *  its metadata JSON entry, its .ibb file) is computed from that list. A no-op when the option is "None", or
+   *  when finalStats has no non-directory entries. Shows its own progress dialog ("Calculating SHA-256 for
+   *  file: ... (n of m files)"), driven by this same worker channel's `running` pushes - see
+   *  LoadingDialogComponent's `message`. */
+  private async attachSha256HashesToDiscFiles(finalStats: filesMetadata[]): Promise<void> {
+    if (this.selectedIntegrityDataOption.value !== 'sha256') { return; }
+    const hashableEntries = finalStats.filter(e => !e.stats.isDirectory);
+    if (hashableEntries.length === 0) { return; }
+
+    const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+    loadingDialogRef.componentInstance.showCancelButton = false;
+    const listener = ipc.onResponseFromWorker((event, response) => {
+      this.ngZone.run(() => {
+        if (response.key === 'compute-sha256-for-backed-up-files' && response.status === 'running') {
+          const lines: string[] = response.res;
+          if (lines.length) { loadingDialogRef.componentInstance.message = lines[lines.length - 1]; }
+        }
+      });
+    });
+    try {
+      const hashResults: Array<{ path: string, sha256: string }> =
+        (await ipc.computeSha256ForBackedUpFiles(this.backup.sourcePath, hashableEntries.map(e => e.path), this.tempSessionId)).res;
+      const hashByPath = new Map(hashResults.map(r => [r.path, r.sha256]));
+      hashableEntries.forEach(e => {
+        const hash = hashByPath.get(e.path);
+        if (hash) { e.stats.sha256 = hash; }
+      });
+    } finally {
+      listener.removeListener();
+      loadingDialogRef.close();
+    }
+  }
+
+  /** How a rare split-partial "sliver" is handled, end to end - this is the answer to "the files tree shows N
+   *  partials but 7-Zip actually produced N+1 real partials, what happens?":
+   *
+   *  Why the discrepancy happens at all: planning (partitionBackupToOpticalMedia) never runs 7-Zip - it only
+   *  predicts split partials arithmetically (estimateLargeFileSplitPartials in worker.ts), assuming each partial is
+   *  exactly LARGE_FILE_SPLIT_VOLUME_SIZE_MIB. The real 7-Zip split only happens later, lazily, the first time
+   *  some disc is actually sent to ImgBurn (createOpticalMediaDiscPartials in worker.ts). In a rare boundary
+   *  case, the real split produces exactly one more partial than the estimate predicted - a "sliver."
+   *
+   *  What happens when the user clicks "Send to ImgBurn":
+   *   1. createOpticalMediaDiscPartials runs the real 7z split for that file and compares the real partial
+   *      count to the estimate: equal means nothing special; real = estimate + 1 means the extra partial is
+   *      appended to the response as a surplus/sliver, reported once, by whichever disc's send happened to
+   *      trigger the split; any other mismatch throws, telling the user to redo planning.
+   *   2. Below, the response is split into normalStats (what the tree asked for) and the sliver. The sliver is
+   *      offered to that same disc first: if it still fits under the effective (margin-discounted) capacity,
+   *      it's silently folded into finalStats for that disc - burned into its .ibb, written into that disc's
+   *      slot in the cold-storage metadata JSON, and recorded in sentDiscPartPaths[i] (so "Confirm disc burned"
+   *      later deletes it too).
+   *   3. If it doesn't fit, it goes into pendingOverflowPartials and gets offered to every subsequent original
+   *      disc's own send in turn. Only once every originally-planned disc has been sent does
+   *      maybeAppendOverflowDiscs pack whatever's still unclaimed onto one or more brand-new appended discs -
+   *      with a "Disc count updated" dialog telling the user the total disc count just grew, then mounting new
+   *      files-tree steps, pre-selected, for those.
+   *
+   *  Does the displayed tree update? No - deliberately not. The tree the user sees for that disc still shows
+   *  only the N partials they originally selected, never the extra real partial. That extra partial is real
+   *  (physically split, burned, tracked for later cleanup) but invisible in that disc's tree UI.
+   *  sentDiscPartPaths's own doc comment says this explicitly: the sliver "was never part of the tree's own
+   *  selection and so cannot be recovered later by re-querying the tree" - which is exactly why
+   *  sentDiscPartPaths exists as separate bookkeeping outside the tree component at all. So: the files tree
+   *  stays at its original count in the UI, but the actual burned disc and its metadata JSON entry correctly
+   *  contain the real count. The only user-visible signal of any of this is the "Disc count updated" dialog,
+   *  and only if the sliver overflows all the way to needing a brand-new disc - the common sub-case (it fits
+   *  on the same or a later disc) is completely silent. */
   async sendToImgBurn(i: number){
     // Guards against a double-click on "Send to ImgBurn" for this SAME disc (see sendingDiscs's own doc
     // comment) - not against sending a different disc at the same time, which is independent and fine. The
@@ -553,7 +635,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     try {
       // If this disc was already sent once during this job, its .ibb project file already exists under this
       // job's own session subfolder - just reopen ImgBurn on that exact, untouched file instead of recomputing
-      // the selection, re-materializing pieces, and rewriting the metadata JSON (see
+      // the selection, re-creating partials, and rewriting the metadata JSON (see
       // openExistingIBBFileInImgBurn's own comment in worker.ts for why redoing all of that on a resend is
       // risky). Nothing else below needs to run in that case - the disc is already fully recorded from its first
       // send.
@@ -576,15 +658,15 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       }
 
       // The bare-relative (relative to this.backup.sourcePath) paths currently selected in this disc's tree -
-      // this is the plan's ESTIMATE for any large-file split piece among them (see estimateLargeFileSplitPieces
-      // in worker.ts): a piece's path is already correctly predicted, but its size is not necessarily final yet.
+      // this is the plan's ESTIMATE for any large-file split partial among them (see estimateLargeFileSplitPartials
+      // in worker.ts): a partial's path is already correctly predicted, but its size is not necessarily final yet.
       const selectedRelativePaths = this.filesTrees.toArray()[i].getSelectedFilePathsIncludingExtraInfo().map(x => x.path);
 
       // No disc this app ever creates - neither an originally-planned one (partitionBackupToOpticalMedia never
       // produces an empty partition) nor an overflow one (maybeAppendOverflowDiscs only ever appends non-empty
       // partitions) - should legitimately have zero files selected here. If it happens anyway - e.g. a
       // freshly-appended overflow disc sent before its own tree has finished being seeded - burning it would
-      // silently produce a useless, empty .ibb and leave its real piece file undeleted forever (confirmDiscBurned
+      // silently produce a useless, empty .ibb and leave its real partial file undeleted forever (confirmDiscBurned
       // only deletes what sentDiscPartPaths recorded, which would also be empty). Fail loudly and let the user
       // retry instead - by the time they click again, whatever timing issue caused this has almost certainly
       // resolved.
@@ -598,48 +680,68 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         return;
       }
 
-      // Materializes this disc's real large-file split pieces (if any), lazily, right now - this is the ONLY
+      // Creates this disc's real large-file split partials (if any), lazily, right now - this is the ONLY
       // point a large file actually gets physically split, rather than the whole job's large files all being
       // split up front before any disc is burned. The response can contain MORE entries than were requested (a
-      // rare, known boundary case surfaces one extra, unplanned "sliver" piece - see
-      // materializeOpticalMediaDiscPieces's own comment): whichever disc's send action happens to trigger a
+      // rare, known boundary case surfaces one extra, unplanned "sliver" partial - see
+      // createOpticalMediaDiscPartials's own comment): whichever disc's send action happens to trigger a
       // given large file's real split is offered that file's sliver first, purely as a byproduct of triggering
       // the split - not because it's guaranteed to belong there. Whether it actually ends up on THIS disc is
       // decided below, by the capacity check.
-      const realStats: filesMetadata[] = (await ipc.materializeOpticalMediaDiscPieces(this.backup.sourcePath, selectedRelativePaths, this.tempSessionId)).res;
+      const realStats: filesMetadata[] = (await ipc.createOpticalMediaDiscPartials(this.backup.sourcePath, selectedRelativePaths, this.tempSessionId)).res;
 
       // Split the response back into what this disc's tree actually asked for and any surplus sliver(s) riding
-      // along with it (see materializeOpticalMediaDiscPieces's own comment).
+      // along with it (see createOpticalMediaDiscPartials's own comment).
       const requestedPaths = new Set(selectedRelativePaths);
       const normalStats = realStats.filter(e => requestedPaths.has(e.path));
       const ownSurplusStats = realStats.filter(e => !requestedPaths.has(e.path));
       let discUsedBytes = normalStats.reduce((sum, e) => sum + e.stats.size, 0);
       const finalStats = normalStats.slice();
 
-      // A surplus piece is accepted onto THIS disc only if the disc's total real, materialized size still fits
+      // A surplus partial is accepted onto THIS disc only if the disc's total real, created size still fits
       // within effectiveMediaCapacityInBytes - the SAME margin-discounted capacity partitionBackupToOpticalMedia
       // planned every disc against (see getEffectiveOpticalMediumCapacityInBytes in worker.ts), never the
       // medium's raw capacity: that margin is a general burn-safety feature that applies to everything written
       // to a disc, not something reserved for or spent by surplus slivers specifically.
       //
       // The candidates tried here are this disc's own fresh surplus AND any sliver an EARLIER disc's send
-      // already produced but couldn't fit at the time (pendingOverflowPieces) - not just the former. Without
+      // already produced but couldn't fit at the time (pendingOverflowPartials) - not just the former. Without
       // this, a sliver rejected by disc 1 would sit untouched until every original disc is sent and then get a
       // brand new, almost entirely empty disc all to itself, even if disc 2 (sent right after, with real
       // content of its own and room to spare) could easily have carried it. Trying the accumulated backlog on
-      // every subsequent disc's send - oldest first, so a longer-waiting piece isn't starved by a newer one -
+      // every subsequent disc's send - oldest first, so a longer-waiting partial isn't starved by a newer one -
       // means a new disc only ever gets created for whatever still doesn't fit anywhere once every original
       // disc has actually been sent (see maybeAppendOverflowDiscs). This can't eliminate the case entirely: a
       // sliver produced by the LAST original disc sent has no later disc left to offer it to.
-      const candidateSurplusPieces = this.pendingOverflowPieces.concat(ownSurplusStats);
-      this.pendingOverflowPieces = [];
-      for (const surplusPiece of candidateSurplusPieces) {
-        if (discUsedBytes + surplusPiece.stats.size <= this.effectiveMediaCapacityInBytes) {
-          discUsedBytes += surplusPiece.stats.size;
-          finalStats.push(surplusPiece);
+      const candidateSurplusPartials = this.pendingOverflowPartials.concat(ownSurplusStats);
+      this.pendingOverflowPartials = [];
+      for (const surplusPartial of candidateSurplusPartials) {
+        if (discUsedBytes + surplusPartial.stats.size <= this.effectiveMediaCapacityInBytes) {
+          discUsedBytes += surplusPartial.stats.size;
+          finalStats.push(surplusPartial);
         } else {
-          this.pendingOverflowPieces.push(surplusPiece);
+          this.pendingOverflowPartials.push(surplusPartial);
         }
+      }
+
+      // Hashes finalStats in place (if the "File integrity data" option is SHA-256) BEFORE anything below is
+      // computed from it - the disc label hash, the metadata JSON entry, and the .ibb file all already see the
+      // hash this way, rather than needing a second pass to attach it later.
+      //
+      // Explicitly caught (unlike createOpticalMediaDiscPartials just above, which still isn't) - a failure
+      // here (e.g. a file vanished/got locked in the moment between being created and being hashed) must
+      // not silently abort this whole method with nothing shown: without this, the finally block still resets
+      // sendingDiscs[i] and re-enables the button, but the user would otherwise see the send simply do nothing.
+      try {
+        await this.attachSha256HashesToDiscFiles(finalStats);
+      } catch (error) {
+        const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        errorDialog.componentInstance.title = "Error";
+        errorDialog.componentInstance.message = `Could not compute SHA-256 hashes for disc ${i + 1}: ${error}`;
+        errorDialog.componentInstance.actionsNum = 1;
+        errorDialog.componentInstance.action1Label = "Ok";
+        errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
+        return;
       }
 
       /* We rename the worker's "stats" field to match what used to come from the files-tree's own "extras" -
@@ -690,7 +792,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         this.sentDiscs[i] = true;
         loadingDialogRef.close();
         // Now that this disc has actually been sent, check whether every originally-planned disc has (so no
-        // further surplus slivers can still turn up) and, if pendingOverflowPieces is non-empty, append however
+        // further surplus slivers can still turn up) and, if pendingOverflowPartials is non-empty, append however
         // many extra discs are needed to burn them too - see maybeAppendOverflowDiscs's own comment.
         await this.maybeAppendOverflowDiscs();
       }).catch((error)=>{
@@ -705,45 +807,45 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   }
 
   /** Once every originally-planned disc has been sent to ImgBurn (so no more surplus slivers can still turn
-   *  up - see the capacity check in sendToImgBurn), packs any pendingOverflowPieces onto one or more freshly
+   *  up - see the capacity check in sendToImgBurn), packs any pendingOverflowPartials onto one or more freshly
    *  appended discs so the user still gets to burn them, using a plain sequential-fill packer (these are at
-   *  most a handful of tiny sliver pieces - the sophistication of partitionBackupToOpticalMedia's own
+   *  most a handful of tiny sliver partials - the sophistication of partitionBackupToOpticalMedia's own
    *  First-Fit-Decreasing packer buys nothing here). By the time this runs, most slivers have usually already
-   *  been absorbed into a later original disc's own send (see the candidateSurplusPieces handling in
+   *  been absorbed into a later original disc's own send (see the candidateSurplusPartials handling in
    *  sendToImgBurn) - this is the last resort for whatever is still left over once there is no later original
    *  disc left to offer it to. Each new disc goes through the exact same
-   *  select-files/"Send to ImgBurn"/"Confirm disc burned" lifecycle as any other - the pieces are already real,
-   *  materialized files by this point, so selecting and sending one merely re-discovers it as "already
-   *  materialized" (see materializeOpticalMediaDiscPieces), it is never split again.
+   *  select-files/"Send to ImgBurn"/"Confirm disc burned" lifecycle as any other - the partials are already real,
+   *  created files by this point, so selecting and sending one merely re-discovers it as "already
+   *  created" (see createOpticalMediaDiscPartials), it is never split again.
    *
    *  This does mean the user can end up burning more discs than the number they were originally told they'd
    *  need up front - an acceptable outcome of an already very rare case, but the user is told about it (see
    *  the info dialog below) before the stepper grows, rather than just finding an extra step has appeared.
    *
    *  Safe to call after every disc send; it only does anything the first time both conditions are true, since
-   *  draining pendingOverflowPieces here is what stops it from doing anything again for the same pieces. */
+   *  draining pendingOverflowPartials here is what stops it from doing anything again for the same partials. */
   private async maybeAppendOverflowDiscs(): Promise<void> {
     const everyOriginalDiscSent = this.sentDiscs.slice(0, this.originalNumberOfDisksNeeded).every(sent => sent);
-    if (!everyOriginalDiscSent || this.pendingOverflowPieces.length === 0) {
+    if (!everyOriginalDiscSent || this.pendingOverflowPartials.length === 0) {
       return;
     }
 
     const overflowPartitions: filesMetadata[][] = [];
     let currentPartition: filesMetadata[] = [];
     let currentPartitionBytes = 0;
-    for (const piece of this.pendingOverflowPieces) {
-      if (currentPartition.length > 0 && currentPartitionBytes + piece.stats.size > this.effectiveMediaCapacityInBytes) {
+    for (const partial of this.pendingOverflowPartials) {
+      if (currentPartition.length > 0 && currentPartitionBytes + partial.stats.size > this.effectiveMediaCapacityInBytes) {
         overflowPartitions.push(currentPartition);
         currentPartition = [];
         currentPartitionBytes = 0;
       }
-      currentPartition.push(piece);
-      currentPartitionBytes += piece.stats.size;
+      currentPartition.push(partial);
+      currentPartitionBytes += partial.stats.size;
     }
     if (currentPartition.length > 0) {
       overflowPartitions.push(currentPartition);
     }
-    this.pendingOverflowPieces = [];
+    this.pendingOverflowPartials = [];
 
     const previousTotal = this.totalNumberOfDisksNeeded;
     const newTotal = previousTotal + overflowPartitions.length;
@@ -796,7 +898,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     }
   }
 
-  /** Marks disc i as confirmed-burned: deletes its real materialized split pieces (if any) from the temp
+  /** Marks disc i as confirmed-burned: deletes its real created split partials (if any) from the temp
    *  directory, then marks it confirmed (the template grays out and disables its controls once confirmedDiscs[i]
    *  is true - see the template). Discs can be sent/confirmed in any order, independent of each other - there is
    *  no sequencing requirement, matching the already non-linear stepper "Send to ImgBurn" itself allows. */
@@ -804,12 +906,12 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     if (!this.sentDiscs[i] || this.confirmedDiscs[i]) { return; }
     const partRelativePaths = this.sentDiscPartPaths[i] || [];
     if (partRelativePaths.length > 0) {
-      // This job's own session subfolder (see tempSessionId's own doc comment) - the same one materialize
-      // actually wrote these real pieces under, not the temp directory's bare root.
+      // This job's own session subfolder (see tempSessionId's own doc comment) - the same one create
+      // actually wrote these real partials under, not the temp directory's bare root.
       const rawTempDataDirectoryPath: string = (await ipc.getTempDataDirectoryPath()).res;
       const tempDirNormalized = rawTempDataDirectoryPath.replace(/\\$/, '') + '\\' + this.tempSessionId;
-      const piecePaths = partRelativePaths.map(p => tempDirNormalized + '\\' + p);
-      await ipc.deleteMaterializedPiecesForDisc(piecePaths);
+      const partialPaths = partRelativePaths.map(p => tempDirNormalized + '\\' + p);
+      await ipc.deletePartialsForDisc(partialPaths);
     }
     this.confirmedDiscs[i] = true;
   }

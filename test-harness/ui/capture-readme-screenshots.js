@@ -127,7 +127,9 @@ async function captureBackupToOpticalMedia() {
     await clickMainMenuButton(win, 'Backup to optical media');
     await win.getByRole('button', { name: 'Path to backup' }).click({ timeout: 15_000 });
     await win.getByText(sourceRoot, { exact: true }).waitFor({ timeout: 10_000 });
-    await win.getByRole('combobox').click({ timeout: 15_000 });
+    // .first() - step 1 now has a second combobox too (the "File integrity data" toggle); "Optical medium type"
+    // is always the first one in DOM order.
+    await win.getByRole('combobox').first().click({ timeout: 15_000 });
     await win.getByRole('option', { name: 'CD (700 MB)' }).click({ timeout: 15_000 });
     await win.getByPlaceholder('e.g. My Backup').fill('Documents Archive');
     await pause(500);

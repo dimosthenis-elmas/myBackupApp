@@ -88,6 +88,17 @@
           </mat-form-field>
         </div>
         <div class="flex-centered">
+          <mat-form-field style="width: 350px;" subscriptSizing="dynamic">
+            <mat-label class="dropdown-label">File integrity data (to be included in the metadata json file)</mat-label>
+            <mat-select [(ngModel)]="selectedIntegrityDataOption" name="integrityDataOptions">
+              @for (option of integrityDataOptions; track option) {
+                <mat-option [value]="option">{{option.viewValue}}</mat-option>
+              }
+            </mat-select>
+            <mat-hint>New discs added to this cold storage will carry SHA-256 hashes independently of whether the existing ones do.</mat-hint>
+          </mat-form-field>
+        </div>
+        <div class="flex-centered">
             <button mat-flat-button color="primary" (click)="partition();" [disabled]="isPartitioning">Next</button>
         </div>
         <br>

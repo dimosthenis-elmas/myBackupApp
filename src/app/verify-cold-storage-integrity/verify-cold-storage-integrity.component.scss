@@ -1,0 +1,37 @@
+/*
+This code by https://stackoverflow.com/users/282729/feklee was taken from
+ https://stackoverflow.com/questions/15382608/punctuation-loading-animation-javascript
+*/
+@keyframes dots-1 { from { opacity: 0; } 25% { opacity: 1; } }
+@keyframes dots-2 { from { opacity: 0; } 50% { opacity: 1; } }
+@keyframes dots-3 { from { opacity: 0; } 75% { opacity: 1; } }
+
+.dots span {
+    animation: dots-1 1s infinite steps(1);
+}
+
+.dots span:first-child + span {
+    animation-name: dots-2;
+}
+
+.dots span:first-child + span + span {
+    animation-name: dots-3;
+}
+
+.flex-centered{
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    flex: 1;
+}
+
+.home-icons{
+    width: 64px !important;
+    height: 64px !important;
+    font-size: 50px;
+}
+
+.file-chooser-btn{
+    margin: 0.4em !important;
+}

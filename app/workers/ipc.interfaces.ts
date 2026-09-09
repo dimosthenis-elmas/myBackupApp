@@ -5,9 +5,10 @@ export type WorkerChannel =
 "delete-files-and-dirs-for-dir-sync" | 'get-temp-data-directory-path' | 'get-file-paths-with-stats' |
 "read-json-from-disk" | "write-json-to-disk" | "merge-file-parts" | "clear-temp-data-directory" |
 "validate-config-paths" | "update-config" | "ensure-temp-directory-ownership" |
-"materialize-optical-media-disc-pieces" | "delete-materialized-pieces-for-disc" |
+"create-optical-media-disc-partials" | "delete-partials-for-disc" |
 "get-effective-optical-medium-capacity" | "check-temp-data-directory-for-leftovers" |
-"open-existing-ibb-file" | "imgburn-launch-failed";
+"open-existing-ibb-file" | "imgburn-launch-failed" |
+"compute-sha256-for-backed-up-files" | "verify-file-hashes";
 
 export interface WorkerRequest {
   key: WorkerChannel;
@@ -25,7 +26,10 @@ export interface WorkerListener {
 }
 
 export type ColdStorageMetadata =
-  Array<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}>>
+  // "sha256" is optional - present per file when the "File integrity data" option was set to SHA-256 at backup
+  // time, absent entirely for older cold storage JSONs and for anything backed up with that option set to
+  // None. Never present on a directory entry.
+  Array<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean, "sha256"?: string}}>>
 
 export type OpticalMediaPartitioning<WorkerResponse> = {
   [K in keyof WorkerResponse]:

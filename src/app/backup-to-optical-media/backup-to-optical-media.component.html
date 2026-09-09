@@ -39,6 +39,16 @@
             <mat-hint>Burned onto each disc's label as "{{coldStorageCollectionName || '...'}} Disc N"</mat-hint>
           </mat-form-field>
         </div>
+        <div style="display: flex; flex-direction: column; align-items: center;">
+          <mat-form-field style="width: 350px;">
+            <mat-label class="dropdown-label">File integrity data (to be included in the metadata json file)</mat-label>
+            <mat-select [(ngModel)]="selectedIntegrityDataOption" name="integrityDataOptions">
+              @for (option of integrityDataOptions; track option) {
+                <mat-option [value]="option">{{option.viewValue}}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+        </div>
         <br>
         <div>
             <mat-divider></mat-divider>
