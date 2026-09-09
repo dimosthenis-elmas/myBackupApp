@@ -37,6 +37,10 @@ because this feature may also delete files from the target directory.
 
 - **Backup to optical media:** Partitions your files to a collection of optical disks and sends them to
 ImgBurn in order to be burned. It can also split large files which do not fit to a single optical disc.
+By default, it also records a SHA-256 checksum for every file in the cold storage metadata json (a "File
+integrity data" toggle at step 1 lets you turn this off) - defense-in-depth against a drive read error or disc
+handling damage later on, independent of whatever error correction the disc/burner itself already does. See
+"Verify integrity of cold storage disc" below for how these checksums actually get used.
 
 - **Recover data from optical media:** Recovers all, or a partial selection of the contents of a backup stored in a
 collection of optical media. You can now optionally provide the cold storage metadata json file (the one saved
@@ -53,7 +57,15 @@ automatically reassemble the original file for you using 7-Zip. If you say no, o
 for some reason (e.g. a missing or corrupted part), nothing gets deleted and the app shows you the exact 7-Zip
 command to reassemble the file by hand yourself later.
 
+If the cold storage you're recovering from was backed up with SHA-256 checksums recorded (the default - see
+above), the app automatically re-checks every recovered file's checksum once copying finishes, and tells you
+exactly which files (if any) failed - a real, actionable sign of drive/disc trouble, not just "recovery
+completed."
+
 - **Add missing (new) files to existing optical media cold storage:** It also accounts for large files that can't fit on a single optical disc, splitting them so the large file can be distributed across multiple discs.
+Has the same "File integrity data" toggle as backup-to-optical-media, for the NEW discs being added - if you load
+an existing cold storage json, it pre-sets the toggle to match whatever the existing discs already do (SHA-256 or
+none), so new discs stay consistent by default; you can still change it yourself.
 Note that this simple app uses a rather rudimentary check (at this point) in order to recognize that a large file has been backed up in several parts. It basically uses
 a naming convention (a large file e.g.: largeFile.data will be split to largeFile.data.part.001 etc.). Note that this simple assumption might cause problems in some scenarios with naming conflicts. I know, I will have to make this more robust in the future but for now, that's how it works. Sorry folks, will have to review this.
 
@@ -62,6 +74,14 @@ afterwards, the app now asks you where to save the resulting cold storage metada
 get dumped into the app's internal temp folder, now you pick the folder and file name yourself via a normal save
 dialog. Please keep this file somewhere safe, since it's what lets you use the "Recover data from optical media"
 and "Add missing files" features without physically inserting every single disc again.
+
+- **Verify integrity of cold storage disc:** A separate, read-only wizard for checking a cold storage disc's
+SHA-256 checksums on their own, without recovering/copying anything - useful for periodically spot-checking a set
+of discs you already have, independent of ever actually needing to recover from them. Point it at the cold
+storage metadata json, then insert discs one at a time (in any order) - it auto-identifies each one, hashes every
+file on it directly off the disc, and reports Verified/FAILED/no-integrity-data for each, with a running per-disc
+tally as you go. Does nothing at all (tells you up front, before asking you to insert anything) if the json has
+no checksums recorded for any file.
 
 - On startup, the app now does a couple of housekeeping checks for you:
   - It checks whether its internal temp folder still has leftover partial (.part.NNN) files from a previous

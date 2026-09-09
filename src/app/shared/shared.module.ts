@@ -11,10 +11,11 @@ import { LoadingDialogComponent } from './components';
 import {MatProgressSpinnerModule} from '@angular/material/progress-spinner';
 import { MatButtonModule } from '@angular/material/button';
 import { MatDialogModule } from '@angular/material/dialog';
+import { ScrollingModule } from '@angular/cdk/scrolling';
 
 @NgModule({
   declarations: [PageNotFoundComponent, ConfirmationDialogComponent, LoadingDialogComponent, WebviewDirective],
-  imports: [CommonModule, TranslateModule, FormsModule, MatProgressSpinnerModule, MatButtonModule, MatDialogModule],
+  imports: [CommonModule, TranslateModule, FormsModule, MatProgressSpinnerModule, MatButtonModule, MatDialogModule, ScrollingModule],
   exports: [TranslateModule, WebviewDirective, FormsModule]
 })
 export class SharedModule {}

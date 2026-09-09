@@ -270,11 +270,12 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
     loadingDialogRef.componentInstance.showCancelButton = false;
+    loadingDialogRef.componentInstance.message = "Verifying SHA-256 hashes";
+    loadingDialogRef.componentInstance.lines = [];
     const listener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         if (response.key === 'verify-file-hashes' && response.status === 'running') {
-          const lines: string[] = response.res;
-          if (lines.length) { loadingDialogRef.componentInstance.message = lines[lines.length - 1]; }
+          loadingDialogRef.componentInstance.pushLines(response.res as string[]);
         }
       });
     });
@@ -292,12 +293,12 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
     loadingDialogRef.close();
 
     const failedPaths = results.filter(r => !r.matched).map(r => r.path);
-    const verifiedCount = results.length - failedPaths.length;
+    const verifiedPaths = results.filter(r => r.matched).map(r => r.path);
+    const noDataPaths = discEntries.filter(f => !f.stats.sha256).map(f => f.path.replace(OPTICAL_DRIVE_LETTER_CONVENTION, mountedRoot));
+    const verifiedCount = verifiedPaths.length;
     const passed = failedPaths.length === 0;
     this.verifiedDiscs[discIndex] = passed;
 
-    const shown = failedPaths.slice(0, 15);
-    const rest = failedPaths.length - shown.length;
     const resultDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '600px' });
     resultDialog.disableClose = true;
     // "verification successful" only when something was actually checked and matched - a disc with zero hash
@@ -309,11 +310,15 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
       : verifiedCount > 0
         ? `Disc ${discIndex + 1}: verification successful`
         : `Disc ${discIndex + 1}: no integrity data available`;
-    resultDialog.componentInstance.message =
-      `Verified: ${verifiedCount}. No integrity data available: ${noDataCount}. FAILED: ${failedPaths.length}.` +
-      (failedPaths.length > 0
-        ? `  The following files did NOT match their recorded hash - this can mean real data corruption (a bad drive read, disc handling damage): ${shown.join(', ')}${rest > 0 ? `, and ${rest} more` : ''}.`
-        : '');
+    resultDialog.componentInstance.message = `Verified: ${verifiedCount}. No integrity data available: ${noDataCount}. FAILED: ${failedPaths.length}.`;
+    // Full lists, not a truncated "first 15, and N more" string - see ConfirmationDialogComponent's own `lists`
+    // field: each renders as a real virtualized scrolling list, so however many files are on this disc, only
+    // the ones actually visible are ever real DOM nodes.
+    resultDialog.componentInstance.lists = [
+      failedPaths.length ? { label: `FAILED - did NOT match their recorded hash (this can mean real data corruption - a bad drive read, disc handling damage):`, items: failedPaths } : undefined,
+      verifiedPaths.length ? { label: `Verified:`, items: verifiedPaths } : undefined,
+      noDataPaths.length ? { label: `No integrity data available, not checked:`, items: noDataPaths } : undefined,
+    ].filter((s): s is { label: string, items: string[] } => !!s);
     resultDialog.componentInstance.actionsNum = 1;
     resultDialog.componentInstance.action1Label = "Ok";
     resultDialog.componentInstance.action1Callback = () => {

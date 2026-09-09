@@ -104,6 +104,13 @@ async function main() {
   console.log('Checking the app\'s real temp/cache directory is safe to use...');
   assertRealTempDataDirectoryIsSafeToUse();
 
+  // Declared here (not with const/let inside the try block below) specifically so they're still in scope for
+  // the "5. Independent cross-check" section AFTER the try/finally - a real bug found by actually running this
+  // script for the first time: these were originally declared inside the try block and referenced outside it,
+  // which throws "corruptedFile is not defined" (a ReferenceError, not a test failure) the moment the app
+  // closes and this script tries to do its own independent verification.
+  let corruptedFile, hashedCount, dialogCheckPassed;
+
   let app, win, mountedIsoPath;
   try {
     console.log('\nLaunching the app...');
@@ -121,7 +128,7 @@ async function main() {
     const discListing = (await callWorker(win, 'get-file-paths-with-stats', { dirPath: discDir })).res;
     const normalized = normalizeForMetadata(discListing, discDir);
     const hashByRelativePath = new Map(manifest.files.map((f) => [f.relativePath, f.sha256]));
-    let hashedCount = 0;
+    hashedCount = 0;
     for (const entry of normalized) {
       if (entry.stats.isDirectory) { continue; }
       const relPosix = entry.path.replace(/^D:\\/, '').split(path.sep).join('/');
@@ -137,7 +144,7 @@ async function main() {
     // 3. NOW - only after the JSON above already has this file's hash recorded - corrupt exactly one file's real
     //    bytes on the simulated disc, in place (same size). This is the "corruption happened to the media AFTER
     //    backup" step this whole feature exists to catch.
-    const corruptedFile = manifest.files.find((f) => f.sizeBytes > 0);
+    corruptedFile = manifest.files.find((f) => f.sizeBytes > 0);
     if (!corruptedFile) { throw new Error('Expected at least one non-empty file in the generated tree to corrupt - check the --min-size passed to generateFixtureTree above.'); }
     const corruptedRelOs = corruptedFile.relativePath.split('/').join(path.sep);
     const corruptedAbsPath = path.join(discDir, corruptedRelOs);
@@ -240,7 +247,7 @@ async function main() {
     console.log(`  Dialog mentions the corrupted file's name: ${dialogMentionsCorruptedFile ? 'OK' : 'WRONG'}`);
     console.log(`  Dialog reports "FAILED integrity check (1)": ${dialogReportsExactlyOneFailed ? 'OK' : 'WRONG'}`);
     console.log(`  Dialog reports "Verified (${expectedVerifiedCount})": ${dialogReportsRestVerified ? 'OK' : 'WRONG'}`);
-    const dialogCheckPassed = dialogMentionsCorruptedFile && dialogReportsExactlyOneFailed && dialogReportsRestVerified;
+    dialogCheckPassed = dialogMentionsCorruptedFile && dialogReportsExactlyOneFailed && dialogReportsRestVerified;
 
     await step('click "Ok" to dismiss the integrity summary dialog', () =>
       win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));

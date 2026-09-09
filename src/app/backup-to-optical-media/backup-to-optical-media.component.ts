@@ -567,11 +567,12 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
     loadingDialogRef.componentInstance.showCancelButton = false;
+    loadingDialogRef.componentInstance.message = "Calculating SHA-256 hashes";
+    loadingDialogRef.componentInstance.lines = [];
     const listener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         if (response.key === 'compute-sha256-for-backed-up-files' && response.status === 'running') {
-          const lines: string[] = response.res;
-          if (lines.length) { loadingDialogRef.componentInstance.message = lines[lines.length - 1]; }
+          loadingDialogRef.componentInstance.pushLines(response.res as string[]);
         }
       });
     });

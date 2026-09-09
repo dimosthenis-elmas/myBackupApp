@@ -66,11 +66,16 @@ Both styles use a shared foundation:
 | `ui/test-recover-from-json-metadata.js` | UI | The recovery wizard's *other* entry point: seeding the disc listing from a provided cold storage metadata JSON file instead of physically reading every disc - including the same large-file-split-across-discs merge scenario as the row above, proven this time on a JSON-seeded disc listing. |
 | `ui/test-backup-to-optical-media.js` | UI | The "Backup to optical media" wizard, up to and including "Send to ImgBurn" (with the real ImgBurn launch safely redirected to a no-op stub), including a real large-file split via this wizard's own "too large" confirmation-dialog chain (it tries without splitting first, unlike `add-missing-files`'s always-split behavior). Checks that every source file/directory - and the large file's real split pieces - are correctly represented in the real generated `.ibb` file(s). |
 | `ui/test-add-missing-files.js` | UI | The "Add missing files to optical media cold storage" wizard - the one flow that *adds* to an already-existing cold storage rather than starting fresh, including a real large-file split (this wizard always splits unconditionally, unlike backup-to-optical-media's). Checks the diff-against-existing-cold-storage logic (only genuinely new files/pieces reach the new discs, already-backed-up ones are correctly excluded), the merged metadata JSON, and correct continued disc numbering across all new discs. |
+| `ui/test-backup-to-optical-media-sha256.js` | UI | The SHA-256 integrity-checksum feature's backup-side toggle, through the real "Backup to optical media" wizard: reads the real saved metadata JSON back and independently re-hashes every source file to confirm the recorded `sha256` is actually correct (default), and confirms the field is fully omitted everywhere when the toggle is set to "None". |
+| `ui/test-recover-integrity-detects-corruption.js` | UI | The highest-priority test for the SHA-256 feature's recovery-side half: records real hashes, corrupts one file's bytes *after* recording, then proves the real recovery wizard's post-recovery integrity check reports exactly that file as FAILED (and everything else as Verified) - not just that hashing runs without error. |
+| `ui/test-verify-cold-storage-integrity.js` | UI | The standalone "Verify integrity of cold storage disc" wizard (the app's 6th main-menu feature) across two simulated discs - auto-identifies each disc from one metadata JSON, correctly tells a clean disc from a tampered one, and keeps a correct running per-disc tally across the session. |
 
-All 5 of the app's main-menu features now have an automated UI test. Not yet built: the "add missing files"
-screen's *other* entry point (physically re-inserting every existing disc one by one, rather than importing a
-JSON) - it reuses the same disc-enumeration component `ui/test-recover-multi-disc.js` already exercises, so it
-wasn't the genuinely new thing worth proving first.
+All 6 of the app's main-menu features now have an automated UI test - the 6th, "Verify integrity of cold storage
+disc," was added alongside the SHA-256 integrity-checksum feature (an optional per-file hash recorded at backup
+time, checked again on recovery or via that standalone wizard). Not yet built: the "add missing files" screen's
+*other* entry point (physically re-inserting every existing disc one by one, rather than importing a JSON) - it
+reuses the same disc-enumeration component `ui/test-recover-multi-disc.js` already exercises, so it wasn't the
+genuinely new thing worth proving first.
 
 ## Safety model
 
@@ -137,6 +142,51 @@ found by actually running the real code and checking real results, not by readin
   Confirmed via each real `.ibb`/JSON output. Fixed the same way in both: a one-line trailing-backslash-ensure
   right after the temp path is fetched.
 
+**Found and fixed while building the SHA-256 integrity-checksum feature** (a dedicated manual bug-hunt pass, not
+found by a live test run - the tests only ran cleanly once these were already fixed):
+- **A successfully merged large file would have ALWAYS reported as integrity-FAILED, unconditionally.** The
+  recovery-side integrity check originally ran AFTER the optional "reassemble the split pieces" merge step, but a
+  successful merge DELETES the individual `.partNNN` pieces it just reassembled, and there is no separate recorded
+  hash for the reassembled WHOLE file to check instead (only each physical piece has one, by design). Checking
+  after the merge would find those piece paths simply gone and report every merged file as FAILED, every time,
+  regardless of whether anything was ever actually wrong. Fixed by verifying the raw copied pieces BEFORE offering
+  to merge them - which also happens to be the more correct place for it, since it confirms the copy was
+  byte-correct independently of the merge's own separate 7-Zip integrity test.
+- **One unreadable file used to abort integrity-checking of an entire disc.** The shared `verifyFileHashes` worker
+  function let a single file's read error (a bad sector, a genuinely missing file) reject the whole batch,
+  silently skipping every other file still waiting to be checked - on exactly the "damaged disc" scenario this
+  feature exists for. Fixed: each file's hash is now wrapped in its own try/catch: an unreadable file reports as
+  FAILED (a legitimate finding) instead of derailing everything else in the batch.
+- **A worker/IPC-level verification failure would silently swallow the entire "recovery successful" dialog.** The
+  recovery-side integrity check's own `try { ... } finally { ... }` had no `catch` - a rejection from the shared
+  verification call (not a per-file problem, which is caught inside that function itself) would propagate all the
+  way out uncaught. Since this only ever runs after every disc's files have already copied successfully, the
+  practical effect was: a genuinely successful recovery would just never show ANY final dialog, looking exactly
+  like the app had hung. Fixed with a dedicated catch that tells the user integrity verification itself couldn't
+  run, then falls through to the normal completion dialog.
+- Two duplicate-click gaps in the new standalone verify wizard: "Choose metadata JSON" had no disabled-guard at
+  all while loading (weaker than the app's own existing precedent elsewhere, which at least disables a *later*
+  button); and "Retry"/"Verify another disc" could fire twice on a genuinely fast double-click landing before the
+  dialog's own close animation finished. Both now guarded.
+- The two new worker functions relied on `process.env._stop` (the shared cross-operation cancellation flag)
+  having already been reset by whatever earlier, unrelated operation happened to run first - not currently
+  triggering a real bug (both call sites are, by chance, always preceded by something that resets it), but
+  inconsistent with this file's own convention where every independently-invokable operation resets it at its own
+  start. Now they do too.
+- The standalone verify wizard was missing the duplicate-disc-id guard the recovery flow's own JSON-import path
+  already has (`seedFromExternalMetadata`) - without it, two discs producing the same identifier (an empty disc,
+  or the same disc listed twice) would make the second one permanently unreachable.
+- The verify wizard's per-disc dialog said "verification successful" even for a disc with zero hash coverage
+  (nothing on it has a recorded `sha256` at all) - technically zero failures, but claiming success about a check
+  that never actually ran anything. Now titled "no integrity data available" in that specific case.
+- File-listing dialogs (progress lines while hashing, and per-category Verified/FAILED/no-data results) originally
+  used a plain `*ngFor` (capped at 300 lines as a stopgap) rather than a real virtualized scrolling list - fine for
+  a handful of files, but a disc with many thousands would have gotten progressively slower to render regardless
+  of the cap, since the cap only bounded the array, not the DOM. Replaced with `cdk-virtual-scroll-viewport` (the
+  same primitive `ScrollableListComponent` is built on) in both `LoadingDialogComponent` (a new `lines`/`pushLines`
+  field) and `ConfirmationDialogComponent` (a new `lists` field, replacing several truncated "first 15, and N
+  more" strings) - only the rows actually visible ever become real DOM nodes, so there's nothing left to cap.
+
 **Found, documented, deliberately left unfixed (the user's call, not reachable through the real app UI):**
 - `partitionBackupToOpticalMedia` (`app/workers/worker.ts`) can loop forever if a single real split piece (fixed
   at 500 MiB) is bigger than whatever disc capacity it's given - the pass that assigns split pieces to "discs" is
@@ -166,6 +216,30 @@ navigating to disc 2's step, disc 1's button was gone entirely - not hidden - ma
 that never existed. Fixed by dropping the index (only one disc's panel is ever attached at a time, so the plain
 locator is already unambiguous). A separate cleanup-ordering bug was also found and fixed: real `.ibb` files were
 being deleted before the verification step ever got to read them.
+
+**Also found and fixed while building the SHA-256 integrity-checksum feature's own tests:**
+- Adding the "File integrity data" dropdown next to the pre-existing "Optical medium type" dropdown on the same
+  screen made `getByRole('combobox')` (used unscoped everywhere, since there used to be only one) ambiguous in
+  THREE existing scripts at once - `ui/test-backup-to-optical-media.js`,
+  `ui/test-backup-to-optical-media-overflow-disc.js`, and `ui/capture-readme-screenshots.js`. A genuine regression
+  caused by an app-side UI change, not a test bug - caught before any of the three actually broke, by grepping for
+  every `combobox` locator across the whole `ui/` folder the moment the new dropdown was added, not just
+  re-running the scripts that happened to change. All three now scope to `.first()`.
+- `test-recover-integrity-detects-corruption.js`: `corruptedFile` and a couple of other values were declared with
+  `const`/`let` INSIDE a `try` block but referenced in the independent cross-check section AFTER the `try/finally`
+  closed - a plain `ReferenceError`, only ever reached once the app had already closed and every dialog-based
+  check had already passed. The real feature was correct the whole time; only the test's own post-hoc
+  verification crashed. Same underlying mistake, found independently a second time in
+  `test-verify-cold-storage-integrity.js` shortly after - worth checking deliberately in any script with this
+  try/finally-then-verify-after shape, not just fixing the one instance found first.
+- `test-verify-cold-storage-integrity.js`: an earlier version computed its own pass/fail result and called
+  `fs.rmSync` on the WHOLE scratch folder - including disc 2's still-mounted `.iso` - INSIDE the try block, before
+  the `finally` block ever got a chance to dismount it. Windows keeps a file LOCKED while it's backing a mounted
+  virtual drive, so the delete failed with the disc still mounted, before the script ever reached its own
+  PASS/FAIL line - leaving the disc mounted, needing a manual eject, with no obvious error pointing at why. Fixed
+  by moving the verify/cleanup/PASS-FAIL logic to run AFTER the try/finally closes, matching every other script
+  here's existing convention (dismount and close the app FIRST, only clean up scratch files once nothing is still
+  locked) - this script had simply drifted from that convention when it was first written.
 
 ## Debugging lessons (useful the next time something breaks)
 
@@ -222,6 +296,24 @@ being deleted before the verification step ever got to read them.
   assuming it's isolated - the leading-backslash defect above turned out to exist independently in TWO
   components sharing the same temp-directory-path handling pattern, found only because the second one was
   deliberately checked once the first was confirmed real, not because a second test happened to stumble onto it.
+- A `const`/`let` declared inside a `try` block is invisible to code that runs after its `finally` closes -
+  obvious written down, but easy to miss while writing a script whose whole point is "verify something only once
+  the app has closed and everything's been dismounted." Found real in two different SHA-256-feature test scripts
+  independently, both times only by actually running the script all the way through, never by reading it -
+  worth a deliberate check (are any variables used after a try/finally declared with const/let INSIDE it?) in any
+  new script with that shape, rather than trusting that reading the code once was enough.
+- When a script both mounts a virtual disc AND cleans up scratch files on success, the cleanup MUST happen after
+  the disc is dismounted, never before - Windows keeps a file locked while it backs a mounted virtual drive, so
+  deleting a folder that still contains one throws (or silently fails to remove it), and if that delete is
+  sequenced before the `finally` block that would have dismounted it, the disc is left mounted with no dismount
+  ever attempted at all. The fix isn't a try/catch around the delete - it's ordering: dismount and close the app
+  first, unconditionally, in `finally`; only ever clean up scratch files in code that runs after that block, once
+  nothing left is locked.
+- Adding a NEW element to a screen that shares a generic ARIA role with an EXISTING one (a second `combobox`, a
+  second unlabeled button) can silently break locators in tests that never touch that screen's own code at all -
+  the fix landed in an app component; the breakage showed up in test scripts. When adding any new same-role
+  element to an existing screen, grep for that role across every test script that visits that screen, not just
+  the ones the current change happens to modify.
 
 ## Cleaning up
 

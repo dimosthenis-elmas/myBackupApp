@@ -6,8 +6,8 @@ by step" sections first - everything below assumes you already know the big pict
 This is the piece that most directly solves the original problem: it makes a robot click through real app
 screens for you — no physical disc, no manual clicking.
 
-Seven test scripts live here - one for every one of the app's 5 main-menu features (two of them get two scripts
-each, for a second entry point or a second disc count) - plus one non-test utility script
+Eight test scripts cover a whole main-menu feature each - the app has 6 main-menu features, and "recover data"
+gets three scripts for its different entry points/disc counts - plus one non-test utility script
 (`capture-readme-screenshots.js`, documented in its own section below) that reuses the same real-app-driving
 machinery to grab screenshots for the top-level README instead of verifying anything:
 - `test-recover-single-disc.js` — the "Recover data from optical media backup" wizard (needs a simulated disc).
@@ -20,17 +20,25 @@ machinery to grab screenshots for the top-level README instead of verifying anyt
   (with the real ImgBurn launch safely redirected to a no-op stub - see its own section below).
 - `test-add-missing-files.js` — the "Add missing files to optical media cold storage" wizard - see its own
   section below.
+- `test-verify-cold-storage-integrity.js` — the "Verify integrity of cold storage disc" wizard (the app's 6th
+  main-menu feature, added alongside the SHA-256 integrity-checksum feature - see its own section below).
 
-An eighth script, `test-backup-to-optical-media-overflow-disc.js`, covers a specific edge case within the
-"Backup to optical media" wizard rather than a whole feature - see its own section below. It deliberately does
-NOT follow the shared conventions described in this intro (own fixture-building, no `--random-tree`/`--json-tree`
-switch, a shorter click pause) since it's a narrow, mechanism-focused test rather than a full click-through demo.
+Three more scripts each cover one specific edge case/sub-feature rather than a whole wizard - see their own
+sections below: `test-backup-to-optical-media-overflow-disc.js` (a rare large-file-split boundary case),
+`test-backup-to-optical-media-sha256.js` and `test-recover-integrity-detects-corruption.js` (the SHA-256
+integrity-checksum feature's backup-side and recovery-side halves). Only the first of these three deliberately
+does NOT follow the shared conventions described below (own bespoke fixture-building, no `--random-tree`/
+`--json-tree` switch, a shorter click pause) - it needs a deliberately-tampered split rather than a real one, so
+the shared tree generator doesn't fit. The other two DO use the same shared `generateFixtureTree()` (and so
+support `--random-tree`/`--json-tree` like the eight main scripts above) - they just don't ship a bundled
+`tree-spec.json` of their own yet, so `--json-tree` isn't usable against them without adding one first.
 
-**All seven of the main scripts pause 5 seconds after every click** (`WATCH_PAUSE_MS` near the top of each script's `step()` helper) -
-purely so you can actually watch each step land on screen as it runs, not because the app needs it. Lower it (or
-remove the `await new Promise(...)` line) if you'd rather they run at full speed.
+**Every script that clicks through a full wizard pauses 5 seconds after every click** (`WATCH_PAUSE_MS` near the
+top of each script's `step()` helper) - purely so you can actually watch each step land on screen as it runs, not
+because the app needs it. Lower it (or remove the `await new Promise(...)` line) if you'd rather they run at full
+speed.
 
-**All seven (and every `worker-ipc/` script too) print a before/after directory tree** of whatever folders matter
+**Every script here (and every `worker-ipc/` script too) prints a before/after directory tree** of whatever folders matter
 for that test, via the shared `lib/print-tree.js` (an indented listing of every file with its size, empty
 directories marked as such) - so you can actually see what went where, not just a pass/fail summary. This is
 purely for visual inspection; the real pass/fail authority is still whatever byte-for-byte check (usually
@@ -426,6 +434,105 @@ different, not-yet-confirmed disc's.
 sent to ImgBurn, and deleted automatically once confirmed) the instant the wizard loads, before step 1's own form
 is usable at all - not a bug, just something the script has to click through before anything else.
 
+## `test-backup-to-optical-media-sha256.js`
+
+```
+node test-harness/ui/test-backup-to-optical-media-sha256.js
+```
+
+Proves the SHA-256 integrity-checksum feature's BACKUP-SIDE half actually works, through the real "Backup to
+optical media" wizard - not by hand-building a metadata JSON with hand-computed hashes (that's what
+`test-recover-integrity-detects-corruption.js` below does, deliberately, to test recovery-side detection in
+isolation), but by actually clicking the "File integrity data" toggle and checking what the wizard really writes.
+
+Two independent phases, each its own full app launch (kept separate rather than navigating one still-open app
+back to the main menu, to avoid any risk of leftover state leaking between them): **default** (the toggle never
+touched - SHA-256 is the default) and **None** (the toggle switched explicitly). A small, single-disc tree with
+no large file - the split/partitioning machinery is already proven by `test-backup-to-optical-media.js`; this
+script's only job is the toggle and the hashing it triggers.
+
+**What it actually checks, after each phase:** reads the real saved metadata JSON and, for the default phase,
+independently re-hashes every real source file and confirms it matches what got written (`stats.sha256`) -
+not just that SOME string is present - and confirms no directory entry has one at all (hashing a directory
+makes no sense). For the "None" phase, confirms NO entry (file or directory) has the field at all - genuinely
+omitted, not just empty.
+
+**A real regression this script's own construction found and fixed elsewhere:** adding the "File integrity
+data" dropdown right next to the pre-existing "Optical medium type" dropdown on the same screen made
+`getByRole('combobox')` (used unscoped, since there used to be only one) ambiguous in THREE other places:
+`test-backup-to-optical-media.js`, `test-backup-to-optical-media-overflow-disc.js`, and
+`capture-readme-screenshots.js`. All three now scope to `.first()` (medium type is always first in DOM order).
+
+**A real cleanup gap found and fixed in this script itself:** neither phase ever clicks "Confirm disc burned"
+(nothing to confirm - a small tree has no real split pieces to clean up), so each phase's own real `.ibb` file
+and temp-dir session subfolder would otherwise be left sitting in the app's REAL temp/cache directory forever -
+breaking the NEXT script's (or your own next real use of the app's) `assertRealTempDataDirectoryIsSafeToUse`
+check. Cleaned up explicitly at the end of each phase, best-effort (logged, not thrown, so a cleanup failure
+never masks the phase's actual pass/fail result).
+
+## `test-recover-integrity-detects-corruption.js`
+
+```
+node test-harness/ui/test-recover-integrity-detects-corruption.js
+```
+
+The highest-priority test for the SHA-256 integrity-checksum feature's RECOVERY-SIDE half - and the only one
+that actually proves it catches real corruption, rather than that "happy path" hashing merely runs without
+error. A real disc's data can degrade AFTER it was burned and its hashes were recorded (a bad drive read,
+physical handling damage) - the whole reason this feature exists - so this script:
+1. Builds a small tree, copies it onto one simulated disc folder.
+2. Asks the app's own real `get-file-paths-with-stats` IPC for that disc's listing, and builds a cold storage
+   metadata JSON from it, attaching each file's REAL sha256 straight from `generate-random-tree.js`'s own
+   manifest (ground truth, computed from the ORIGINAL, not-yet-tampered bytes) - the "recorded good, at backup
+   time" step.
+3. ONLY AFTER that JSON already has the hash recorded, flips one byte of exactly one file, in place (same size),
+   directly on the simulated disc folder - corruption that happened to the media AFTER backup.
+4. Builds a `.iso` from the NOW-CORRUPTED folder and mounts it, then drives the real recovery wizard via the
+   JSON-import entry point (same technique as `test-recover-from-json-metadata.js`).
+
+**What it actually checks:** the final dialog's TITLE says "...integrity FAILURES", never plain "successful" -
+a real problem must never be masked by an upbeat title. Its lists report exactly 1 FAILED (naming the tampered
+file) and every OTHER file as Verified. Independently of the dialog (not trusting it alone): re-reads the
+RECOVERED copy of the tampered file and confirms its real bytes do NOT match the original manifest hash (the
+corruption genuinely carried through, not just that the dialog claimed so), and confirms every other recovered
+file's real bytes DO still match.
+
+**A real bug found by actually running this script for the first time**, not by reading the code: `corruptedFile`
+(and a couple of other values) were declared with `const`/`let` INSIDE the try block but referenced in the
+independent cross-check section AFTER the try/finally closed - a plain `ReferenceError`, thrown only once the app
+had already closed and the dialog-based checks had already all passed. The actual feature output was correct the
+whole time; only this script's own post-hoc verification crashed. Fixed by declaring those variables before the
+try block instead.
+
+## `test-verify-cold-storage-integrity.js`
+
+```
+node test-harness/ui/test-verify-cold-storage-integrity.js
+```
+
+The standalone "Verify integrity of cold storage disc" wizard - the app's 6th main-menu feature, and the one
+piece of the SHA-256 integrity-checksum feature neither of the two scripts above ever opens (one drives the
+backup wizard, the other hooks into the ORDINARY recovery wizard's own post-recovery check). Read-only, no
+copying: loads a metadata JSON, then verifies each inserted disc's files directly off the mounted drive.
+
+Builds a metadata JSON covering TWO simulated discs (same real-hash technique as
+`test-recover-integrity-detects-corruption.js`), deliberately keeps disc 1 clean and corrupts one file on disc 2
+AFTER its hash was recorded, then drives the wizard through BOTH discs in one session to prove: disc 1
+auto-identifies correctly (no disc-number prompt needed) and reports fully Verified; the "Verify another disc?"
+loop actually accepts a second disc, correctly identifies IT too (not confused with disc 1), and reports FAILED
+for it, naming the tampered file; the running per-disc tally is correct across the session; "Finish" ends
+cleanly back at the main menu. Also exercises the shared disc-auto-identification helper
+(`getDiscIdHashForPaths`) on a JSON with more than one disc, which neither other integrity script does.
+
+**A real bug found by actually running this script, and a good example of why cleanup ORDER matters:** an
+earlier version computed its own pass/fail result and called `fs.rmSync` on the WHOLE scratch folder - including
+disc 2's still-mounted `.iso` - INSIDE the try block, before the `finally` block ever got a chance to dismount
+it. Windows keeps a file LOCKED while it's backing a mounted virtual drive, so the delete failed with the disc
+still mounted, before the script ever reached its own PASS/FAIL line - leaving the disc mounted, requiring a
+manual eject, with no clean error message pointing at why. Fixed by moving the verify/cleanup/PASS-FAIL logic to
+AFTER the try/finally closes (matching every other script here's existing convention: dismount and close the app
+FIRST, only clean up scratch files once nothing is still locked).
+
 ## `capture-readme-screenshots.js`
 
 ```
@@ -433,9 +540,11 @@ node test-harness/ui/capture-readme-screenshots.js
 ```
 
 Not a test - no pass/fail assertion, no verification step. It drives the real app through a small, harmless
-slice of EVERY one of the app's 5 main-menu features, one after another (each in its own fresh app launch), and
-saves SEVERAL real screenshots per feature into `docs/screenshots/` - deliberately more than any one feature
-strictly needs in a README, so there's something to actually choose between:
+slice of 5 of the app's 6 main-menu features (not yet extended to cover "Verify integrity of cold storage disc",
+added alongside the SHA-256 integrity-checksum feature - see `test-verify-cold-storage-integrity.js` above for
+that one's own coverage), one after another (each in its own fresh app launch), and saves SEVERAL real
+screenshots per feature into `docs/screenshots/` - deliberately more than any one feature strictly needs in a
+README, so there's something to actually choose between:
 
 - `main-menu.png`
 - `backup-to-optical-media/` - step 1 filled in, the "you will need N discs" confirmation, step 2's burn screen.

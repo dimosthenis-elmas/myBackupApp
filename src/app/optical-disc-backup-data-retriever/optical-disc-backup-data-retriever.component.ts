@@ -698,23 +698,18 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
       infoDialog.componentInstance.title = anyFailed ? `Data recovery finished with integrity FAILURES` : `Data recovery successful`;
       let message = `The recovery of your data has been completed successfully!`;
       if (integrity) {
-        const truncate = (names: string[]): string => {
-          const shown = names.slice(0, 15);
-          const rest = names.length - shown.length;
-          return shown.join(', ') + (rest > 0 ? `, and ${rest} more` : '');
-        };
-        const lines: string[] = [];
-        if (integrity.failed.length) {
-          lines.push(`FAILED integrity check (${integrity.failed.length}) - this can mean real data corruption (a bad drive read, disc handling damage): ${truncate(integrity.failed)}.`);
-        }
-        lines.push(`Verified (${integrity.verified.length}): ${integrity.verified.length ? truncate(integrity.verified) : 'none'}.`);
-        if (integrity.noData.length) {
-          lines.push(`No integrity data available, not checked (${integrity.noData.length}): ${truncate(integrity.noData)}.`);
-        }
-        message = (anyFailed
-          ? `The recovery finished, but SHA-256 integrity verification found one or more problems. `
-          : `The recovery of your data has been completed successfully, and SHA-256 integrity verification confirmed every file with recorded hash data matches. `)
-          + lines.join('  ');
+        message = anyFailed
+          ? `The recovery finished, but SHA-256 integrity verification found one or more problems - see the list(s) below.`
+          : `The recovery of your data has been completed successfully, and SHA-256 integrity verification confirmed every file with recorded hash data matches.`;
+        // Full lists, not a truncated "first 15, and N more" string - see ConfirmationDialogComponent's own
+        // `lists` field: each renders as a real virtualized scrolling list, so however many files are in a
+        // given category, only the ones actually visible are ever real DOM nodes. Only non-empty sections are
+        // included (an empty `items` array is never shown, per that field's own contract).
+        infoDialog.componentInstance.lists = [
+          integrity.failed.length ? { label: `FAILED integrity check (${integrity.failed.length}) - this can mean real data corruption (a bad drive read, disc handling damage):`, items: integrity.failed } : undefined,
+          integrity.verified.length ? { label: `Verified (${integrity.verified.length}):`, items: integrity.verified } : undefined,
+          integrity.noData.length ? { label: `No integrity data available, not checked (${integrity.noData.length}):`, items: integrity.noData } : undefined,
+        ].filter((s): s is { label: string, items: string[] } => !!s);
       }
       infoDialog.componentInstance.message = message;
       infoDialog.componentInstance.actionsNum = 1;
@@ -781,12 +776,13 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 
       const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
       loadingDialogRef.componentInstance.showCancelButton = false;
+      loadingDialogRef.componentInstance.message = "Verifying SHA-256 hashes";
+      loadingDialogRef.componentInstance.lines = [];
       let results: Array<{ path: string, sha256: string, matched?: boolean }> = [];
       const listener = ipc.onResponseFromWorker((event, response) => {
         this.ngZone.run(() => {
           if (response.key === 'verify-file-hashes' && response.status === 'running') {
-            const lines: string[] = response.res;
-            if (lines.length) { loadingDialogRef.componentInstance.message = lines[lines.length - 1]; }
+            loadingDialogRef.componentInstance.pushLines(response.res as string[]);
           }
         });
       });

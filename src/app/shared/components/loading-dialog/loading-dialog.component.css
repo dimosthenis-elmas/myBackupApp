@@ -2,3 +2,27 @@
     overflow: hidden;
     text-align: -webkit-center;
 }
+
+/* A real cdk-virtual-scroll-viewport, not a plain scrolling div with *ngFor - it needs an explicit height (a
+   virtual scroll container can't size itself from its content, since almost none of that content actually
+   exists in the DOM at once) and itemSize (set on the element in the template) matching .loading-dialog-line's
+   own fixed height below, so it can correctly calculate scroll position/range without measuring every row. */
+.loading-dialog-lines{
+    height: 220px;
+    min-width: 320px;
+    text-align: left;
+    font-family: monospace;
+    font-size: 12px;
+    box-sizing: border-box;
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    border-radius: 4px;
+}
+
+.loading-dialog-line{
+    height: 18px;
+    line-height: 18px;
+    padding: 0 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

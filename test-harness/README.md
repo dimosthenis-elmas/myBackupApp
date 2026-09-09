@@ -154,7 +154,7 @@ Here's what you'll see, and what each part means:
 | `cleanup.js` | Removes leftover scratch data from interrupted/failed test runs | Proven |
 | `optical-media/` | Makes a `.iso` file look like an inserted disc to Windows | Proven |
 | `worker-ipc/` | Talks directly to the app's file-splitting/merging/incremental-backup/sync-dirs engine, skipping the on-screen buttons | **PASSING** |
-| `ui/` | A robot (Playwright) clicks through real on-screen wizards - all 5 main-menu features: "recover data" (both by physically reading discs and by importing a cold storage metadata JSON), "Cumulative backup", "Synchronize directories", "Backup to optical media", "Add missing files to cold storage" | **PASSING** |
+| `ui/` | A robot (Playwright) clicks through real on-screen wizards - all 6 main-menu features: "recover data" (both by physically reading discs and by importing a cold storage metadata JSON), "Cumulative backup", "Synchronize directories", "Backup to optical media", "Add missing files to cold storage", "Verify integrity of cold storage disc" - plus the SHA-256 integrity-checksum feature's own backup-side toggle and recovery-side corruption detection | **PASSING** |
 | `lib/` | Shared helper code every script above imports from, so the same logic isn't copy-pasted everywhere - see below | Proven |
 
 Each subfolder has its own README with exact commands to run and more explanation.
@@ -370,10 +370,13 @@ what each one does, since you'll see them imported (`require('../lib/...')`) at 
 
 ## Coverage
 
-All 5 of the app's main-menu features are covered end to end by automated tests — incremental backup,
+All 6 of the app's main-menu features are covered end to end by automated tests — incremental backup,
 synchronize directories, recover data (both entry points: physically reading discs, and importing a cold storage
-metadata JSON), backup to optical media, and add missing files to cold storage — including their real "Send to
-ImgBurn" clicks (safely redirected away from a real ImgBurn launch, never your actual ImgBurn). See
+metadata JSON), backup to optical media, add missing files to cold storage, and verify integrity of cold storage
+disc — including their real "Send to ImgBurn" clicks (safely redirected away from a real ImgBurn launch, never
+your actual ImgBurn). The SHA-256 integrity-checksum feature (an optional per-file hash recorded at backup time
+and checked again on recovery, or via the standalone verify wizard) is covered separately too - both its
+backup-side toggle and its recovery-side corruption detection have their own dedicated tests. See
 `worker-ipc/README.md` and `ui/README.md` for exactly what each script covers.
 
 ## Known limitations

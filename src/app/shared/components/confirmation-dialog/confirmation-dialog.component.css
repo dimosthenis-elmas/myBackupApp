@@ -1,3 +1,37 @@
 mat-dialog-content {
   white-space: pre-line;
 }
+
+.confirmation-dialog-list-section{
+  margin-top: 10px;
+  white-space: normal;
+}
+
+.confirmation-dialog-list-label{
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+/* A real cdk-virtual-scroll-viewport, not a plain scrolling div with *ngFor - see LoadingDialogComponent's own
+   identical comment on why an explicit height + itemSize (matching .confirmation-dialog-list-item's own fixed
+   height below) is required, and why this is safe to leave unbounded (however many items a section holds, only
+   the ones actually visible are ever real DOM nodes). */
+.confirmation-dialog-list{
+  height: 160px;
+  width: 100%;
+  text-align: left;
+  font-family: monospace;
+  font-size: 12px;
+  box-sizing: border-box;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 4px;
+}
+
+.confirmation-dialog-list-item{
+  height: 18px;
+  line-height: 18px;
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
