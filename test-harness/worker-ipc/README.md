@@ -124,8 +124,8 @@ expected).
 node test-harness/worker-ipc/test-large-file-split.js
 ```
 Generates a real 700 MB file and exercises the app's real two-step split flow: `partition-backup-to-optical-media`
-with `splitLargeFiles: true` first PLANS the split using pure arithmetic only (`estimateLargeFileSplitPieces` in
-`worker.ts` - no 7-Zip call at all), then `materialize-optical-media-disc-pieces` actually runs it (the real
+with `splitLargeFiles: true` first PLANS the split using pure arithmetic only (`estimateLargeFileSplitPartials` in
+`worker.ts` - no 7-Zip call at all), then `create-optical-media-disc-partials` actually runs it (the real
 `7z -v500m -mx0 a ...` call), mirroring exactly how the real burn wizards call it - plan once, then materialize
 only the disc(s) that need a piece. The real resulting part files are then fed into the already-proven
 `merge-file-parts` to confirm the whole round trip is byte-for-byte correct at the real 500 MiB volume size, not
@@ -156,7 +156,7 @@ node test-harness/worker-ipc/test-large-file-split-boundary.js
 `test-large-file-split.js`'s 700 MB file isn't near the boundary where a real 7-Zip split can produce a piece
 count the plan didn't predict, so this script targets that boundary directly, in two parts:
 1. A file sized to exactly 50 bytes short of an even 2-volume split - known to real-split into 3 pieces, not 2 -
-   confirming `materializeOpticalMediaDiscPieces` returns that surplus piece rather than dropping it.
+   confirming `createOpticalMediaDiscPartials` returns that surplus piece rather than dropping it.
 2. A file whose estimate predicts 2 pieces, split instead by a stub batch script (the app's own configured
    7-Zip path is temporarily redirected to it) that deliberately produces 5 - proving the "more than one piece
    off -> throw" guard actually fires, since no real 7-Zip run can be coaxed into misbehaving that way on demand.

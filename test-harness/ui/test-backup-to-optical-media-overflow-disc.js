@@ -18,7 +18,7 @@
  * Why this uses a STUB 7-Zip instead of a real, byte-precise "boundary" file size
  * ============================================================================================================
  * worker-ipc/test-large-file-split-boundary.js already proves that a REAL 7-Zip split can produce one more
- * piece than estimateLargeFileSplitPieces predicted, and that materializeOpticalMediaDiscPieces correctly
+ * piece than estimateLargeFileSplitPartials predicted, and that createOpticalMediaDiscPartials correctly
  * surfaces that real, extra piece rather than dropping it - using a file sized to the exact byte where real
  * 7-Zip's own (tiny, unpredictable) per-volume overhead tips it over. That reconciliation mechanism is assumed
  * proven here, not re-tested.
@@ -41,7 +41,7 @@
  * test-large-file-split.js and ui/test-backup-to-optical-media.js already use)
  * ============================================================================================================
  * CD raw capacity 700,000,000 * the app's own 0.95 maxOpticalMediumRepletionRatio = 665,000,000 effective.
- * A 700,000,000-byte file's ESTIMATE (pure arithmetic, see estimateLargeFileSplitPieces) is exactly 2 pieces:
+ * A 700,000,000-byte file's ESTIMATE (pure arithmetic, see estimateLargeFileSplitPartials) is exactly 2 pieces:
  * piece.001 = 524,288,000 (one full volume), piece.002 = 175,712,000 (the remainder). Both are bigger than half
  * of 665,000,000, so partitionBackupToOpticalMedia's bin-packing can never combine them - each is planned ALONE
  * on its own disc ("Optical disk 1" = piece.001 gets sorted first, being larger; "Optical disk 2" = piece.002),
@@ -109,7 +109,7 @@ function writeExactSizeFile(filePath, sizeBytes) {
 /** Writes a stub "7-Zip" .bat that ignores the real source file entirely and instead creates exactly 3 dummy
  *  piece files of chosen sizes via `fsutil file createnew` (near-instant, no real data written) - piece.001 and
  *  piece.002 matching this script's own real, planned estimate exactly, plus a piece.003 "surplus" of
- *  `surplusBytes` - the one real piece materializeOpticalMediaDiscPieces will report as unplanned. Argv shape
+ *  `surplusBytes` - the one real piece createOpticalMediaDiscPartials will report as unplanned. Argv shape
  *  (`%~4` = the destination "...\<name>.part" prefix, quotes stripped) mirrors the real
  *  `7z -v500m -mx0 a "<dest>.part" "<source>"` invocation - see worker.ts's own comment on that exec() call. */
 function writeStub7zBat(stubPath, surplusBytes) {

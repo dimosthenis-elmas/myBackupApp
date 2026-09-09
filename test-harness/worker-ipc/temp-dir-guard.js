@@ -83,7 +83,7 @@ function resolveSessionSubdirectory(tempDir) {
 }
 
 /** Polls resolveSessionSubdirectory until it succeeds (the session folder is created by whichever disc's send
- *  first needs it - materializeOpticalMediaDiscPieces/createIBB_file both ensure it exists - so it may not be
+ *  first needs it - createOpticalMediaDiscPartials/createIBB_file both ensure it exists - so it may not be
  *  there yet the instant a "Send to ImgBurn" click returns), or throws its last error once `timeoutMs` passes. */
 async function waitForSessionSubdirectory(tempDir, timeoutMs = 15_000) {
   const deadlineAt = Date.now() + timeoutMs;

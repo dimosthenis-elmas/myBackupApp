@@ -2,20 +2,20 @@
 'use strict';
 
 /**
- * Exercises the two rare reconciliation paths in materializeOpticalMediaDiscPieces (worker.ts) that
+ * Exercises the two rare reconciliation paths in createOpticalMediaDiscPartials (worker.ts) that
  * worker-ipc/test-large-file-split.js's own file size never happens to hit, because it isn't near the boundary
  * that triggers them:
  *
  *  1. The "surplus piece" case: a file whose remainder over a full 500 MiB volume is close enough to the volume
  *     size that 7-Zip's own small per-archive overhead pushes it over, producing one MORE real piece than
- *     estimateLargeFileSplitPieces predicted (see that function's own comment for the full reasoning - this is
+ *     estimateLargeFileSplitPartials predicted (see that function's own comment for the full reasoning - this is
  *     by design, not a bug). Confirmed empirically while designing this feature: a file exactly 50 bytes short
  *     of an even 2-volume split real-splits into 3 pieces, not 2. This test uses that exact, known-to-trigger
- *     file size (2*500MiB - 50 bytes) and asserts materializeOpticalMediaDiscPieces correctly returns the
+ *     file size (2*500MiB - 50 bytes) and asserts createOpticalMediaDiscPartials correctly returns the
  *     surplus piece rather than silently dropping it.
  *
  *  2. The "genuinely unexpected" throw path: if a real split ever produces MORE than one extra piece beyond the
- *     estimate, materializeOpticalMediaDiscPieces treats that as a real problem and throws, rather than quietly
+ *     estimate, createOpticalMediaDiscPartials treats that as a real problem and throws, rather than quietly
  *     reconciling it the same way as case 1. No real 7-Zip run can be coaxed into misbehaving this way on
  *     demand, so this half instead temporarily redirects the app's own configured 7-Zip path to a stub batch
  *     script that deliberately produces 5 dummy pieces for a file whose estimate predicts only 2 - proving the
@@ -115,8 +115,8 @@ async function main() {
     console.log(`  estimated piece count: ${predictedPieces.length} (expected 2) - ${results.estimatedExactlyTwoPieces ? 'OK' : 'WRONG'}`);
 
     const bareRelativePaths = predictedPieces.map((e) => path.relative(sessionTempDir, e.path));
-    console.log('\nCalling materialize-optical-media-disc-pieces (runs the real 7-Zip split)...');
-    const materializeResponse = await callWorker(win, 'materialize-optical-media-disc-pieces', {
+    console.log('\nCalling create-optical-media-disc-partials (runs the real 7-Zip split)...');
+    const materializeResponse = await callWorker(win, 'create-optical-media-disc-partials', {
       dirPath: boundarySourceRoot,
       paths: bareRelativePaths,
       sessionId,
@@ -193,11 +193,11 @@ async function main() {
     console.log(`  estimated piece count: ${predictedPieces2.length}`);
 
     const bareRelativePaths2 = predictedPieces2.map((e) => path.relative(sessionTempDir2, e.path));
-    console.log('\nCalling materialize-optical-media-disc-pieces (stub 7-Zip will produce 5 pieces, not 2)...');
+    console.log('\nCalling create-optical-media-disc-partials (stub 7-Zip will produce 5 pieces, not 2)...');
     let threwAsExpected = false;
     let errorMessage = '';
     try {
-      await callWorker(win2, 'materialize-optical-media-disc-pieces', {
+      await callWorker(win2, 'create-optical-media-disc-partials', {
         dirPath: throwSourceRoot,
         paths: bareRelativePaths2,
         sessionId: sessionId2,

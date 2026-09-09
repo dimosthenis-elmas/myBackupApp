@@ -209,6 +209,23 @@ async function main() {
       throw new Error(`Expected exactly ${EXPECTED_PART_COUNT} real split pieces, got ${partEntries.length}.`);
     }
 
+    // partition-backup-to-optical-media only PLANS where these pieces would go (predicts them arithmetically -
+    // see estimateLargeFileSplitPartials in worker.ts) - it never actually runs 7-Zip. The paths above are real,
+    // final paths, but the files behind them don't exist on disk yet. create-optical-media-disc-partials is the
+    // one call that actually performs the real 7-Zip split (see its own doc comment in worker.ts: "the ONLY
+    // place the real 7z -v...m -mx0 a command still runs") - same call the real "Send to ImgBurn" button makes
+    // the first time a disc needing one of these pieces is actually sent. Its own `paths` param wants each
+    // piece's path bare-relative to the temp session directory (the same convention the real app itself uses),
+    // not the absolute path partition-backup-to-optical-media predicted above.
+    const tempSessionDir = path.join(resolveRealTempDataDirectory(), sessionId);
+    const relativePartPaths = partEntries.map((e) => path.relative(tempSessionDir, e.path));
+    console.log('Calling create-optical-media-disc-partials (runs the real 7-Zip split)...');
+    await callWorker(win, 'create-optical-media-disc-partials', {
+      dirPath: sourceRoot,
+      paths: relativePartPaths,
+      sessionId,
+    }, 15 * 60 * 1000);
+
     // One piece per disc, same as ui/test-recover-from-json-metadata.js - placed BEFORE the get-file-paths-with-
     // stats calls below, so they show up naturally in the JSON metadata like any other file.
     const disc1PartDest = path.join(disc1Dir, 'large-files', path.basename(partEntries[0].path));

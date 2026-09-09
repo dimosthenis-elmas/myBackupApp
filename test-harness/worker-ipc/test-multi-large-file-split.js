@@ -20,13 +20,13 @@
  * one genuinely mixing pieces from both source files.
  *
  * What this proves, beyond just "planning pools files correctly":
- *  1. materialize-optical-media-disc-pieces, asked for only the MIXED disc's two pieces, correctly splits BOTH
+ *  1. create-optical-media-disc-partials, asked for only the MIXED disc's two pieces, correctly splits BOTH
  *     source files for real (not just one) and returns both real pieces.
  *  2. As a side effect - because splitting a file always produces ALL of its pieces at once, never just the one
  *     requested - the OTHER two discs' pieces (each file's full-volume piece) end up physically materialized on
  *     disk too, even though they were never explicitly requested. This is expected, documented behavior, not a
- *     bug - see materializeOpticalMediaDiscPieces's own comment in worker.ts.
- *  3. delete-materialized-pieces-for-disc, given only the mixed disc's two real piece paths, deletes exactly
+ *     bug - see createOpticalMediaDiscPartials's own comment in worker.ts.
+ *  3. delete-partials-for-disc, given only the mixed disc's two real piece paths, deletes exactly
  *     those two files and nothing else - the other two files' still-pending pieces (from step 2's side effect)
  *     must survive untouched, since they belong to different, not-yet-confirmed discs.
  *
@@ -130,8 +130,8 @@ async function main() {
       // 1 & 2: materialize ONLY the mixed disc's pieces - this should real-split BOTH files, so the two solo
       // discs' pieces should come into existence too, as a side effect, without ever being requested.
       const mixedBarePaths = mixedDisc.entries.map((e) => path.relative(sessionTempDir, e.path));
-      console.log('\nCalling materialize-optical-media-disc-pieces for ONLY the mixed disc\'s two pieces (runs real 7-Zip on BOTH files)...');
-      const materializeResponse = await callWorker(win, 'materialize-optical-media-disc-pieces', {
+      console.log('\nCalling create-optical-media-disc-partials for ONLY the mixed disc\'s two pieces (runs real 7-Zip on BOTH files)...');
+      const materializeResponse = await callWorker(win, 'create-optical-media-disc-partials', {
         dirPath: sourceRoot,
         paths: mixedBarePaths,
         sessionId,
@@ -159,9 +159,9 @@ async function main() {
 
       // 3: delete ONLY the mixed disc's real pieces, then confirm the solo pieces (from the side effect above)
       // were NOT touched - scoped deletion must never remove a different, not-yet-confirmed disc's own pieces.
-      console.log('\nCalling delete-materialized-pieces-for-disc for ONLY the mixed disc\'s two real pieces...');
-      const deleteResponse = await callWorker(win, 'delete-materialized-pieces-for-disc', {
-        pieceAbsolutePaths: realMixedPieces.map((p) => path.join(sessionTempDir, p.path)),
+      console.log('\nCalling delete-partials-for-disc for ONLY the mixed disc\'s two real pieces...');
+      const deleteResponse = await callWorker(win, 'delete-partials-for-disc', {
+        partialAbsolutePaths: realMixedPieces.map((p) => path.join(sessionTempDir, p.path)),
       }, 30 * 1000);
       results.deleteReportedCleared = deleteResponse.res && deleteResponse.res.cleared === true;
       console.log(`  delete reported cleared: ${results.deleteReportedCleared}`);
