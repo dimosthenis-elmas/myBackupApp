@@ -115,6 +115,10 @@ the page width, which can make the in-app dialog text hard to read at a glance):
 <a href="docs/screenshots/add-missing-files/02-diff-results.png"><img src="docs/screenshots/add-missing-files/02-diff-results.png" width="800"></a><br>
 <sub><b>Add missing files</b> - the wizard's own diff against an existing cold storage, showing only what's actually new.</sub>
 </p>
+<p align="center">
+<a href="docs/screenshots/verify-integrity/01-tally.png"><img src="docs/screenshots/verify-integrity/01-tally.png" width="800"></a><br>
+<sub><b>Verify integrity of cold storage disc</b> - a running per-disc tally as a real scrolling list, so it stays readable no matter how many discs a session checks.</sub>
+</p>
 
 ----------------------------------------------------------------
 ## Build this project:

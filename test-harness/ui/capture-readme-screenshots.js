@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * Drives the real app through a small, harmless slice of EVERY one of the app's 5 main-menu features and saves
+ * Drives the real app through a small, harmless slice of EVERY one of the app's 6 main-menu features and saves
  * several real screenshots per feature, for you to pick from when updating the top-level README.md. Not a test -
  * there is no pass/fail assertion here, just win.screenshot() calls at points worth showing. Deliberately takes
  * MORE screenshots than any one feature strictly needs in a README, so there's something to choose between.
@@ -10,15 +10,20 @@
  * Each feature launches and closes its OWN app instance (fresh main menu every time - simplest way to avoid one
  * feature's leftover state ever bleeding into the next one's screenshots).
  *
- * Kept deliberately fast and side-effect-free - every fixture tree here has NO large file, so:
+ * Kept deliberately fast and side-effect-free for 5 of the 6 features - every fixture tree there has NO large
+ * file, so:
  *  - "Backup to optical media" never hits the "too large, split it?" confirmation chain.
  *  - "Add missing files" never actually needs a real 7-Zip split (partition() still runs, just instantly).
  *  - Neither of those, nor "Recover data from optical media", ever click "Send to ImgBurn" or mount a real/virtual
  *    disc - they stop right at the screen worth screenshotting. Nothing gets burned, split, or sent to any
  *    external program anywhere in this script.
+ * The 6th, "Verify integrity of cold storage disc", is the one exception - it has no JSON-seeded shortcut around
+ * reading a disc's real listing, so it DOES mount two real virtual .iso discs (dismounted again before it's done)
+ * to get a real "one passed, one FAILED" tally worth screenshotting.
  *
  * NOTE: needs a real Windows desktop/window session (see worker-ipc/call-worker.js's top comment) - run from
- * your own interactive terminal.
+ * your own interactive terminal. Also needs no optical media already mounted (see iso-disc.js) for the "Verify
+ * integrity" capture specifically.
  *
  * Usage:
  *   node test-harness/ui/capture-readme-screenshots.js
@@ -29,6 +34,7 @@
  *   sync-dirs/01-paths-chosen.png, 02-warning.png, 03-preview.png, 04-success.png
  *   recover-data/01-json-selected.png, 02-file-tree.png, 03-file-tree-select-all.png
  *   add-missing-files/01-step1-filled.png, 02-diff-results.png, 03-metadata-saved.png, 04-burn-screen.png
+ *   verify-integrity/01-tally.png
  */
 
 const fs = require('fs');
@@ -36,6 +42,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { launchApp, callWorker } = require('../worker-ipc/call-worker');
 const { assertRealTempDataDirectoryIsSafeToUse } = require('../worker-ipc/temp-dir-guard');
+const { assertNoOpticalMediaAlreadyMounted, buildIso, mountIso, dismountIso } = require('./iso-disc');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
 const { normalizeForMetadata } = require('../lib/cold-storage-metadata');
@@ -400,7 +407,7 @@ async function captureAddMissingFiles() {
 
     // No large file in this tree, so partition() completes almost instantly - no real 5-minute 7-Zip wait needed.
     await win.getByRole('button', { name: 'Next', exact: true }).click({ timeout: 15_000 });
-    await win.getByText('Cold storage metadata saved to JSON', { exact: true }).waitFor({ timeout: 60_000 });
+    await win.getByText('Cold storage metadata prepared', { exact: true }).waitFor({ timeout: 60_000 });
     await pause(500);
     await shot(win, 'Metadata saved confirmation', '03-metadata-saved.png');
 
@@ -414,6 +421,114 @@ async function captureAddMissingFiles() {
   }
 }
 
+// ============================================================================================================
+// Verify integrity of cold storage disc (one representative screenshot: the "Verify another disc?" running
+// tally, now a real scrolling list - see ConfirmationDialogComponent's own `lists` field - rather than the
+// single joined "disc 1 passed, disc 2 FAILED, ..." line an earlier version of this dialog used). Unlike every
+// capture above, this one DOES mount real virtual discs - the wizard has no JSON-seeded shortcut around that
+// (it always reads a disc's real listing to auto-identify it), and a mix of one passed + one FAILED disc is
+// what actually makes the tally worth screenshotting.
+// ============================================================================================================
+async function buildDiscMetadataWithRealHashes(win, discDir, manifest) {
+  const listing = (await callWorker(win, 'get-file-paths-with-stats', { dirPath: discDir })).res;
+  const normalized = normalizeForMetadata(listing, discDir);
+  const hashByRelativePath = new Map(manifest.files.map((f) => [f.relativePath, f.sha256]));
+  for (const entry of normalized) {
+    if (entry.stats.isDirectory) { continue; }
+    const relPosix = entry.path.replace(/^D:\\/, '').split(path.sep).join('/');
+    const hash = hashByRelativePath.get(relPosix);
+    if (!hash) { throw new Error(`No manifest hash found for "${relPosix}" on disc at ${discDir}.`); }
+    entry.stats.sha256 = hash;
+  }
+  return normalized;
+}
+
+async function captureVerifyIntegrity() {
+  console.log('\n=== Verify integrity of cold storage disc ===');
+  const shot = makeShot('verify-integrity');
+  const runId = Date.now();
+  const scratchRoot = path.join(FIXTURES_ROOT, `shots-verify-${runId}`);
+  const sourceRoot = path.join(scratchRoot, 'source');
+  const disc1Dir = path.join(scratchRoot, 'disc1-files');
+  const disc2Dir = path.join(scratchRoot, 'disc2-files');
+  const disc1IsoPath = path.join(scratchRoot, 'disc1.iso');
+  const disc2IsoPath = path.join(scratchRoot, 'disc2.iso');
+  const metadataJsonPath = path.join(scratchRoot, 'cold-storage-metadata.json');
+  fs.mkdirSync(disc1Dir, { recursive: true });
+  fs.mkdirSync(disc2Dir, { recursive: true });
+
+  generateFixtureTree({
+    root: sourceRoot,
+    randomArgs: ['--files', '10', '--max-depth', '2', '--min-size', '1000', '--max-size', '20000', '--seed', '778899', '--no-edge-cases'],
+    specDir: UNUSED_SPEC_DIR,
+  });
+  const manifest = JSON.parse(fs.readFileSync(`${sourceRoot}.manifest.json`, 'utf8'));
+  const half = Math.ceil(manifest.files.length / 2);
+  const disc1Files = manifest.files.slice(0, half);
+  const disc2Files = manifest.files.slice(half);
+  for (const f of disc1Files) { copyPreservingDirs(f.relativePath, sourceRoot, disc1Dir); }
+  for (const f of disc2Files) { copyPreservingDirs(f.relativePath, sourceRoot, disc2Dir); }
+
+  assertNoOpticalMediaAlreadyMounted();
+
+  let app, win, mountedIsoPath;
+  try {
+    ({ app, win } = await launchApp());
+    await pause(3000); // avoid racing app.component.ts's own startup housekeeping IPC call - see captureRecoverData
+
+    console.log('Asking the app for each disc\'s real file listing + attaching real sha256 from the manifest...');
+    const disc1Entries = await buildDiscMetadataWithRealHashes(win, disc1Dir, manifest);
+    const disc2Entries = await buildDiscMetadataWithRealHashes(win, disc2Dir, manifest);
+    fs.writeFileSync(metadataJsonPath, JSON.stringify([disc1Entries, disc2Entries], null, 2));
+
+    // Corrupt one file on disc 2 AFTER its hash was already recorded above - same technique
+    // ui/test-verify-cold-storage-integrity.js uses - so the tally ends up showing one passed + one FAILED disc,
+    // not two identical "passed" entries.
+    const corruptedFile = disc2Files.find((f) => f.sizeBytes > 0);
+    const corruptedAbsPath = path.join(disc2Dir, corruptedFile.relativePath.split('/').join(path.sep));
+    const tamperedBytes = fs.readFileSync(corruptedAbsPath);
+    tamperedBytes[0] = tamperedBytes[0] ^ 0xFF;
+    fs.writeFileSync(corruptedAbsPath, tamperedBytes);
+
+    console.log('Building disc1.iso and disc2.iso...');
+    buildIso(disc1Dir, disc1IsoPath, 'SHOTDISC1');
+    buildIso(disc2Dir, disc2IsoPath, 'SHOTDISC2');
+    console.log('Mounting disc 1...');
+    mountIso(disc1IsoPath);
+    mountedIsoPath = disc1IsoPath;
+
+    await stubDialogs(app, [metadataJsonPath]);
+
+    await clickMainMenuButton(win, 'Verify integrity of cold storage disc');
+    await win.getByRole('button', { name: 'Choose metadata JSON' }).click({ timeout: 15_000 });
+
+    await win.getByText('Disc 1: verification successful', { exact: true }).waitFor({ timeout: 60_000 });
+    await win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 });
+    await win.getByText('Verify another disc?', { exact: true }).waitFor({ timeout: 15_000 });
+
+    // Swap discs BEFORE telling the wizard to look again - same disc-swap rule every recovery/verify script here
+    // follows (waitForOpticalDiskToBeMounted only checks "is ANY optical drive currently showing media").
+    console.log('Swapping discs (dismount disc 1, mount disc 2)...');
+    dismountIso(disc1IsoPath);
+    mountIso(disc2IsoPath);
+    mountedIsoPath = disc2IsoPath;
+
+    await win.getByRole('button', { name: 'Verify another disc', exact: true }).click({ timeout: 15_000 });
+    await win.getByText('Disc 2: verification FAILED', { exact: true }).waitFor({ timeout: 60_000 });
+    await win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 });
+
+    await win.getByText('Verify another disc?', { exact: true }).waitFor({ timeout: 15_000 });
+    await pause(500);
+    await shot(win, 'Running tally as a scrolling list (one passed, one FAILED)', '01-tally.png');
+  } finally {
+    // Same ordering rule as every other script here that mounts an .iso - MUST dismount before scratchRoot is
+    // deleted below, since Windows keeps the backing .iso file locked while it's mounted.
+    if (app) { await app.close().catch(() => {}); }
+    if (mountedIsoPath) { dismountIso(mountedIsoPath); }
+    fs.rmSync(scratchRoot, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   const features = [
@@ -423,6 +538,7 @@ async function main() {
     ['Synchronize directories', captureSyncDirs],
     ['Recover data from optical media', captureRecoverData],
     ['Add missing files to optical media cold storage', captureAddMissingFiles],
+    ['Verify integrity of cold storage disc', captureVerifyIntegrity],
   ];
 
   const results = [];
