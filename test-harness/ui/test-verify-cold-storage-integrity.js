@@ -228,8 +228,11 @@ async function main() {
 
     const tallyDialogText = await win.getByRole('dialog').innerText();
     console.log(`\nRunning-tally dialog text:\n${tallyDialogText}\n`);
-    tallyReportsBothDiscs = /disc 1 passed/.test(tallyDialogText) && /disc 2 FAILED/.test(tallyDialogText);
-    console.log(`  Running tally correctly shows "disc 1 passed, disc 2 FAILED": ${tallyReportsBothDiscs ? 'OK' : 'WRONG'}`);
+    // "Disc N: passed/FAILED" - see askVerifyAnother() in verify-cold-storage-integrity.component.ts: the tally
+    // renders as a real scrolling list (ConfirmationDialogComponent's `lists`), not the joined "disc 1 passed, ..."
+    // string an earlier version of this dialog used.
+    tallyReportsBothDiscs = /Disc 1: passed/.test(tallyDialogText) && /Disc 2: FAILED/.test(tallyDialogText);
+    console.log(`  Running tally correctly shows "Disc 1: passed, Disc 2: FAILED": ${tallyReportsBothDiscs ? 'OK' : 'WRONG'}`);
 
     // --- Phase E: finish ---
 

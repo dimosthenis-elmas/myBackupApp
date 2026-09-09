@@ -607,8 +607,30 @@ const checkTempDataDirectoryForLeftovers = async function (): Promise<{ path: st
   return { path: tempDataDirectoryPath, hasLeftovers: entryNames.length > 0, entryNames };
 }
 
+/** V8 (the JS engine behind this app's Electron/Node) caps how long a single string can be - on this app's
+ *  bundled version that ceiling is around 512 MiB of decoded text. A JSON file bigger than that would fail
+ *  reading it with a cryptic low-level "Invalid string length" the moment its bytes are decoded to text, deep
+ *  inside fs.readFileSync/JSON.parse, regardless of how much RAM or disk space is actually available. Checked
+ *  up front, against the file's raw byte size, so a JSON that is genuinely too large to open at all fails with
+ *  one clear, actionable message instead. 400 MiB (comfortably under the ~512 MiB ceiling) rather than cutting
+ *  it as close as possible: UTF-8 text can decode to more UTF-16 code units than input bytes when it contains
+ *  non-ASCII characters (e.g. file paths with accented/non-Latin characters), and this margin absorbs that. */
+const MAX_READABLE_JSON_FILE_SIZE_BYTES = 400 * 1024 * 1024;
+
 const readJSONfromDisk = async function(path: string): Promise<Object> {
-  const file = fs.readFileSync(path); 
+  const sizeInBytes = fs.statSync(path).size;
+  if (sizeInBytes > MAX_READABLE_JSON_FILE_SIZE_BYTES) {
+    const sizeInMiB = (sizeInBytes / (1024 * 1024)).toFixed(0);
+    const limitInMiB = MAX_READABLE_JSON_FILE_SIZE_BYTES / (1024 * 1024);
+    throw new Error(
+      `This JSON file is ${sizeInMiB} MB, which is too large for this app to open (the limit is ${limitInMiB} MB - ` +
+      `a fundamental Node.js/V8 limitation on how long a single piece of text can be, not a disk space or app ` +
+      `setting).`
+    );
+  }
+  // Read directly as a string (rather than a Buffer later coerced to one) - one string allocation instead of a
+  // Buffer plus a separate string built from it.
+  const file = fs.readFileSync(path, 'utf8');
   const j: Object = JSON.parse(file);
   return j;
 }
@@ -2240,7 +2262,9 @@ const init = function() : void
             ipc.sendResponseToMain({ key: 'verify-file-hashes', res: d, status: "stopped" });
           }
         }).catch((err)=>{
-          ipc.sendResponseToMain({ key: 'verify-file-hashes', res: err, status: "error" });
+          // A plain string, not the raw Error object - see the identical fix/comment on 'read-json-from-disk'.
+          const message = err && err.message ? err.message : String(err);
+          ipc.sendResponseToMain({ key: 'verify-file-hashes', res: message, status: "error" });
         });
         break;
       case 'delete-partials-for-disc':
@@ -2280,7 +2304,11 @@ const init = function() : void
             ipc.sendResponseToMain({ key: 'read-json-from-disk', res: d, status: "stopped" });
           }
         }).catch((err)=>{
-          ipc.sendResponseToMain({ key: 'read-json-from-disk', res: err, status: "error" });
+          // A plain string, not the raw Error object - callers reject with just this (see readJSONfromDisk in
+          // worker-communicator.ts's 'response.res' rejectPayload) and show it directly in a dialog, which
+          // otherwise stringified the whole wrapping response object into an unhelpful "[object Object]".
+          const message = err && err.message ? err.message : String(err);
+          ipc.sendResponseToMain({ key: 'read-json-from-disk', res: message, status: "error" });
         });
         break;
       case 'write-json-to-disk':

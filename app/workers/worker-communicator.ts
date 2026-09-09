@@ -302,8 +302,12 @@ export class WorkerCommunicator {
         return this.sendAndAwaitResponse('get-effective-optical-medium-capacity', { rawCapacityInBytes: rawCapacityInBytes });
     }
 
+    /** Rejects with a plain string message (see readJSONfromDisk's own 'response.res' rejectPayload need - a
+     *  missing/unreadable/malformed/too-large JSON file all surface this way) - every caller already just drops
+     *  this straight into a dialog's message, which is broken by rejecting with the whole wrapping response
+     *  object instead (stringifies to "[object Object]"). */
     static readJSONfromDisk(path: string): Promise<WorkerResponse> {
-        return this.sendAndAwaitResponse('read-json-from-disk', { path: path });
+        return this.sendAndAwaitResponse('read-json-from-disk', { path: path }, 'response.res');
     }
 
     static writeJSONtoDisk(path: string, json: Object): Promise<WorkerResponse> {
@@ -372,9 +376,11 @@ export class WorkerCommunicator {
      *  worker.ts. Shared by the recovery flow's post-recovery integrity check and the standalone "verify
      *  integrity of cold storage disc" wizard, since this doesn't care whether a path is a file already copied
      *  to a target directory or one still sitting directly on a mounted optical disc. Progress lines arrive the
-     *  same way as computeSha256ForBackedUpFiles's. */
+     *  same way as computeSha256ForBackedUpFiles's. Rejects with a plain string message (see readJSONfromDisk's
+     *  identical 'response.res' rejectPayload need) - every caller just drops this straight into a dialog's
+     *  message. */
     static verifyFileHashes(files: Array<{ absolutePath: string, expectedSha256?: string }>): Promise<WorkerResponse> {
-        return this.sendAndAwaitResponse('verify-file-hashes', { files: files });
+        return this.sendAndAwaitResponse('verify-file-hashes', { files: files }, 'response.res');
     }
 
     static validateConfigPaths(): Promise<WorkerResponse> {

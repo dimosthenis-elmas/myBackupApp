@@ -338,7 +338,18 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
 
   async afterJSONpathIsGiven(){
     //read JSON file
-    let res = (await ipc.readJSONfromDisk(this.externalMetadataJSONpath)).res;
+    let res: any;
+    try {
+      res = (await ipc.readJSONfromDisk(this.externalMetadataJSONpath)).res;
+    } catch (error) {
+      // The file itself could not even be read/parsed (missing, unreadable, corrupted, or too large - see
+      // readJSONfromDisk's own size guard in worker.ts) - previously this propagated out of getJSON() uncaught
+      // (only a `finally` there, no `catch`), so the "Reading and validating..." text just silently vanished
+      // with no explanation at all. Handled the same way as the recognized-but-wrong-schema case below.
+      this.externalMetadataJSONpath = "";
+      this.showJsonSelectionErrorDialog("Error", `Could not read this JSON file: ${error}`);
+      return;
+    }
     // check type
     const schemaNode = compileSchema(mySchema);
     const jsonIsValid = schemaNode.validate(res);
@@ -351,13 +362,19 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       const existingEntriesHaveSha256 = this.json_coldStorageFilesMetadata.some(disc => disc.some(f => !!f.stats.sha256));
       this.selectedIntegrityDataOption = existingEntriesHaveSha256 ? this.integrityDataOptions[0] : this.integrityDataOptions[1];
     }else{
-      const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
-      loadingDialogRef.componentInstance.title = "JSON selection";
-      loadingDialogRef.componentInstance.message = `This JSON is not recognised as a files metadata type.`;
       this.externalMetadataJSONpath = "";
-      throw("This JSON is not recognised as a files metadata type.");
-      
-    }  
+      this.showJsonSelectionErrorDialog("JSON selection", `This JSON is not recognised as a files metadata type.`);
+    }
+  }
+
+  /** Both of afterJSONpathIsGiven()'s failure paths just need to show one dialog and stop - factored out rather
+   *  than throwing to unwind back to getJSON() (which only has a `finally`, not a `catch`, so a thrown error
+   *  used to become a silently-swallowed unhandled rejection with no dialog at all for the read/parse failure
+   *  case - see afterJSONpathIsGiven's own comment). */
+  private showJsonSelectionErrorDialog(title: string, message: string): void {
+    const dialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
+    dialog.componentInstance.title = title;
+    dialog.componentInstance.message = message;
   }
 
 

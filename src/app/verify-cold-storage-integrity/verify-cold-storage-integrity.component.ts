@@ -328,16 +328,19 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
   }
 
   private askVerifyAnother(): void {
-    const tally = Object.keys(this.verifiedDiscs)
+    const tallyItems = Object.keys(this.verifiedDiscs)
       .map(k => parseInt(k, 10))
       .sort((a, b) => a - b)
-      .map(i => `disc ${i + 1} ${this.verifiedDiscs[i] ? 'passed' : 'FAILED'}`)
-      .join(', ');
+      .map(i => `Disc ${i + 1}: ${this.verifiedDiscs[i] ? 'passed' : 'FAILED'}`);
 
     const dialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
     dialog.disableClose = true;
     dialog.componentInstance.title = "Verify another disc?";
-    dialog.componentInstance.message = `Verified so far this session - ${tally}. Insert another disc to verify, or finish.`;
+    dialog.componentInstance.message = `Insert another disc to verify, or finish.`;
+    // A real virtualized scrolling list (see ConfirmationDialogComponent's own `lists` field - the same one
+    // verifyDisc()'s own result dialog uses), not a single joined string - a session verifying dozens or
+    // hundreds of discs would otherwise pile the whole tally into one unbounded, unreadable line of text.
+    dialog.componentInstance.lists = [{ label: 'Verified so far this session:', items: tallyItems }];
     dialog.componentInstance.actionsNum = 2;
     dialog.componentInstance.action1Label = "Verify another disc";
     dialog.componentInstance.action2Label = "Finish";
