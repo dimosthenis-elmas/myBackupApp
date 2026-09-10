@@ -11,6 +11,7 @@ import { DialogRef } from '@angular/cdk/dialog';
 import { throwError } from 'rxjs';
 import { error } from 'console';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
+import { parseProgressFromLine } from '../shared/utils/progress-line';
 
 
 
@@ -50,6 +51,11 @@ export class SyncDirsComponent {
   showProgressBar_=true;
   workIsInProgess_=true;
   workFinished_=false;
+  /** Real percentage (0-100) for the commit phase (commitAllSyncOperations): copy then delete, both against the
+   *  combined total pathsOfFilesToBeCopied.length + pathsOfFilesToBeDeleted.length, derived from the "(i of N)"
+   *  progress markers createTree/deleteFilesAndDirsForDirSync (worker.ts) push - see parseProgressFromLine
+   *  (shared/utils). Drives the real determinate mat-progress-bar shown while workFinished_ is still false. */
+  percentComplete = 0;
 
   showCommitedOperationsLogs=false;
   finishedDirSync=false;
@@ -174,14 +180,29 @@ export class SyncDirsComponent {
   }
 
   async previewOperationsBeforeCommiting(filePathsToBeCopied: Array<string>, filePathsToBeDeleted: Array<string>, componentInstance: IncrementalDialogComponent) {
+    // Combined total across both preview sub-phases (copy-preview, then delete-preview) - both known up front -
+    // so the dialog's progress bar progresses smoothly across the whole preview rather than resetting halfway.
+    const totalPreviewItems = filePathsToBeCopied.length + filePathsToBeDeleted.length;
+
     // create missing files inside the dir to be synched.
-    //We have repurposed some already existing functions. In this case incremental-preview.  
+    //We have repurposed some already existing functions. In this case incremental-preview.
     this.workerListener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         switch (response.key) {
           case 'incremental-preview':
             if (response.status == 'running') {
-              this.backup.previewLogsStream.next(response.res);
+              // Split out the per-item "(i of N)" progress marker (see createTree in worker.ts) from the rest
+              // of this batch's descriptive lines before forwarding to the visible log - it drives the
+              // dialog's progress bar, not one more line in the scrolling list.
+              const visibleLines = (response.res as string[]).filter((line) => {
+                const progress = parseProgressFromLine(line);
+                if (progress) {
+                  componentInstance.updateProgress(totalPreviewItems > 0 ? Math.round((progress.current / totalPreviewItems) * 100) : 0);
+                  return false;
+                }
+                return true;
+              });
+              if (visibleLines.length > 0) { this.backup.previewLogsStream.next(visibleLines); }
               console.log('running in incremental preview')
             } else if (response.status == 'completed' || response.status == 'stopped') {
               console.log('completed in incremental preview');
@@ -213,7 +234,20 @@ export class SyncDirsComponent {
           case 'delete-files-and-dirs-for-dir-sync':
             if (response.status == 'running') {
               console.log('running in delete-files-and-dirs-for-dir-sync')
-              this.backup.previewLogsStream.next(response.res);
+              // Same split as the copy-preview phase above - offset by the copy-preview phase's already-
+              // completed item count, so the dialog's progress bar keeps climbing smoothly across both
+              // sub-phases instead of jumping back down when the delete-preview phase starts.
+              const visibleLines = (response.res as string[]).filter((line) => {
+                const progress = parseProgressFromLine(line);
+                if (progress) {
+                  componentInstance.updateProgress(totalPreviewItems > 0
+                    ? Math.round(((filePathsToBeCopied.length + progress.current) / totalPreviewItems) * 100)
+                    : 0);
+                  return false;
+                }
+                return true;
+              });
+              if (visibleLines.length > 0) { this.backup.previewLogsStream.next(visibleLines); }
             } else if (response.status == 'completed' || response.status == 'stopped') {
               this.backup.previewLogsStream.complete();
               console.log('completed in delete-files-and-dirs-for-dir-sync')
@@ -253,9 +287,32 @@ export class SyncDirsComponent {
       }
     });
 
-    /*Repurpose IncrementalDialogComponent. First open the dialog.This dialog listens for and diplsays the logs 
+    /*Repurpose IncrementalDialogComponent. First open the dialog.This dialog listens for and diplsays the logs
     for the operations to be done.*/
     //const dialogRef = this.dialog.open(IncrementalDialogComponent, { disableClose: true, width: 'inherit'});
+
+    // Shows this step's own real progress instead of a plain spinner: an open-ended "items found so far" count
+    // (via `message`) while diff()'s two scan phases run (no known total until a scan finishes - see
+    // SCAN_PROGRESS_REPORT_INTERVAL's own doc comment in worker.ts), then a real percentage (via `percent`) once
+    // its comparison phase starts reporting "(i of N)" - see parseProgressFromLine (shared/utils). Wraps BOTH
+    // ipc.diff() calls below (files-to-copy, then files-to-delete) - each restarts its own progress arc, since
+    // they're two separate comparisons over different totals, not one continuous operation.
+    const diffProgressListener = ipc.onResponseFromWorker((event, response) => {
+      this.ngZone.run(() => {
+        if (response.key === 'diff' && response.status === 'running') {
+          const lines = response.res as string[];
+          for (const line of lines) {
+            const progress = parseProgressFromLine(line);
+            if (progress) {
+              loadingDialogRef.componentInstance.percent = Math.round((progress.current / progress.total) * 100);
+            } else {
+              loadingDialogRef.componentInstance.percent = undefined;
+              loadingDialogRef.componentInstance.message = line;
+            }
+          }
+        }
+      });
+    });
 
     // try/catch: without it, a rejected ipc.diff() (e.g. sourcePath/targetPath became inaccessible) threw
     // unhandled here, leaving the disableClose loading dialog open forever with no error shown.
@@ -274,6 +331,8 @@ export class SyncDirsComponent {
         }
       }
       return;
+    } finally {
+      diffProgressListener.removeListener();
     }
 
     //If pathsOfFilesToBeDeleted contains paths which are also present in pathsOfFilesToBeCopied then delete those paths.
@@ -393,14 +452,29 @@ export class SyncDirsComponent {
 
   async commitAllSyncOperations() {
     let status = null;
-    
-    // create missing files inside the dir to be synched.  
+    // Combined total across both phases (copy, then delete) - both known up front, before either phase starts -
+    // so percentComplete progresses smoothly across the whole commit rather than resetting at the halfway point.
+    const totalItems = this.pathsOfFilesToBeCopied.length + this.pathsOfFilesToBeDeleted.length;
+    this.percentComplete = 0;
+
+    // create missing files inside the dir to be synched.
     this.workerListener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         switch (response.key) {
           case 'incremental-copy-files':
             if (response.status == 'running') {
-              this.backup.previewLogsStream.next(response.res);
+              // Split out the per-item "(i of N)" progress marker (see createTree in worker.ts) from the rest
+              // of this batch's descriptive lines before forwarding to the visible log - it drives
+              // percentComplete below, not one more line in the scrolling list.
+              const visibleLines = (response.res as string[]).filter((line) => {
+                const progress = parseProgressFromLine(line);
+                if (progress) {
+                  this.percentComplete = totalItems > 0 ? Math.round((progress.current / totalItems) * 100) : 0;
+                  return false;
+                }
+                return true;
+              });
+              if (visibleLines.length > 0) { this.backup.previewLogsStream.next(visibleLines); }
             } else if (response.status == 'completed' || response.status == 'stopped') {
               // Intentionally no-op: unlike previewOperationsBeforeCommiting, this method never calls
               // resetStream() between the copy and delete phases, so both phases share the same
@@ -433,7 +507,20 @@ export class SyncDirsComponent {
         switch (response.key) {
           case 'delete-files-and-dirs-for-dir-sync':
             if (response.status == 'running') {
-              this.backup.previewLogsStream.next(response.res);
+              // Same split as the copy phase above - the delete phase's own "(i of N)" progress is offset by
+              // the copy phase's already-completed item count, so percentComplete keeps climbing smoothly
+              // across both phases instead of jumping back down when the delete phase starts.
+              const visibleLines = (response.res as string[]).filter((line) => {
+                const progress = parseProgressFromLine(line);
+                if (progress) {
+                  this.percentComplete = totalItems > 0
+                    ? Math.round(((this.pathsOfFilesToBeCopied.length + progress.current) / totalItems) * 100)
+                    : 0;
+                  return false;
+                }
+                return true;
+              });
+              if (visibleLines.length > 0) { this.backup.previewLogsStream.next(visibleLines); }
             } else if (response.status == 'completed' || response.status == 'stopped') {
               this.backup.previewLogsStream.complete();
               status = response.status

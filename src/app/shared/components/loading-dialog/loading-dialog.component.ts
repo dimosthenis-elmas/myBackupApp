@@ -39,6 +39,33 @@ export class LoadingDialogComponent implements OnInit {
    *  can never cross-contaminate each other's progress lines, which a shared stream would. */
   lines?: string[];
 
+  /** Optional known total item count for whatever `lines` is accumulating one line per - set this alongside
+   *  `lines` when the caller already knows the total up front (e.g. hashableEntries.length before SHA-256
+   *  hashing starts) to turn the plain spinner into a real determinate `mat-progress-bar` (see `progressPercent`
+   *  below), reflecting `lines.length / total`. Left undefined, the dialog shows the plain spinner exactly as
+   *  before - this is purely additive. */
+  total?: number;
+
+  /** Optional percentage (0-100) for callers that want a real determinate bar WITHOUT the scrolling `lines`
+   *  list itself - e.g. a directory-comparison phase reporting "(i of N) items compared" text via `message`
+   *  that the caller has already parsed into a plain number (see parseProgressFromLine, shared/utils). Takes
+   *  priority over the `lines`/`total` computation below when both are somehow set. */
+  percent?: number;
+
+  /** What the template actually binds the determinate bar's `[value]` to - `percent` when a caller set it
+   *  directly, otherwise derived from `lines.length`/`total` when both are set, otherwise undefined (plain
+   *  spinner, unchanged default behavior). */
+  get progressPercent(): number | undefined {
+    if (this.percent !== undefined) { return this.percent; }
+    if (this.lines && this.total !== undefined) {
+      // total === 0 means there was nothing to do (e.g. a disc with no files carrying a recorded hash to
+      // verify) - report 100 rather than falling through to `undefined`, which would show the plain spinner
+      // AND the (empty) scrolling lines list at the same time instead of one clean "done" state.
+      return this.total === 0 ? 100 : Math.min(100, Math.round((this.lines.length / this.total) * 100));
+    }
+    return undefined;
+  }
+
   @ViewChild(CdkVirtualScrollViewport) private viewport?: CdkVirtualScrollViewport;
 
   /** Appends `newLines` to `lines` (creating it if this is the first call) and scrolls the virtual viewport to

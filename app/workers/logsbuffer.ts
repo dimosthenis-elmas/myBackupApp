@@ -33,7 +33,17 @@ export class LogsBuffer {
      }
     }
   
+    /** No-op when nothing is actually buffered (this.index === 0). Every caller that unconditionally calls this
+     *  right after its own operation resolves (the "whatever remained in the buffer" pattern - see worker.ts's
+     *  ipcMain switch/case) does so regardless of whether anything was actually pushed during that run (e.g. a
+     *  small enough diff()/createTree() call may never hit a progress-report interval at all) - without this
+     *  guard, that sends a spurious empty `status: "running"` response on the SAME channel key right before the
+     *  operation's real "completed"/"stopped" response. Harmless for a channel whose completed payload is
+     *  always null, but a caller resolving on the first response for a key without checking its status (unlike
+     *  WorkerCommunicator.sendAndAwaitResponse, which correctly does) would wrongly treat that empty running
+     *  message as the final answer for a channel whose completed payload carries real data. */
     public flush(){
+      if (this.index === 0) { return; }
       ipc.sendResponseToMain({ key: this.channel, res: this.buffer.slice(0, this.index), status: "running" });
       this.index = 0;
     }

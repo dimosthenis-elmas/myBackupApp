@@ -1,7 +1,7 @@
 <h2 mat-dialog-title>Preview</h2>
 <mat-dialog-content class="mat-typography" #scrollMe>
   <div  *ngIf="showProgressBar_">
-    <mat-progress-bar *ngIf="workIsInProgess_" mode="indeterminate"></mat-progress-bar>
+    <mat-progress-bar *ngIf="!workFinished_" mode="determinate" [value]="percentComplete"></mat-progress-bar>
     <mat-progress-bar *ngIf="workFinished_" mode="determinate" value="100" ></mat-progress-bar>
   </div>
   <h3>The following actions are to be taken</h3>

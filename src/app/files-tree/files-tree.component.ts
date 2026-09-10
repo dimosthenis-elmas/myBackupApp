@@ -1,6 +1,6 @@
   import {SelectionModel} from '@angular/cdk/collections';
   import {FlatTreeControl} from '@angular/cdk/tree';
-  import {Component, Injectable, Input} from '@angular/core';
+  import {Component, EventEmitter, Injectable, Input, Output} from '@angular/core';
   import {MatTreeFlatDataSource, MatTreeFlattener} from '@angular/material/tree';
   import {BehaviorSubject} from 'rxjs';
   
@@ -51,10 +51,22 @@
     return root;
   }
 
-  // New version including Extras (additional info not displayed, but retained in the 'database')
-  const list_to_json = function(files: any[], extras: any[] = []){
+  /** How often (every Nth item processed) list_to_json/buildFileTree below yield to the event loop and report
+   *  progress - frequently enough for a progress bar bound to it to look smooth, rarely enough not to spend
+   *  more time yielding than actually working on a huge tree. */
+  const TREE_BUILD_PROGRESS_REPORT_INTERVAL = 25;
+
+  const yieldToEventLoop = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  // New version including Extras (additional info not displayed, but retained in the 'database'). Async (unlike
+  // the synchronous list_to_json_ above) so it can yield periodically on a huge file list instead of blocking
+  // the renderer thread for its entire duration in one go - the same reason buildFileTree below already yields -
+  // and so it can report real progress via `onProgress` (files.length is a known total up front, unlike
+  // buildFileTree's own node count - see FilesTreeComponent.setTreeData for how the two phases are combined).
+  const list_to_json = async function(files: any[], extras: any[] = [], onProgress?: (itemsProcessed: number) => void){
     let root = {};
-    files.forEach(function(file, index){
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index];
       let tokens = file.split('\\');
       let head:any = root;
       let lastTokenIndex = tokens.length-1;
@@ -70,7 +82,7 @@
           }
           head[tokens[i]] = {"children":{}, "extras": e};
         }
-        // "cd" to this folder 
+        // "cd" to this folder
         head = head[tokens[i]].children;
       }
       // You reached the bottom! Is it a "file" or an "empty folder"
@@ -84,7 +96,11 @@
         }
         head[tokens[lastTokenIndex]] = {"children": null, "extras": e};
       }
-    });
+      if ((index + 1) % TREE_BUILD_PROGRESS_REPORT_INTERVAL === 0) {
+        onProgress?.(index + 1);
+        await yieldToEventLoop();
+      }
+    }
     return root;
   }
 
@@ -129,16 +145,18 @@
     }
 
     /** Replaces this instance's tree data and rebuilds the displayed tree from it - see
-     *  FilesTreeComponent.setTreeData, the only caller. */
-    async setTreeData(treeData: any): Promise<void> {
+     *  FilesTreeComponent.setTreeData, the only caller. `onProgress` (optional) reports the running count of
+     *  TodoItemNodes built so far - see buildFileTree's own counter param for why this is a running count, not
+     *  a percentage, on its own. */
+    async setTreeData(treeData: any, onProgress?: (nodesBuiltSoFar: number) => void): Promise<void> {
       this.treeData = treeData;
-      await this.initialize();
+      await this.initialize(onProgress);
     }
 
-    async initialize() {
+    async initialize(onProgress?: (nodesBuiltSoFar: number) => void) {
       // Build the tree nodes from Json object. The result is a list of `TodoItemNode` with nested
       //     file node as children.
-      const data = await this.buildFileTree(this.treeData, 0);
+      const data = await this.buildFileTree(this.treeData, 0, [], { count: 0 }, onProgress);
       this.dataChange.next(data);
 
     }
@@ -168,24 +186,33 @@
       }, []);
     }
 
-    async buildFileTree(obj: {[key: string]: any}, level: number, accumulator: TodoItemNode[] = []): Promise<TodoItemNode[]>{
+    /** @param counter shared across the whole recursion (not just this call's own accumulator) - each nested
+     *  subtree gets its own fresh `accumulator`, so accumulator.length can't be used as a running total the way
+     *  e.g. worker.ts's getAllFiles uses arrayOfFiles.length; this object is threaded through instead so every
+     *  recursive call increments the SAME counter. Its running count has no fixed total to compare against on
+     *  its own (a nested folder structure's total node count isn't known without a separate pass) - see
+     *  FilesTreeComponent.setTreeData for how this is combined with list_to_json's own (exactly known) progress
+     *  into one real percentage for the whole setTreeData() call. */
+    async buildFileTree(obj: {[key: string]: any}, level: number, accumulator: TodoItemNode[] = [], counter: { count: number } = { count: 0 }, onProgress?: (nodesBuiltSoFar: number) => void): Promise<TodoItemNode[]>{
       for (const [key, value] of Object.entries(obj)) {
         const node = new TodoItemNode();
         node.item = key;
         node.extras = value.extras;
 
-        
+
         if (value.children != null) {
           if (typeof value === 'object') {
-            node.children = await this.buildFileTree(value.children, level + 1, []);
+            node.children = await this.buildFileTree(value.children, level + 1, [], counter, onProgress);
             node.extras = value.extras;
           } else {
             node.item = value;
           }
         }
-  
+
         //Push instead of concat, more efficient (per AI)
         accumulator.push(node);
+        counter.count++;
+        if (onProgress && counter.count % TREE_BUILD_PROGRESS_REPORT_INTERVAL === 0) { onProgress(counter.count); }
       }
       /* This is necessary in order for the UI to not freeze.
       This function is going to occupy the single thread for some time.
@@ -197,18 +224,10 @@
       */
       const prob = 0.2
       if(Math.random() < prob){
-        //Only way (as far as I understand) to make buildFileTree function blocking is to use an await. 
-        await this.holdOn(); 
+        //Only way (as far as I understand) to make buildFileTree function blocking is to use an await.
+        await yieldToEventLoop();
       }
       return accumulator;
-    }
-
-    holdOn = () => {
-      return new Promise<void>(resolve =>
-        setTimeout(() => {
-          resolve();
-        },0)
-      );
     }
   
     /** Add an item to to-do list */
@@ -253,6 +272,12 @@
      *  (unaffected, opt-in only) behaves exactly as before. */
     @Input() disabled = false;
 
+    /** Emits a real 0-100 percentage while setTreeData() is running (list_to_json + buildFileTree combined -
+     *  see setTreeData's own comment for how the two phases are weighted into one number), finishing with a
+     *  final emit of exactly 100 once it resolves. Left unlistened-to, this is a no-op - every existing
+     *  <files-tree> usage behaves exactly as before. */
+    @Output() buildProgress = new EventEmitter<number>();
+
     /** Matches this app's own large-file split volume naming convention - see PART_FILE_PATTERN in
      *  app/workers/worker.ts and groupSelectedPartialFiles in optical-disc-backup-data-retriever.component.ts,
      *  which this mirrors exactly (kept as its own copy here since this component doesn't otherwise depend on
@@ -291,8 +316,24 @@
       });
     }
 
+    /** Builds and displays the tree for `treeData` (see list_to_json/buildFileTree for the two real phases this
+     *  goes through: flat path list -> nested object, then nested object -> Angular tree nodes). Emits
+     *  `buildProgress` (0-100) across the whole call for a caller that wants a real progress bar instead of a
+     *  bare spinner while this runs - list_to_json's progress (an exact count against treeData.length) covers
+     *  the first half of the range, buildFileTree's (an approximate count - see its own counter param comment,
+     *  a tree has more nodes than treeData has leaf paths once directories are counted too) the second half,
+     *  capped so it can only ever approach, never reach, 100 on its own - the explicit final emit below is what
+     *  actually lands on exactly 100, regardless of how buildFileTree's own approximation landed. */
     async setTreeData(treeData: Array<string>, extras:Array<any>=[]): Promise<void>{
-      await this._database.setTreeData(list_to_json(treeData, extras));
+      const total = treeData.length;
+      const reportsProgress = total > 0 && this.buildProgress.observed;
+      const json = await list_to_json(treeData, extras, reportsProgress
+        ? (itemsProcessed) => this.buildProgress.emit(Math.round((itemsProcessed / total) * 50))
+        : undefined);
+      await this._database.setTreeData(json, reportsProgress
+        ? (nodesBuiltSoFar) => this.buildProgress.emit(50 + Math.round((Math.min(nodesBuiltSoFar, total) / total) * 50))
+        : undefined);
+      if (reportsProgress) { this.buildProgress.emit(100); }
     }
   
     getLevel = (node: TodoItemFlatNode) => node.level;

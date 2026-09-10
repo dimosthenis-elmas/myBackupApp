@@ -7,6 +7,7 @@ import { MatDialog } from '@angular/material/dialog';
 import { ConfirmationDialogComponent } from '../shared/components/confirmation-dialog/confirmation-dialog.component';
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
+import { parseProgressFromLine } from '../shared/utils/progress-line';
 
 @Component({
   selector: 'app-incremental-copying',
@@ -20,6 +21,10 @@ export class IncrementalCopyingComponent implements OnInit, OnDestroy {
   public copyingPromise!: Promise<WorkerResponse>;
   private workerListener!: WorkerListener;
   public errorOccured = false;
+  /** Real percentage (0-100), derived from the "(i of N)" progress marker createTree (worker.ts) pushes once
+   *  per item copied - see parseProgressFromLine (shared/utils). Drives the real determinate mat-progress-bar
+   *  in place of the old binary indeterminate/100%-on-finish pair. */
+  public percentComplete = 0;
 
   @ViewChild('scrollMe')
   private myScrollContainer!: ElementRef;
@@ -39,10 +44,21 @@ export class IncrementalCopyingComponent implements OnInit, OnDestroy {
         switch (response.key) {
           case 'incremental-copy-files':
             if(response.status == 'running'){
-              this.backup.previewLogsStream.next(response.res);
+              // Split out the per-item "(i of N)" progress marker (see createTree in worker.ts) from the rest
+              // of this batch's descriptive lines before forwarding to the visible log - it's meant to drive
+              // percentComplete below, not to be one more line in the scrolling list.
+              const visibleLines = (response.res as string[]).filter((line) => {
+                const progress = parseProgressFromLine(line);
+                if (progress) {
+                  this.percentComplete = Math.round((progress.current / progress.total) * 100);
+                  return false;
+                }
+                return true;
+              });
+              if (visibleLines.length > 0) { this.backup.previewLogsStream.next(visibleLines); }
             }else if(response.status == 'completed' || response.status == 'stopped'){
               this.backup.previewLogsStream.complete();
-            }            
+            }
             break;
           default:
             console.error('Got unknown message from ipcMain.')

@@ -12,6 +12,7 @@ import { filesMetadata } from '../../types/interface';
 import { ColdStorageMetadata } from '../../../app/workers/ipc.interfaces';
 import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
+import { parseProgressFromLine } from '../shared/utils/progress-line';
  
   @Component({
     selector: 'optical-disc-backup-data-retriever',
@@ -80,6 +81,21 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
     workerListener!: WorkerListener;
     copyingPromise!: Promise<WorkerResponse>;
     finishedCopyingFiles: boolean = false;
+    /** Real percentage (0-100) for the current disc's recovery copy, derived from the "(i of N)" progress
+     *  marker createTree (worker.ts) pushes once per item copied - see parseProgressFromLine (shared/utils) and
+     *  recoverAllFilesFromAllDiscs's 'incremental-copy-files' case below. Reset to 0 at the start of each
+     *  disc's copy. */
+    percentComplete: number = 0;
+    /** Real percentage (0-100) for createFilesTreeForReconstructedBackupPaths's tree-building step - see
+     *  FilesTreeComponent.buildProgress. Separate field from percentComplete above (recovery copy progress):
+     *  the two never show at the same time (different steps of the wizard) but keeping them distinct avoids any
+     *  confusion about which operation a given value belongs to. */
+    treeBuildPercentComplete: number = 0;
+    /** Live "items found so far" text for whichever disc scan (get-file-paths-with-stats/get-file-paths) is
+     *  currently running - see SCAN_PROGRESS_REPORT_INTERVAL's own doc comment in worker.ts for why this is a
+     *  running count rather than a percentage (there's no known total until a scan finishes). Undefined between
+     *  scans, so the template only shows it while one is actually in progress. */
+    scanProgressMessage?: string;
 
     constructor(public router: Router, private route: ActivatedRoute, public dialog: MatDialog, public backup: BackupService,
      private ngZone: NgZone, private eleRef: ElementRef) {
@@ -323,6 +339,7 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 
         // Reading CD...
         this.finishedReadingFilePaths=false;
+        this.scanProgressMessage = undefined;
 
         // File paths with stats is going to be used in case the user requests the contents of the entire multi optical disc cold storage via
         // the promise getCombinedFilePathsFromAllOpticalDiscs.
@@ -330,6 +347,17 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
         // In such a case, the cold storage is out of spec and must be recreated from scratch again.
         // If the user just wants to recover the data in a cold storage (set of optical discs) we only need the file paths and not the stats (modified date, size etc).
         // Thus we keep both  filePathsWithStats and filePaths (created from filePathsWithStats by reducing), and use them accordingly.
+        // scanListener shows this scan's own live "items found so far" count (see get-file-paths-with-stats in
+        // worker.ts) under the "Reading data from the optical disc" text - a local listener (not this.workerListener,
+        // which this method doesn't otherwise use) so it can't be clobbered by/clobber anything else.
+        const scanListener = ipc.onResponseFromWorker((event, response) => {
+          this.ngZone.run(() => {
+            if (response.key === 'get-file-paths-with-stats' && response.status === 'running') {
+              const lines = response.res as string[];
+              if (lines.length > 0) { this.scanProgressMessage = lines[lines.length - 1]; }
+            }
+          });
+        });
         let filePathsWithStats: Array<{
           "path": string;
           "stats": {
@@ -337,7 +365,13 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
               "mtime": Date;
               "isDirectory": boolean;
           };
-        }> = (await ipc.getFilePathsWithStats(mountedVolumeLetter)).res
+        }>;
+        try {
+          filePathsWithStats = (await ipc.getFilePathsWithStats(mountedVolumeLetter)).res
+        } finally {
+          scanListener.removeListener();
+          this.scanProgressMessage = undefined;
+        }
         let filePaths: string[] = [];
         filePaths = filePathsWithStats.reduce((acc: string[], obj) => {
           acc.push(obj.path);
@@ -467,7 +501,15 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
       let sortedCompleteBackupFilePaths = synchedSort[0];
       let sortedDiscIdsForCompleteBackupFilePaths = synchedSort[1];
 
-      await this.filesTreeRef.setTreeData(sortedCompleteBackupFilePaths, sortedDiscIdsForCompleteBackupFilePaths);
+      this.treeBuildPercentComplete = 0;
+      const buildProgressSubscription = this.filesTreeRef.buildProgress.subscribe((percent) => {
+        this.treeBuildPercentComplete = percent;
+      });
+      try {
+        await this.filesTreeRef.setTreeData(sortedCompleteBackupFilePaths, sortedDiscIdsForCompleteBackupFilePaths);
+      } finally {
+        buildProgressSubscription.unsubscribe();
+      }
       this.selectAllFiles(false);
       this.filesTreeRef.expandAllNodes();
       this.filesTreeNotLoaded  = false;
@@ -514,6 +556,7 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 
     async recoverAllFilesFromAllDiscs(){
       this.finishedCopyingFiles = false;
+      this.percentComplete = 0;
       ipc.stop();
 
       this.step='step_5';
@@ -617,8 +660,18 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
           switch (response.key) {
             case 'incremental-copy-files':
               if(response.status == 'running'){
-                // Print the response to the scrollable list logs.
-                this.backup.previewLogsStream.next(response.res);
+                // Split out the per-item "(i of N)" progress marker (see createTree in worker.ts) from the
+                // rest of this batch's descriptive lines before printing to the scrollable list logs - it
+                // drives percentComplete below, not one more visible log line.
+                const visibleLines = (response.res as string[]).filter((line) => {
+                  const progress = parseProgressFromLine(line);
+                  if (progress) {
+                    this.percentComplete = Math.round((progress.current / progress.total) * 100);
+                    return false;
+                  }
+                  return true;
+                });
+                if (visibleLines.length > 0) { this.backup.previewLogsStream.next(visibleLines); }
               }else if(response.status == 'completed' || response.status == 'stopped'){
                 this.backup.previewLogsStream.complete();
                 this.discIdsWhoseFilesAreAlreadyRecovered.push(currentDiskId);
@@ -778,6 +831,7 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
       loadingDialogRef.componentInstance.showCancelButton = false;
       loadingDialogRef.componentInstance.message = "Verifying SHA-256 hashes";
       loadingDialogRef.componentInstance.lines = [];
+      loadingDialogRef.componentInstance.total = filesToHash.length;
       let results: Array<{ path: string, sha256: string, matched?: boolean }> = [];
       const listener = ipc.onResponseFromWorker((event, response) => {
         this.ngZone.run(() => {

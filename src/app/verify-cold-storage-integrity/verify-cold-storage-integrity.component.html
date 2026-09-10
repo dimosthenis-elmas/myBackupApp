@@ -42,6 +42,9 @@
         <h2>Reading and identifying the inserted disc</h2>
         <span class="dots"><span><h2>.</h2></span><span><h2>.</h2></span><span><h2>.</h2></span></span>
       </div>
+      <div *ngIf="opticalMediumLoaded && readingDisc && scanProgressMessage" class="flex-centered">
+        <p>{{ scanProgressMessage }}</p>
+      </div>
     </div>
     <br>
     <mat-divider></mat-divider>

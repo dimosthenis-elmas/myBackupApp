@@ -15,6 +15,9 @@ export class IncrementalDialogComponent implements OnInit {
   showProgressBar_=false;
   workIsInProgess_=true;
   workFinished_=false;
+  /** Real percentage (0-100) for the preview phase this dialog covers - see updateProgress() below, called
+   *  from sync-dirs.component.ts's previewOperationsBeforeCommiting as "(i of N)" progress markers arrive. */
+  percentComplete = 0;
   proceed_message='Write to the backup';
   proceedBtnIsDisabled=false;
   scrollableLogsListRef!: ScrollableListComponent;
@@ -50,6 +53,12 @@ export class IncrementalDialogComponent implements OnInit {
   progessBarCompleted():void{
     this.workFinished_=true;
     this.workIsInProgess_=false;
+  }
+
+  /** Updates the real percentage shown while workFinished_ is still false - see percentComplete's own doc
+   *  comment. The one way callers should drive this dialog's progress bar. */
+  updateProgress(percent: number): void {
+    this.percentComplete = percent;
   }
 
   enableProceedBtn():void{

@@ -21,7 +21,10 @@
                 <div *ngIf="(opticalMediumLoaded && !finishedReadingFilePaths)" style="display: ruby;">
                     <h2>Reading data from the optical disc</h2>
                     <span class="dots"><span><h2>.</h2></span><span><h2>.</h2></span><span><h2>.</h2></span></span>
-                </div>               
+                </div>
+                <div *ngIf="(opticalMediumLoaded && !finishedReadingFilePaths && scanProgressMessage)" class="flex-centered">
+                    <p>{{ scanProgressMessage }}</p>
+                </div>
             </div>           
         </div>
     </div>
@@ -44,9 +47,9 @@
                 <h2>Select the files you want to recover and press 'recover selected data'.</h2>
             </div>
             <div class="flex-centered" *ngIf="filesTreeNotLoaded">
-                <mat-spinner *ngIf="filesTreeNotLoaded"></mat-spinner>
-                <h2>Please wait ...</h2>
-            </div>  
+                <h2>Building files tree...</h2>
+                <mat-progress-bar mode="determinate" [value]="treeBuildPercentComplete"></mat-progress-bar>
+            </div>
             <div class="flex-centered">
                 <mat-checkbox [ngClass]="{'hideThis' : filesTreeNotLoaded}" style="align-self: self-start" [checked]="allFilesSelected" (change)="selectAllFiles($event.checked);"
                     (click)="$event.stopPropagation()">
@@ -84,8 +87,8 @@
         <div class="flex-centered" *ngIf="(opticalMediumLoaded)">
             <h2 *ngIf="!finishedCopyingFiles">Recovering data from optical disc</h2>
             <br>
-            <mat-progress-bar *ngIf="!finishedCopyingFiles"  mode="indeterminate"></mat-progress-bar>
-            <mat-progress-bar *ngIf="finishedCopyingFiles"   mode="determinate" value="100"></mat-progress-bar>           
+            <mat-progress-bar *ngIf="!finishedCopyingFiles"  mode="determinate" [value]="percentComplete"></mat-progress-bar>
+            <mat-progress-bar *ngIf="finishedCopyingFiles"   mode="determinate" value="100"></mat-progress-bar>
             <br>
         </div>  
         <div style="align-items: stretch;" #scrollMe *ngIf=showLogs>

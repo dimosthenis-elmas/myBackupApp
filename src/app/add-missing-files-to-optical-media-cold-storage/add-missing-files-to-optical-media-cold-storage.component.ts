@@ -444,15 +444,41 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     }else{
       if(this.json_coldStorageFilesMetadata){
         this.entireColdStorageMetadata = this.json_coldStorageFilesMetadata;
-        this.diff(this.entireColdStorageMetadata.flat(), (await ipc.getFilePathsWithStats(this.backup.targetPath)).res);
+        this.diff(this.entireColdStorageMetadata.flat(), await this.scanMasterDirectoryWithProgress());
       }else{
         this.step='step_2';
         await this.holdOn(500);
         this.odbr_ref.getCombinedFilePathsFromAllOpticalDiscs().then(async (x)=>{
           this.entireColdStorageMetadata = JSON.parse(JSON.stringify(x.filesMetadata));
-          this.diff(x.filesMetadata.flat(), (await ipc.getFilePathsWithStats(this.backup.targetPath)).res);
+          this.diff(x.filesMetadata.flat(), await this.scanMasterDirectoryWithProgress());
         });
       }
+    }
+  }
+
+  /** Scans the master directory (ipc.getFilePathsWithStats) behind a LoadingDialogComponent that shows the
+   *  scan's own live, open-ended "items found so far" count as it comes in (see get-file-paths-with-stats in
+   *  worker.ts) - this is the most time-consuming step of this wizard's step_1, and previously ran with
+   *  no visible feedback at all (the dialog diff() itself opens only starts AFTER this already-finished scan is
+   *  passed into it). There's no known total until the scan finishes, so this is a live count, not a
+   *  percentage - see getAllFilePathsWithStats' own SCAN_PROGRESS_REPORT_INTERVAL doc comment in worker.ts. */
+  private async scanMasterDirectoryWithProgress(): Promise<filesMetadata[]> {
+    const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+    loadingDialogRef.componentInstance.showCancelButton = false;
+    loadingDialogRef.componentInstance.message = "Scanning master directory";
+    const listener = ipc.onResponseFromWorker((event, response) => {
+      this.ngZone.run(() => {
+        if (response.key === 'get-file-paths-with-stats' && response.status === 'running') {
+          const lines = response.res as string[];
+          if (lines.length > 0) { loadingDialogRef.componentInstance.message = lines[lines.length - 1]; }
+        }
+      });
+    });
+    try {
+      return (await ipc.getFilePathsWithStats(this.backup.targetPath)).res;
+    } finally {
+      listener.removeListener();
+      loadingDialogRef.close();
     }
   }
 
@@ -533,7 +559,18 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       itm.path = itm.path.replace(this.backup.targetPath, "");
       return itm;
     });
-    await this.filesTree.setTreeData(missingFiles.map(m => m.path));
+    loadingDialogRef.componentInstance.message = "Building files tree";
+    // A real percentage while the tree is built (list_to_json + buildFileTree - see FilesTreeComponent.
+    // setTreeData's own comment) instead of the plain spinner shown until now - missingFiles.length is already
+    // known here, so subscribing before calling setTreeData catches every progress emit, including the first.
+    const buildProgressSubscription = this.filesTree.buildProgress.subscribe((percent) => {
+      loadingDialogRef.componentInstance.percent = percent;
+    });
+    try {
+      await this.filesTree.setTreeData(missingFiles.map(m => m.path));
+    } finally {
+      buildProgressSubscription.unsubscribe();
+    }
     this.filesTree.selectAllNodes();
     this.filesTree.expandAllNodes();
     loadingDialogRef.close();
@@ -673,6 +710,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     loadingDialogRef.componentInstance.showCancelButton = false;
     loadingDialogRef.componentInstance.message = "Calculating SHA-256 hashes";
     loadingDialogRef.componentInstance.lines = [];
+    loadingDialogRef.componentInstance.total = hashableEntries.length;
     const listener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         if (response.key === 'compute-sha256-for-backed-up-files' && response.status === 'running') {

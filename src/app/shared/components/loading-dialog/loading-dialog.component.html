@@ -1,7 +1,8 @@
 <mat-dialog-content class="mat-typography container">
     <div>
         <h3>{{ message || 'Please wait' }}</h3>
-        <mat-spinner *ngIf="!lines"></mat-spinner>
+        <mat-progress-bar *ngIf="progressPercent !== undefined" mode="determinate" [value]="progressPercent"></mat-progress-bar>
+        <mat-spinner *ngIf="progressPercent === undefined"></mat-spinner>
         <cdk-virtual-scroll-viewport *ngIf="lines" itemSize="18" class="loading-dialog-lines">
             <div *cdkVirtualFor="let line of lines" class="loading-dialog-line">{{ line }}</div>
         </cdk-virtual-scroll-viewport>

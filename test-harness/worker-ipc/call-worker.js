@@ -76,6 +76,13 @@ async function callWorker(win, key, params, timeoutMs = 5 * 60 * 1000) {
 
       window.electronAPI.ipcRenderer_on('message-from-worker', (event, response) => {
         if (response.key !== key) { return; } // not our response (e.g. a stray 'stop' ack) - keep waiting
+        // 'running' means this key's operation is still going (a progress update - see logsBuffer in worker.ts,
+        // e.g. diff()/createTree() report progress this way) - keep waiting for its real 'completed'/'stopped'/
+        // 'error' response instead of treating this one as final. Matches this function's own doc comment above
+        // and WorkerCommunicator.sendAndAwaitResponse's real behavior - without this check, a call whose
+        // operation reports ANY progress before finishing would resolve early with that progress update's own
+        // (irrelevant, possibly empty) `res` instead of the operation's real result.
+        if (response.status === 'running') { return; }
         clearTimeout(timer);
         window.electronAPI.ipcRenderer_removeAllListeners('message-from-worker');
         if (response.status === 'error') {

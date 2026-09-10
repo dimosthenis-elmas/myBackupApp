@@ -61,6 +61,9 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
   private discIdHashes: number[] = [];
   opticalMediumLoaded = false;
   readingDisc = false;
+  /** Live "items found so far" text for the current disc scan (get-file-paths-with-stats) - see
+   *  verifyNextDiscInner's scanListener. Undefined between scans. */
+  scanProgressMessage?: string;
   /** disc index (0-based) -> whether that disc's verification passed, filled in as each disc is actually
    *  verified this session - drives the running tally shown at the "verify another?" prompt. Intentionally
    *  pure in-memory state, never persisted, matching every other wizard's own "no resume support" decision. */
@@ -224,12 +227,26 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
     this.opticalMediumLoaded = true;
     this.readingDisc = true;
 
+    // Shows this scan's own live "items found so far" count (see get-file-paths-with-stats in worker.ts) under
+    // the "Reading and identifying the inserted disc" text - no known total until the scan finishes, so a
+    // running count rather than a percentage (see SCAN_PROGRESS_REPORT_INTERVAL's own doc comment in worker.ts).
+    const scanListener = ipc.onResponseFromWorker((event, response) => {
+      this.ngZone.run(() => {
+        if (response.key === 'get-file-paths-with-stats' && response.status === 'running') {
+          const lines = response.res as string[];
+          if (lines.length > 0) { this.scanProgressMessage = lines[lines.length - 1]; }
+        }
+      });
+    });
     let filePathsWithStats: Array<{ path: string, stats: { size: number, mtime: Date, isDirectory: boolean } }>;
     try {
       filePathsWithStats = (await ipc.getFilePathsWithStats(mountedVolumeLetter)).res;
     } catch (error) {
       this.askRetryOrFinish(`An error occurred while reading the inserted disc: ${error}`);
       return;
+    } finally {
+      scanListener.removeListener();
+      this.scanProgressMessage = undefined;
     }
 
     // Same disc-identification convention as recovery (see readAllDiscsToReconstructTheCompleteBackupFilePaths's
@@ -272,6 +289,7 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
     loadingDialogRef.componentInstance.showCancelButton = false;
     loadingDialogRef.componentInstance.message = "Verifying SHA-256 hashes";
     loadingDialogRef.componentInstance.lines = [];
+    loadingDialogRef.componentInstance.total = filesToHash.length;
     const listener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         if (response.key === 'verify-file-hashes' && response.status === 'running') {

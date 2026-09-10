@@ -9,13 +9,14 @@ import { WebviewDirective } from './directives/';
 import { FormsModule } from '@angular/forms';
 import { LoadingDialogComponent } from './components';
 import {MatProgressSpinnerModule} from '@angular/material/progress-spinner';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatButtonModule } from '@angular/material/button';
 import { MatDialogModule } from '@angular/material/dialog';
 import { ScrollingModule } from '@angular/cdk/scrolling';
 
 @NgModule({
   declarations: [PageNotFoundComponent, ConfirmationDialogComponent, LoadingDialogComponent, WebviewDirective],
-  imports: [CommonModule, TranslateModule, FormsModule, MatProgressSpinnerModule, MatButtonModule, MatDialogModule, ScrollingModule],
+  imports: [CommonModule, TranslateModule, FormsModule, MatProgressSpinnerModule, MatProgressBarModule, MatButtonModule, MatDialogModule, ScrollingModule],
   exports: [TranslateModule, WebviewDirective, FormsModule]
 })
 export class SharedModule {}

@@ -30,11 +30,21 @@ const holdOn = () => {
   process.stdout.write(str);  // write text
 }*/
 
+/** How often (every Nth item found) the disk-scanning functions below (getAllFiles, getAllFilesSet,
+ *  getAllFilePathsWithStats) report their running count via `onProgress` - there is no way to know the total
+ *  ahead of time (discovering it IS the operation), so this is an open-ended live counter, not a percentage -
+ *  reported every Nth item rather than every single one so a huge directory doesn't spam its caller (and, for
+ *  callers that forward it into logsBuffer, the IPC channel) with an update per file. */
+const SCAN_PROGRESS_REPORT_INTERVAL = 25;
+
 /** @return an array that contains the absolute paths of all files in "dirPath" (in a recursive fashion).
- *  It also takes into account empty directories. 
- * @param dirPath the directory for which you want to list the files. 
- * @param arrayOfFiles <empty> (used internally for recursion) */
-const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string> = []): Promise<string[]> {
+ *  It also takes into account empty directories.
+ * @param dirPath the directory for which you want to list the files.
+ * @param arrayOfFiles <empty> (used internally for recursion)
+ * @param onProgress optional - called with the running total of items found so far, every
+ *  SCAN_PROGRESS_REPORT_INTERVAL items (see its own doc comment). Left undefined, every existing caller behaves
+ *  exactly as before. */
+const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string> = [], onProgress?: (itemsFoundSoFar: number) => void): Promise<string[]> {
   let files: Array<string> = fs.readdirSync(dirPath)
 
   arrayOfFiles = arrayOfFiles || []
@@ -45,10 +55,11 @@ const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string>
       if(process.env._stop == 'stop'){break;}
       file = files[i];
       if (fs.statSync(dirPath + "/" + file).isDirectory()) {
-        arrayOfFiles = await getAllFiles(dirPath + "/" + file, arrayOfFiles)
+        arrayOfFiles = await getAllFiles(dirPath + "/" + file, arrayOfFiles, onProgress)
       } else {
         arrayOfFiles.push(node_path_module.join(dirPath, "/", file))
         //print_line(arrayOfFiles.length + "")
+        if (onProgress && arrayOfFiles.length % SCAN_PROGRESS_REPORT_INTERVAL === 0) { onProgress(arrayOfFiles.length); }
       }
       await holdOn();
     }
@@ -666,9 +677,10 @@ const writeJSONtoDisk = async function(path: string, json:Object): Promise<void>
  * @param arrayOfFiles <empty> (used internally for recursion) */
 const getAllFilePathsWithStats = async function (
   dirPath: string,
-  arrayOfFiles: Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}> = []
+  arrayOfFiles: Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}> = [],
+  onProgress?: (itemsFoundSoFar: number) => void
 ): Promise<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}>> {
-  
+
   // This resets the stop signal in case the user canceled the operation previously.
   process.env._stop = 'NoStop'
   let files: Array<string> = fs.readdirSync(dirPath)
@@ -681,13 +693,14 @@ const getAllFilePathsWithStats = async function (
       if(process.env._stop == 'stop'){break;}
       file = files[i];
       if (fs.statSync(dirPath + "/" + file).isDirectory()) {
-        arrayOfFiles = await getAllFilePathsWithStats(dirPath + "/" + file, arrayOfFiles)
+        arrayOfFiles = await getAllFilePathsWithStats(dirPath + "/" + file, arrayOfFiles, onProgress)
       } else {
         arrayOfFiles.push({"path": node_path_module.join(dirPath, "/", file), "stats": {
           "size": fs.statSync(dirPath + "/" + file).size,
           "mtime": fs.statSync(dirPath + "/" + file).mtime,
-          "isDirectory": fs.statSync(dirPath + "/" + file).isDirectory() 
+          "isDirectory": fs.statSync(dirPath + "/" + file).isDirectory()
         }})
+        if (onProgress && arrayOfFiles.length % SCAN_PROGRESS_REPORT_INTERVAL === 0) { onProgress(arrayOfFiles.length); }
       }
       await holdOn();
     }
@@ -1332,7 +1345,10 @@ const deletePartialsForDisc = async function (partialAbsolutePaths: Array<string
  *  It also takes into account empty directories. 
  * @param dirPath the directory for which you want to list the files. 
  * @param arrayOfFiles <empty> (used internally for recursion) */
-const getAllFilesSet = async function (dirPath: string, arrayOfFiles: Set<string> = new Set<string>()): Promise<Set<string>> {
+/** Same recursive scan as getAllFiles, into a Set instead of an Array (see diff's own use of both - the target
+ *  side only ever needs membership checks). `onProgress` follows the same "every SCAN_PROGRESS_REPORT_INTERVAL
+ *  items" convention. */
+const getAllFilesSet = async function (dirPath: string, arrayOfFiles: Set<string> = new Set<string>(), onProgress?: (itemsFoundSoFar: number) => void): Promise<Set<string>> {
   let files: Array<string> = fs.readdirSync(dirPath)
 
   if (files.length > 0) {
@@ -1341,10 +1357,11 @@ const getAllFilesSet = async function (dirPath: string, arrayOfFiles: Set<string
       if(process.env._stop == 'stop'){break;}
       file = files[i];
       if (fs.statSync(dirPath + "/" + file).isDirectory()) {
-        arrayOfFiles = await getAllFilesSet(dirPath + "/" + file, arrayOfFiles)
+        arrayOfFiles = await getAllFilesSet(dirPath + "/" + file, arrayOfFiles, onProgress)
       } else {
         arrayOfFiles.add(node_path_module.join(dirPath, "/", file))
         //print_line(arrayOfFiles.length + "")
+        if (onProgress && arrayOfFiles.size % SCAN_PROGRESS_REPORT_INTERVAL === 0) { onProgress(arrayOfFiles.size); }
       }
       await holdOn();
     }
@@ -1477,32 +1494,52 @@ const waitForOpticalDiskToBeMounted = async function (): Promise<any|null> {
  * let target = 'F:\\User\\backup_system\\target' + "\\"
  * diff(source, target)
  */
-const diff = async function (source: string, target: string): Promise<string[]> {
+/** @param onProgress optional - reports this call's progress as plain text lines, same "(i of N)" convention as
+ *  every other long-running operation's logsBuffer lines (see parseProgressFromLine, shared/utils) for the
+ *  comparison phase below, and an open-ended "items found so far" running count (no known total until a scan
+ *  finishes - see SCAN_PROGRESS_REPORT_INTERVAL) for the two scan phases. Left undefined, behaves exactly as
+ *  before. */
+const diff = async function (source: string, target: string, onProgress?: (line: string) => void): Promise<string[]> {
   process.env._stop = "noStop";
-  
+
   if (source[source.length - 1] != '\\') { source += "\\"; }
   if (target[target.length - 1] != '\\') { target += "\\"; }
   console.log("Reading paths of: " + source)
   let time_start = performance.now();
-  let source_files = await getAllFiles(source)
+  let source_files = await getAllFiles(source, [], onProgress ? (count) => onProgress(`Scanning ${source}: ${count} items found so far`) : undefined)
   console.log("\nReading paths of: " + target)
-  let target_files = await getAllFilesSet(target)
+  let target_files = await getAllFilesSet(target, new Set<string>(), onProgress ? (count) => onProgress(`Scanning ${target}: ${count} items found so far`) : undefined)
   let time_end = performance.now();
   console.log("DONE READING FILES " + ((time_end - time_start) / 1000).toFixed(2))
   time_start = performance.now();
-  let source_only = source_files.filter(file => {
+  // Converted from a plain synchronous .filter() to an explicit loop: source_files.length IS a known total by
+  // this point (both scans above have already finished), so - unlike the open-ended scan phases just above -
+  // this comparison phase can report a REAL "(i of N)" percentage instead of just a running count. The periodic
+  // `await holdOn()` (the same yield point every other cancellable loop in this file already uses) is also what
+  // actually lets process.env._stop be checked mid-comparison, which the original single synchronous .filter()
+  // call never could.
+  let source_only: string[] = [];
+  for (let i = 0; i < source_files.length; i++) {
+    if (process.env._stop == 'stop') { break; }
+    let file = source_files[i];
     let sourcePath = file
     let targetPath = file.replace(source, target)
 
     let b = target_files.has(targetPath)
     if (!b) {
-      return true // source only
+      source_only.push(file); // source only
     } else if ((fs.statSync(sourcePath).mtime > fs.statSync(targetPath).mtime) || (fs.statSync(sourcePath).size != fs.statSync(targetPath).size)) {
-      return true // modified
-    } else {
-      return false // backed up
+      source_only.push(file); // modified
+    } // else: backed up - not included
+    // Yielding (and reporting progress) only every SCAN_PROGRESS_REPORT_INTERVAL items, not every single one -
+    // process.env._stop is still checked every iteration above (cheap, no yield needed for that alone), but a
+    // real setImmediate round-trip per item would turn a fast in-memory comparison over a very large tree
+    // (hundreds of thousands of files) into one dominated by event-loop scheduling overhead instead.
+    if ((i + 1) % SCAN_PROGRESS_REPORT_INTERVAL === 0) {
+      if (onProgress) { onProgress(`Comparing items (${i + 1} of ${source_files.length})`); }
+      await holdOn();
     }
-  })
+  }
   time_end = performance.now();
   //source_files.forEach(function (filePath) { console.log(filePath) })
   //target_files.forEach(function (filePath) { console.log(filePath) })
@@ -1580,6 +1617,13 @@ const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boole
     path = sourceOnlyPaths[index];
     let tokens = path.split('\\')
     insertBranch(tree, tokens, 0, doCopy, source, target);
+    // A dedicated progress marker, on top of insertBranch's own descriptive lines above (which don't map 1:1 to
+    // items - a copy can log a size-tier line plus a "copied/updated" line, a directory logs its own separate
+    // "will create"/"created" line, etc.) - callers who already know sourceOnlyPaths.length up front (every one
+    // does - it's an array they built themselves) can turn this into a real percentage without having to count
+    // or make sense of the descriptive lines. Same "(i of N)" convention computeSha256ForBackedUpFiles/
+    // verifyFileHashes already use, so parseProgressFromLine (shared/utils) handles all of them uniformly.
+    logsBuffer.push(`Processed item (${index + 1} of ${sourceOnlyPaths.length})`);
     await holdOn();
   }
   //console.log(tree)
@@ -1609,7 +1653,10 @@ const deleteFilesAndDirsForDirSync = async function (pathsMarkedForDeletion: Arr
   if(process.env._stop != 'stop'){
     path = pathsMarkedForDeletion[0];
     tokens = path.split('\\');
-    insertBranchForDirSyncDeletions(tree, tokens, 0, commit, target, source);    
+    insertBranchForDirSyncDeletions(tree, tokens, 0, commit, target, source);
+    // See the identical marker in createTree's own loop - same "(i of N)" convention, so any caller that
+    // already knows pathsMarkedForDeletion.length up front can derive a real percentage from it.
+    logsBuffer.push(`Processed item (1 of ${pathsMarkedForDeletion.length})`);
     await holdOn();
   }
   // Rest of the paths.
@@ -1657,7 +1704,8 @@ const deleteFilesAndDirsForDirSync = async function (pathsMarkedForDeletion: Arr
         tokens_diff_slice.pop();
       }
     }
-    insertBranchForDirSyncDeletions(tree, tokens, 0, commit, target, source);    
+    insertBranchForDirSyncDeletions(tree, tokens, 0, commit, target, source);
+    logsBuffer.push(`Processed item (${index + 1} of ${pathsMarkedForDeletion.length})`);
     await holdOn();
   }
 
@@ -2136,7 +2184,7 @@ let logsBuffer : LogsBuffer;
 process.env._stop = 'noStop';
 
 const init = function() : void
-{  
+{
   logsBuffer = new LogsBuffer();
 
   ipc.onRequestFromMain((event, arg) => {
@@ -2148,7 +2196,9 @@ const init = function() : void
     switch (arg.key) {
       case 'diff':
         console.log("(worker) in diff")
-        diff(arg.params.source, arg.params.target).then((d)=>{
+        logsBuffer.setChannel('diff');
+        diff(arg.params.source, arg.params.target, (line) => logsBuffer.push(line)).then((d)=>{
+          logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'diff', res: d, status: "completed" });
           }else{
@@ -2157,7 +2207,7 @@ const init = function() : void
         }).catch((err)=>{
           ipc.sendResponseToMain({ key: 'diff', res: err, status: "error" });
         });
-        break;        
+        break;
       case 'incremental-preview':
         logsBuffer.setChannel("incremental-preview");
         createTree(arg.params.sourceOnlyPaths, /*doCopy=*/false, arg.params.source, arg.params.target).then((res)=>{
@@ -2325,7 +2375,9 @@ const init = function() : void
         break;
       case 'get-file-paths-with-stats':
         console.log("(worker) in get-file-paths-with-stats")
-        getAllFilePathsWithStats(arg.params.dirPath).then((d)=>{
+        logsBuffer.setChannel('get-file-paths-with-stats');
+        getAllFilePathsWithStats(arg.params.dirPath, [], (count) => logsBuffer.push(`Scanning: ${count} items found so far`)).then((d)=>{
+          logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'get-file-paths-with-stats', res: d, status: "completed" });
           }else{
@@ -2364,7 +2416,9 @@ const init = function() : void
           break;
         case 'get-file-paths':
         console.log("(worker) in get-file-paths")
-        getAllFiles(arg.params.sourceDir).then((d)=>{
+        logsBuffer.setChannel('get-file-paths');
+        getAllFiles(arg.params.sourceDir, [], (count) => logsBuffer.push(`Scanning: ${count} items found so far`)).then((d)=>{
+          logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'get-file-paths', res: d, status: "completed" });
           }else{

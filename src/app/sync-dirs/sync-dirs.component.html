@@ -29,7 +29,7 @@
         <br>
         <div style="margin:2vh" *ngIf="showCommitedOperationsLogs">
             <div  *ngIf="showProgressBar_">
-              <mat-progress-bar *ngIf="workIsInProgess_" mode="indeterminate"></mat-progress-bar>
+              <mat-progress-bar *ngIf="!workFinished_" mode="determinate" [value]="percentComplete"></mat-progress-bar>
               <mat-progress-bar *ngIf="workFinished_" mode="determinate" value="100" ></mat-progress-bar>
             </div>
             <br>
