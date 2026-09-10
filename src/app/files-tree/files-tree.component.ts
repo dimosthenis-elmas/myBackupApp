@@ -488,16 +488,21 @@
       this._database.updateItem(nestedNode!, itemValue);
     }
 
-    expandAllNodes(){ 
-      this.treeControl.dataNodes.forEach((node)=>{
-        this.treeControl.expand(node);    
-      })
+    /** Expanding one node at a time (the old implementation here: `dataNodes.forEach(node =>
+     *  treeControl.expand(node))`) is an O(N^2) trap for a tree this size: MatTreeFlatDataSource recomputes
+     *  which nodes are visible - a full pass over EVERY node in the tree - on every single expansion-model
+     *  change (see its connect(), which re-derives _expandedData from expansionModel.changed). Expanding N
+     *  nodes one at a time therefore triggers N of those full-tree passes. FlatTreeControl's own expandAll()
+     *  selects every node into the expansion model in one batched call instead, so the same end state (every
+     *  node expanded) costs one full-tree pass, not N of them - the difference between a tree of a few hundred
+     *  thousand files loading in a moment versus never finishing. */
+    expandAllNodes(){
+      this.treeControl.expandAll();
     }
-  
-    collapseAllNodes(){ 
-      this.treeControl.dataNodes.forEach((node)=>{
-        this.treeControl.collapse(node);    
-      })
+
+    /** See expandAllNodes' comment - collapseAll() is the same one-batched-call fix, in reverse. */
+    collapseAllNodes(){
+      this.treeControl.collapseAll();
     }
 
     selectAllNodes(){ 

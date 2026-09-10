@@ -24,6 +24,31 @@ const holdOn = () => {
   );
 }
 
+/** Minimum real time (ms) to let pass between the cooperative yields the scanning loops below take between
+ *  items (see holdOnIfDue). Those yields exist so the worker doesn't freeze solid while it works and so a
+ *  pending `stop` (the Cancel button) actually gets a chance to be delivered and take effect - that only
+ *  requires yielding roughly this often, not after literally every single item. Deliberately biased toward
+ *  raw scan throughput over an instantly-reacting Cancel: 150ms means Cancel can take a moment to register
+ *  (clearly not "instant", but still short in absolute terms) in exchange for roughly a third as many yields
+ *  over a long scan as a tighter interval would take - each one a small but real cost when there can be
+ *  hundreds of thousands of them. Note the win shrinks the higher this goes: past a couple hundred ms there
+ *  simply aren't many more yields left to remove, so pushing it far higher stops paying for itself. */
+const YIELD_INTERVAL_MS = 150;
+let lastScanYieldAt = 0;
+
+/** Same purpose as `await holdOn()` on its own (give the event loop a chance to run - in particular, to
+ *  deliver a `stop` request from Cancel - between items) but only actually yields once roughly every
+ *  YIELD_INTERVAL_MS of wall-clock time, instead of unconditionally after every single item. Cancel stays
+ *  just as responsive (still bounded to about YIELD_INTERVAL_MS, same as before), but a scan of a huge tree
+ *  full of small/cheap items no longer pays a `setImmediate` round-trip - real, measurable overhead at
+ *  hundreds of thousands of items - for every single one of them when it was never buying anything extra. */
+const holdOnIfDue = async () => {
+  if (Date.now() - lastScanYieldAt >= YIELD_INTERVAL_MS) {
+    await holdOn();
+    lastScanYieldAt = Date.now();
+  }
+}
+
 /*print_line(str: string): void {
   process.stdout.clearLine(-1);  // clear current text
   process.stdout.cursorTo(0, 0);  // move cursor to beginning of line
@@ -61,7 +86,7 @@ const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string>
         //print_line(arrayOfFiles.length + "")
         if (onProgress && arrayOfFiles.length % SCAN_PROGRESS_REPORT_INTERVAL === 0) { onProgress(arrayOfFiles.length); }
       }
-      await holdOn();
+      await holdOnIfDue();
     }
   } else {
     arrayOfFiles.push(node_path_module.join(dirPath, "/"))
@@ -692,24 +717,29 @@ const getAllFilePathsWithStats = async function (
     for (let i = 0; i < files.length; i++) {
       if(process.env._stop == 'stop'){break;}
       file = files[i];
-      if (fs.statSync(dirPath + "/" + file).isDirectory()) {
+      // One statSync call, reused for isDirectory/size/mtime below - this used to be 4 separate statSync calls
+      // on the exact same path (one per property read, plus the isDirectory check above), each a real syscall
+      // re-fetching data the first call already had.
+      const entryStats = fs.statSync(dirPath + "/" + file);
+      if (entryStats.isDirectory()) {
         arrayOfFiles = await getAllFilePathsWithStats(dirPath + "/" + file, arrayOfFiles, onProgress)
       } else {
         arrayOfFiles.push({"path": node_path_module.join(dirPath, "/", file), "stats": {
-          "size": fs.statSync(dirPath + "/" + file).size,
-          "mtime": fs.statSync(dirPath + "/" + file).mtime,
-          "isDirectory": fs.statSync(dirPath + "/" + file).isDirectory()
+          "size": entryStats.size,
+          "mtime": entryStats.mtime,
+          "isDirectory": entryStats.isDirectory()
         }})
         if (onProgress && arrayOfFiles.length % SCAN_PROGRESS_REPORT_INTERVAL === 0) { onProgress(arrayOfFiles.length); }
       }
-      await holdOn();
+      await holdOnIfDue();
     }
   } else {
-    // Empty directory
+    // Empty directory - same one-statSync-call reuse as above.
+    const dirStats = fs.statSync(dirPath + "/");
     arrayOfFiles.push({"path": node_path_module.join(dirPath, "/"), "stats": {
-          "size": fs.statSync(dirPath + "/").size,
-          "mtime": fs.statSync(dirPath + "/").mtime,
-          "isDirectory": fs.statSync(dirPath + "/").isDirectory() 
+          "size": dirStats.size,
+          "mtime": dirStats.mtime,
+          "isDirectory": dirStats.isDirectory()
         }})
   }
 
@@ -1363,7 +1393,7 @@ const getAllFilesSet = async function (dirPath: string, arrayOfFiles: Set<string
         //print_line(arrayOfFiles.length + "")
         if (onProgress && arrayOfFiles.size % SCAN_PROGRESS_REPORT_INTERVAL === 0) { onProgress(arrayOfFiles.size); }
       }
-      await holdOn();
+      await holdOnIfDue();
     }
   } else {
     arrayOfFiles.add(node_path_module.join(dirPath, "/"))
@@ -1528,9 +1558,16 @@ const diff = async function (source: string, target: string, onProgress?: (line:
     let b = target_files.has(targetPath)
     if (!b) {
       source_only.push(file); // source only
-    } else if ((fs.statSync(sourcePath).mtime > fs.statSync(targetPath).mtime) || (fs.statSync(sourcePath).size != fs.statSync(targetPath).size)) {
-      source_only.push(file); // modified
-    } // else: backed up - not included
+    } else {
+      // One statSync call per side, reused for both the mtime and size comparisons below - this used to be 4
+      // statSync calls (2 per path) every time a file exists on both sides, which is the common case for a real
+      // incremental backup (most files are already backed up and unchanged).
+      const sourceStats = fs.statSync(sourcePath);
+      const targetStats = fs.statSync(targetPath);
+      if ((sourceStats.mtime > targetStats.mtime) || (sourceStats.size != targetStats.size)) {
+        source_only.push(file); // modified
+      } // else: backed up - not included
+    }
     // Yielding (and reporting progress) only every SCAN_PROGRESS_REPORT_INTERVAL items, not every single one -
     // process.env._stop is still checked every iteration above (cheap, no yield needed for that alone), but a
     // real setImmediate round-trip per item would turn a fast in-memory comparison over a very large tree
