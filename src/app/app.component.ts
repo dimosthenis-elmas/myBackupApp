@@ -304,8 +304,12 @@ export class AppComponent implements OnInit {
           const result: { cleared: boolean; message: string; deletedItems: string[] } = response.res;
           loadingDialogRef.close();
           if (!result.cleared) {
+            // `cleared` is also false for a PARTIAL clear (some entries deleted, others skipped or failed - see
+            // clearTempDataDirectory's own doc comment) - result.message already distinguishes that case from a
+            // total failure (e.g. "Cleared 3 of 4 item(s)..." vs "Refusing to clear: ..."), so the title stays
+            // deliberately generic rather than assuming nothing was cleared.
             const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
-            errorDialog.componentInstance.title = "Could not clear temp directory";
+            errorDialog.componentInstance.title = "Temp directory not fully cleared";
             errorDialog.componentInstance.message = result.message;
             errorDialog.componentInstance.actionsNum = 1;
             errorDialog.componentInstance.action1Label = "Ok";

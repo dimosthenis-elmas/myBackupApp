@@ -519,7 +519,10 @@ const getTempDataDirectoryPath = async function (): Promise<string> {
  *     else might have ended up inside it since.
  *
  *  Returns `deletedItems`, the names of the entries actually removed (in removal order), alongside the summary
- *  `message` - the caller uses this to show the user exactly what was deleted, not just a count. */
+ *  `message` - the caller uses this to show the user exactly what was deleted, not just a count. `cleared` is
+ *  true only when EVERY clearable entry was actually removed - the caller only shows `message` in a dialog when
+ *  `cleared` is false, so a partial run (some entries deleted, others skipped or failed) must also report
+ *  `cleared: false`, or its `message` (which does describe exactly what went wrong) would never reach the user. */
 const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, message: string, deletedItems: string[] }> {
   const ownership = await ensureTempDataDirectoryIsAppOwned();
   if (!ownership.ok) {
@@ -554,11 +557,14 @@ const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, me
   // Names of the entries actually removed below, in the order they were removed - reported back to the caller
   // so it can show the user exactly what was deleted (as opposed to `message`, which is just a summary).
   const deletedItems: string[] = [];
-  const problems: string[] = [];
+  // One human-readable sentence per entry that did NOT end up cleared (skipped for safety, or an actual delete
+  // failure) - folded into `message` below so the caller's dialog can say exactly what didn't clear and why,
+  // not just report a bare count.
+  const unclearedEntryMessages: string[] = [];
 
   for (const entry of entries) {
     if (entry.name === CACHE_DIRECTORY_OWNERSHIP_MARKER_FILENAME) {
-      // Never delete the ownership marker - see its doc comment. Not counted as a "problem": leaving it in
+      // Never delete the ownership marker - see its doc comment. Not counted as uncleared: leaving it in
       // place is the intended, successful outcome, not a failure.
       continue;
     }
@@ -572,11 +578,11 @@ const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, me
       try {
         const entryRealPath = fs.realpathSync(entryPath);
         if (!isPathStrictlyInside(entryRealPath, realTempDataDirectoryPath)) {
-          problems.push(`"${entry.name}" was skipped: it does not resolve to a location inside the temp directory.`);
+          unclearedEntryMessages.push(`"${entry.name}" was skipped: it does not resolve to a location inside the temp directory.`);
           continue;
         }
       } catch (error) {
-        problems.push(`"${entry.name}" was skipped: could not resolve its real path (${error && (error as any).message ? (error as any).message : String(error)}).`);
+        unclearedEntryMessages.push(`"${entry.name}" was skipped: could not resolve its real path (${error && (error as any).message ? (error as any).message : String(error)}).`);
         continue;
       }
     }
@@ -584,7 +590,7 @@ const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, me
     // entry never touches whatever it points to, regardless of the `recursive` option.
 
     if (!isRecognizedTempContent(entryPath, entry.isSymbolicLink())) {
-      problems.push(`"${entry.name}" was skipped: it does not look like this app's own temp/cache content (only .partNNN split files, .ibb project files, and directories containing exclusively such files are deleted).`);
+      unclearedEntryMessages.push(`"${entry.name}" was skipped: it does not look like this app's own temp/cache content (only .partNNN split files, .ibb project files, and directories containing exclusively such files are deleted).`);
       continue;
     }
 
@@ -593,20 +599,23 @@ const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, me
       deletedCount++;
       deletedItems.push(entry.name);
     } catch (error) {
-      problems.push(`"${entry.name}" could not be deleted: ${error && (error as any).message ? (error as any).message : String(error)}.`);
+      unclearedEntryMessages.push(`"${entry.name}" could not be deleted: ${error && (error as any).message ? (error as any).message : String(error)}.`);
     }
   }
 
-  if (problems.length === 0) {
+  if (unclearedEntryMessages.length === 0) {
     return {
       cleared: true,
       message: clearableEntryCount === 0 ? 'The temp directory was already empty.' : `The temp directory has been cleared (${deletedCount} item(s) removed).`,
       deletedItems
     };
   }
+  // Some entries were skipped or failed to delete: `cleared: false` even though deletedCount may be > 0 - this
+  // is what a partial run has to report for the caller's dialog (which only shows `message` when `cleared` is
+  // false) to actually surface which entries didn't clear and why, instead of that detail being silently lost.
   return {
-    cleared: deletedCount > 0,
-    message: `Cleared ${deletedCount} of ${clearableEntryCount} item(s) from the temp directory. ` + problems.join(' '),
+    cleared: false,
+    message: `Cleared ${deletedCount} of ${clearableEntryCount} item(s) from the temp directory. ` + unclearedEntryMessages.join(' '),
     deletedItems
   };
 }

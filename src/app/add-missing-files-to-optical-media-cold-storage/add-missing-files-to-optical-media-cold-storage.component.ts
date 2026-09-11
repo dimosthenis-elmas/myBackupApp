@@ -895,10 +895,10 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       // call, enqueued after this one, can never run its own read until this write has actually finished. The
       // scaffold written in partition() reserved index (existing disc count + i) for this exact disc.
       //
-      // Unlike backup-to-optical-media.component.ts's equivalent (which only logs and continues), a failure here
-      // stops and surfaces a real error instead of silently proceeding to createIBB_file: this JSON is the
-      // permanent record recovery depends on, so burning a disc whose data never actually made it into that
-      // record would be a real, silent loss - worse than the merely-annoying stuck spinner this also prevents.
+      // A failure here stops and surfaces a real error instead of silently proceeding to createIBB_file: this
+      // JSON is the permanent record recovery depends on, so burning a disc whose data never actually made it
+      // into that record would be a real, silent loss - worse than the merely-annoying stuck spinner this also
+      // prevents. Mirrors backup-to-optical-media.component.ts's identical handling of this same read-modify-write.
       try {
         await this.metadataUpdateQueue.enqueue(async () => {
           const updatedMetadataJSON: ColdStorageMetadata = (await ipc.readJSONfromDisk(this.coldStorageMetadataJSONPathToSave)).res;

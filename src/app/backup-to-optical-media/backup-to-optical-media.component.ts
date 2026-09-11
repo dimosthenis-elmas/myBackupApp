@@ -776,15 +776,28 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       // Enqueue this disc's read-modify-write (see metadataUpdateQueue's own doc comment) and await its turn
       // specifically - not just whatever else is queued - so a later disc's call, enqueued after this one, can
       // never run its own read until this write has actually finished.
-      await this.metadataUpdateQueue.enqueue(async () => {
-        try {
+      //
+      // A failure here stops and surfaces a real error instead of silently proceeding to createIBB_file: this
+      // JSON is the permanent record recovery depends on, so burning a disc whose data never actually made it
+      // into that record would be a real, silent loss - worse than the merely-annoying stuck spinner this also
+      // prevents. Mirrors add-missing-files-to-optical-media-cold-storage.component.ts's identical handling of
+      // this same read-modify-write.
+      try {
+        await this.metadataUpdateQueue.enqueue(async () => {
           const updatedMetadataJSON: Array<Array<{ path: string; stats: any; }>> = (await ipc.readJSONfromDisk(this.coldStorageMetadataJSONPath)).res;
           updatedMetadataJSON[i] = selectedFiles;
           await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPath, JSON.stringify(updatedMetadataJSON, null, 2));
-        } catch (error) {
-          console.log("There is a problem with the cold storage files medadata json. Expecting array of length this._disc.")
-        }
-      });
+        });
+      } catch (error) {
+        loadingDialogRef.close();
+        const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
+        errorDialog.componentInstance.title = "Error";
+        errorDialog.componentInstance.message = `Failed to update the cold storage metadata JSON for this disc - it was NOT sent to ImgBurn, so nothing was burned without being recorded in the JSON. Error: ${error}`;
+        errorDialog.componentInstance.actionsNum = 1;
+        errorDialog.componentInstance.action1Label = "Ok";
+        errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
+        return;
+      }
 
       this.sentDiscPartPaths[i] = finalStats.filter(e => PART_FILE_PATTERN.test(e.path)).map(e => e.path);
 
