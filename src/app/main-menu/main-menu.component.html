@@ -2,7 +2,7 @@
     <div style="display: flex; flex-direction: column;">
         <div>
             <button mat-flat-button color="white" style="width: fit-content; height:fit-content;" class="file-chooser-btn" (click)="goToIncrementalBackupPage()">
-                <img src="./assets/incremental backup.gif" alt="">
+                <img class="feature-icon" src="./assets/icons/features/incremental-backup.png" alt="Cumulative backup">
             </button>
         </div>
         <br>
@@ -11,7 +11,7 @@
     <div style="display: flex; flex-direction: column;">
         <div>
             <button mat-flat-button color="white" style="width: fit-content; height:fit-content;" class="file-chooser-btn" (click)="goToSyncDirsPage()">
-                <img src="./assets/sync dirs.gif" alt="">
+                <img class="feature-icon" src="./assets/icons/features/sync-dirs.png" alt="Synchronize directories">
             </button>
         </div>
         <br>
@@ -20,7 +20,7 @@
     <div style="display: flex; flex-direction: column;">
         <div>
             <button mat-flat-button color="white" style="width: fit-content; height:fit-content;" class="file-chooser-btn" (click)="goToBackupToOpticalMediaPage()">
-                <img src="./assets/backup to cd.gif" alt="">
+                <img class="feature-icon" src="./assets/icons/features/backup-to-optical-media.png" alt="Backup to optical media">
             </button>
         </div>
         <br>
@@ -29,7 +29,7 @@
     <div style="display: flex; flex-direction: column;">
         <div>
             <button mat-flat-button color="white" style="width: fit-content; height:fit-content;" class="file-chooser-btn" (click)="goToRecoverDataFromOpticalMediaBackup()">
-                <img src="./assets/recover data from cd.gif" alt="">
+                <img class="feature-icon" src="./assets/icons/features/recover-data-from-optical-media.png" alt="Recover data from optical media backup">
             </button>
         </div>
         <br>
@@ -38,7 +38,7 @@
     <div style="display: flex; flex-direction: column;">
         <div>
             <button mat-flat-button color="white" style="width: fit-content; height:fit-content;" class="file-chooser-btn" (click)="goToAddFilesToColdStorage()">
-                <img src="./assets/add-files-to-optical-media-cold-storage.gif" alt="">
+                <img class="feature-icon" src="./assets/icons/features/add-missing-files.png" alt="Add missing files to optical media cold storage">
             </button>
         </div>
         <br>
@@ -47,12 +47,10 @@
     <div style="display: flex; flex-direction: column;">
         <div>
             <button mat-flat-button color="white" style="width: fit-content; height:fit-content;" class="file-chooser-btn" (click)="goToVerifyColdStorageIntegrity()">
-                <span style="font-size: 96px; line-height: 1;">&#9989;</span>
+                <img class="feature-icon" src="./assets/icons/features/verify-integrity.png" alt="Verify integrity of cold storage disc">
             </button>
         </div>
         <br>
         <h2>Verify integrity of cold storage disc</h2>
     </div>
 </div>
-
-

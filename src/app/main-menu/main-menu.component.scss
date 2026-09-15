@@ -12,3 +12,12 @@ display: grid;
 grid-template-columns: 1fr 1fr;
 grid-gap: 20px;
 }
+
+// Explicit, uniform sizing rather than relying on each source image's own raw pixel dimensions - keeps every
+// feature button the same visual weight regardless of a given icon's exact composition/aspect ratio, and lets
+// the source PNGs be authored at a higher resolution than their display size for crisp rendering on high-DPI
+// screens.
+.feature-icon {
+    height: 120px;
+    width: auto;
+}

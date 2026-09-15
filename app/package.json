@@ -1,9 +1,9 @@
 {
-  "name": "angular-electron",
-  "description": "Angular Electron sample",
+  "name": "my-backup-app",
+  "productName": "My Backup App",
+  "description": "A set of simple, minimal home-backup utilities: incremental backup, directory sync, and backup/recovery to optical media with SHA-256 integrity verification.",
   "author": {
-    "name": "Maxime GRIS",
-    "email": "maxime.gris@gmail.com"
+    "name": "Dimosthenis Elmas (based on Maxime GRIS's angular-electron starter)"
   },
   "version": "14.0.1",
   "main": "main.js",

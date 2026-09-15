@@ -1,11 +1,11 @@
 {
   "name": "my-backup-app",
+  "productName": "My Backup App",
   "version": "14.0.1",
-  "description": "Angular 17 with Electron 30 (Typescript + SASS + Hot Reload)",
-  "homepage": "https://github.com/maximegris/angular-electron",
+  "description": "A set of simple, minimal home-backup utilities: incremental backup, directory sync, and backup/recovery to optical media with SHA-256 integrity verification.",
+  "homepage": "https://github.com/dimosthenis-elmas/myBackupApp",
   "author": {
-    "name": "Dimosthenis Elmas based on Maxime GRIS angular-electron starter",
-    "email": "maxime.gris@gmail.com"
+    "name": "Dimosthenis Elmas (based on Maxime GRIS's angular-electron starter)"
   },
   "keywords": [
     "angular",
