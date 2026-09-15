@@ -271,7 +271,7 @@ export class AppComponent implements OnInit {
    *  on the "Clear" subscription below for why.
    *
    *  Deliberately a main-menu-only offer: MainMenuComponent's own goToFeature() dismisses this snackbar
-   *  synchronously before navigating to any of the 5 features, since MatSnackBar is a root-provided singleton -
+   *  synchronously before navigating to any of the 6 features, since MatSnackBar is a root-provided singleton -
    *  no reference-passing needed for that dismiss() to reach the exact snackbar opened here. This component
    *  itself never lives long enough for a stale offer to be an issue (the app fully reloads - see
    *  goToMainMenuAndReload - every time the user returns to the main menu), but the snackbar's own 10-second

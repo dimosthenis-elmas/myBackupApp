@@ -1581,7 +1581,12 @@ const diff = async function (source: string, target: string, onProgress?: (line:
     // process.env._stop is still checked every iteration above (cheap, no yield needed for that alone), but a
     // real setImmediate round-trip per item would turn a fast in-memory comparison over a very large tree
     // (hundreds of thousands of files) into one dominated by event-loop scheduling overhead instead.
-    if ((i + 1) % SCAN_PROGRESS_REPORT_INTERVAL === 0) {
+    // Always also reported on the very last item, even if it doesn't land on the interval - otherwise, whenever
+    // source_files.length isn't an exact multiple of SCAN_PROGRESS_REPORT_INTERVAL, the final "(i of N)" a
+    // caller ever sees falls short of N, and a caller driving a percentage bar off of it (see LoadingDialogComponent)
+    // would visibly stop short of 100% right as this phase actually finishes.
+    const isLastItem = i === source_files.length - 1;
+    if ((i + 1) % SCAN_PROGRESS_REPORT_INTERVAL === 0 || isLastItem) {
       if (onProgress) { onProgress(`Comparing items (${i + 1} of ${source_files.length})`); }
       await holdOn();
     }
