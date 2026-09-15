@@ -62,11 +62,36 @@ async function launchApp(extraLaunchOptions = {}) {
   return { app, win };
 }
 
+/** How often (ms) callWorker below prints a "still waiting" heartbeat while a call is in flight - see its own
+ *  doc comment for why this exists at all. */
+const HEARTBEAT_INTERVAL_MS = 10_000;
+
 /**
  * Sends one request to the real worker and resolves/rejects with its response, mirroring
  * WorkerCommunicator.sendAndAwaitResponse's behavior (status: 'completed'/'stopped' -> resolve, 'error' -> reject).
+ *
+ * Prints a plain "(still waiting for a response to "<key>"... Ns elapsed)" line to the console every
+ * HEARTBEAT_INTERVAL_MS while the call is in flight, on the Node side, independent of whatever's happening
+ * inside the page - a real operation on a real machine can legitimately take a while (a genuinely large tree,
+ * antivirus scanning a freshly-built Electron binary on every launch, a slow disk), and every existing caller's
+ * own console.log calls go silent for the ENTIRE duration of this one `await` with nothing printed in between -
+ * indistinguishable, from the terminal alone, from the call having actually hung. This heartbeat is the fix:
+ * it doesn't make anything faster, it just makes "still genuinely working" visibly different from "dead" without
+ * having to go check Task Manager or guess. Cleared the moment the call actually settles either way.
  */
 async function callWorker(win, key, params, timeoutMs = 5 * 60 * 1000) {
+  const startedAt = Date.now();
+  const heartbeat = setInterval(() => {
+    console.log(`  (still waiting for a response to "${key}"... ${Math.round((Date.now() - startedAt) / 1000)}s elapsed)`);
+  }, HEARTBEAT_INTERVAL_MS);
+  try {
+    return await callWorkerInner(win, key, params, timeoutMs);
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
+async function callWorkerInner(win, key, params, timeoutMs) {
   return win.evaluate(({ key, params, timeoutMs }) => {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {

@@ -143,6 +143,28 @@ Here's what you'll see, and what each part means:
   below for why), and `node test-harness/cleanup.js --dry-run` will tell you exactly what's left over without
   touching anything.
 
+## Running everything at once
+
+Once you don't need to watch a single script's output line by line anymore, `run-all-tests.bat` runs every
+`worker-ipc/` and `ui/` test in this folder back to back (in the order in the file - fast/no-UI ones first) and
+prints a PASS/FAIL summary at the end, so you don't have to type each `node test-harness/...` command by hand:
+
+```
+test-harness\run-all-tests.bat
+```
+
+Same requirements as running any script here by hand (a real desktop session, the app already built, 7-Zip/
+ImgBurn configured - see "Your first run" above) - it just warns up front if `app\main.js` looks missing, rather
+than letting every single test fail with the same confusing error. Exits with code 0 if everything passed, 1 if
+anything failed, so it can be dropped into a CI-style check too, not just run by hand.
+
+Runs `cleanup.js` itself, both ends of the run - once up front (so leftovers from a previous interrupted/failed
+run can't cause a confusing, unrelated failure in this one - e.g. a worker-ipc test's own "is the app's temp
+directory empty?" guard tripping over someone else's leftover files) and once at the very end, but ONLY if every
+test passed - matching this folder's own rule that a failure's scratch data is left in place for you to inspect,
+not silently deleted out from under you. If anything failed, the summary tells you how to clean up by hand once
+you're done looking.
+
 ## What's here
 
 | Folder / file | Plain-language summary | Status |
@@ -154,7 +176,7 @@ Here's what you'll see, and what each part means:
 | `cleanup.js` | Removes leftover scratch data from interrupted/failed test runs | Proven |
 | `optical-media/` | Makes a `.iso` file look like an inserted disc to Windows | Proven |
 | `worker-ipc/` | Talks directly to the app's file-splitting/merging/incremental-backup/sync-dirs engine, skipping the on-screen buttons | **PASSING** |
-| `ui/` | A robot (Playwright) clicks through real on-screen wizards - all 6 main-menu features: "recover data" (both by physically reading discs and by importing a cold storage metadata JSON), "Cumulative backup", "Synchronize directories", "Backup to optical media", "Add missing files to cold storage", "Verify integrity of cold storage disc" - plus the SHA-256 integrity-checksum feature's own backup-side toggle and recovery-side corruption detection | **PASSING** |
+| `ui/` | A robot (Playwright) clicks through real on-screen wizards - all 6 main-menu features: "recover data" (both by physically reading discs and by importing a cold storage metadata JSON), "Cumulative backup", "Synchronize directories", "Backup to optical media", "Add missing files to cold storage", "Verify integrity of cold storage disc" - plus the SHA-256 integrity-checksum feature's own mandatory backup-side hashing and recovery-side corruption detection | **PASSING** |
 | `lib/` | Shared helper code every script above imports from, so the same logic isn't copy-pasted everywhere - see below | Proven |
 
 Each subfolder has its own README with exact commands to run and more explanation.
@@ -374,9 +396,9 @@ All 6 of the app's main-menu features are covered end to end by automated tests 
 synchronize directories, recover data (both entry points: physically reading discs, and importing a cold storage
 metadata JSON), backup to optical media, add missing files to cold storage, and verify integrity of cold storage
 disc — including their real "Send to ImgBurn" clicks (safely redirected away from a real ImgBurn launch, never
-your actual ImgBurn). The SHA-256 integrity-checksum feature (an optional per-file hash recorded at backup time
+your actual ImgBurn). The SHA-256 integrity-checksum feature (a mandatory per-file hash recorded at backup time
 and checked again on recovery, or via the standalone verify wizard) is covered separately too - both its
-backup-side toggle and its recovery-side corruption detection have their own dedicated tests. See
+mandatory backup-side hashing and its recovery-side corruption detection have their own dedicated tests. See
 `worker-ipc/README.md` and `ui/README.md` for exactly what each script covers.
 
 ## Known limitations
