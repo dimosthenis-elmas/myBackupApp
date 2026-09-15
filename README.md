@@ -5,6 +5,12 @@ This app is a set of very simple and minimal utilities for creating home backups
 I built it during a migration project to back up my own files to optical discs as cold storage and in general to manage my personal backups. It's a simple, fun little hobby project, and it's scoped to what I personally needed at the time (see the disclaimer below).
 
 <p align="center">
+<img src="docs/screenshots/main-menu.png" width="700" alt="Main menu, showing all 6 features: Cumulative backup, Synchronize directories, Backup to optical media, Recover data from optical media backup, Add missing files to optical media cold storage, Verify integrity of cold storage disc">
+<br>
+<sub>The main menu - all 6 features, one click away.</sub>
+</p>
+
+<p align="center">
 <img src="docs/media/recover-data-from-optical-media.gif" width="800" alt="Recovering a backup from a JSON-provided disc listing, including reassembling a large file that was split across two discs">
 <br>
 <sub>Recovering a backup from a JSON-provided disc listing - including reassembling a large file that was split across two discs.</sub>
@@ -37,10 +43,10 @@ because this feature may also delete files from the target directory.
 
 - **Backup to optical media:** Partitions your files to a collection of optical disks and sends them to
 ImgBurn in order to be burned. It can also split large files which do not fit to a single optical disc.
-By default, it also records a SHA-256 checksum for every file in the cold storage metadata json (a "File
-integrity data" toggle at step 1 lets you turn this off) - defense-in-depth against a drive read error or disc
-handling damage later on, independent of whatever error correction the disc/burner itself already does. See
-"Verify integrity of cold storage disc" below for how these checksums actually get used.
+It also records a SHA-256 checksum for every file in the cold storage metadata json - this is not optional -
+defense-in-depth against a drive read error or disc handling damage later on, independent of whatever error
+correction the disc/burner itself already does. See "Verify integrity of cold storage disc" below for how these
+checksums actually get used.
 
 - **Recover data from optical media:** Recovers all, or a partial selection of the contents of a backup stored in a
 collection of optical media. You can now optionally provide the cold storage metadata json file (the one saved
@@ -57,15 +63,18 @@ automatically reassemble the original file for you using 7-Zip. If you say no, o
 for some reason (e.g. a missing or corrupted part), nothing gets deleted and the app shows you the exact 7-Zip
 command to reassemble the file by hand yourself later.
 
-If the cold storage you're recovering from was backed up with SHA-256 checksums recorded (the default - see
-above), the app automatically re-checks every recovered file's checksum once copying finishes, and tells you
-exactly which files (if any) failed - a real, actionable sign of drive/disc trouble, not just "recovery
-completed."
+If the cold storage you're recovering from was backed up with SHA-256 checksums recorded (see above), the app
+automatically re-checks every recovered file's checksum once copying finishes, and tells you exactly which files
+(if any) failed - a real, actionable sign of drive/disc trouble, not just "recovery completed." If some or all of
+the files you're recovering come from an older cold storage that predates this feature (or otherwise has no
+recorded checksum for a given file), those are simply listed as having no integrity data available, rather than
+as a failure.
 
 - **Add missing (new) files to existing optical media cold storage:** It also accounts for large files that can't fit on a single optical disc, splitting them so the large file can be distributed across multiple discs.
-Has the same "File integrity data" toggle as backup-to-optical-media, for the NEW discs being added - if you load
-an existing cold storage json, it pre-sets the toggle to match whatever the existing discs already do (SHA-256 or
-none), so new discs stay consistent by default; you can still change it yourself.
+Every new disc gets the same mandatory SHA-256 checksums as backup-to-optical-media, independently of whether the
+EXISTING discs you're adding to already carry them or not - if you load an existing cold storage json whose
+discs predate this feature (or otherwise have no recorded checksums), those older entries are simply listed as
+having no integrity data available when later verified or recovered, rather than as a failure.
 Note that this simple app uses a rather rudimentary check (at this point) in order to recognize that a large file has been backed up in several parts. It basically uses
 a naming convention (a large file e.g.: largeFile.data will be split to largeFile.data.part.001 etc.). Note that this simple assumption might cause problems in some scenarios with naming conflicts. I know, I will have to make this more robust in the future but for now, that's how it works. Sorry folks, will have to review this.
 
