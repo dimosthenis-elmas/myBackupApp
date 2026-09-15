@@ -134,9 +134,9 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
         this.showOkDialog(
           "No integrity data to verify",
           `This cold storage metadata JSON does not contain any SHA-256 integrity data for any file - it was ` +
-          `most likely created with the "File integrity data" option set to "None". There is nothing for this ` +
-          `wizard to check, so no disc needs to be inserted. Choose a different JSON file, or go back to the ` +
-          `main menu.`
+          `most likely created by an older version of this app, before SHA-256 checksums existed. There is ` +
+          `nothing for this wizard to check, so no disc needs to be inserted. Choose a different JSON file, or ` +
+          `go back to the main menu.`
         );
         return;
       }
@@ -288,12 +288,17 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
     loadingDialogRef.componentInstance.showCancelButton = false;
     loadingDialogRef.componentInstance.message = "Verifying SHA-256 hashes";
-    loadingDialogRef.componentInstance.lines = [];
-    loadingDialogRef.componentInstance.total = filesToHash.length;
+    // Shows the current file name plus a real percentage (not the accumulating `lines` scrolling list, which
+    // reserves a fixed 220px box regardless of content) - see attachSha256HashesToDiscFiles's identical pattern
+    // in backup-to-optical-media.component.ts.
+    let hashedCount = 0;
     const listener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         if (response.key === 'verify-file-hashes' && response.status === 'running') {
-          loadingDialogRef.componentInstance.pushLines(response.res as string[]);
+          const newLines = response.res as string[];
+          hashedCount += newLines.length;
+          loadingDialogRef.componentInstance.message = newLines[newLines.length - 1];
+          loadingDialogRef.componentInstance.percent = filesToHash.length > 0 ? Math.round((hashedCount / filesToHash.length) * 100) : 100;
         }
       });
     });

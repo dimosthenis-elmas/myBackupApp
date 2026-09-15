@@ -85,16 +85,6 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     {value: 'blu-ray-100', viewValue: 'Blu ray (100 GB)', capacity: 100e9}
   ];
 
-  /** "File integrity data" toggle offered alongside the collection name at step_3 - recorded into each NEW
-   *  disc's cold storage metadata entry (see attachSha256HashesToDiscFiles), independently of whether the EXISTING
-   *  discs being added to already carry SHA-256 hashes or not (see afterJSONpathIsGiven for how this is
-   *  pre-set to match them, as a convenience, when a JSON with existing entries is loaded). */
-  public integrityDataOptions: {value: 'sha256' | 'none', viewValue: string}[] = [
-    {value: 'sha256', viewValue: 'SHA-256'},
-    {value: 'none', viewValue: 'None'}
-  ];
-  public selectedIntegrityDataOption: {value: 'sha256' | 'none', viewValue: string} = this.integrityDataOptions[0];
-
   useExternalMetadata = false;
   externalMetadataJSONpath!:string;
   json_coldStorageFilesMetadata!: ColdStorageMetadata;
@@ -109,7 +99,6 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   opticalDiscVolumeLetter!:string;
   selected_optical_medium = this.optical_media_choices[1];
   entireColdStorageMetadata!: ColdStorageMetadata;
-  totalNumberOfDisksNeeded!:number;
   // This is used for the for loop in the template. It holds the numbers 1..n_disks
   _disks!: Array<number>
   partitions!:ColdStorageMetadata
@@ -356,11 +345,6 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     if(jsonIsValid){
       this.json_coldStorageFilesMetadata = res;
       console.log(this.json_coldStorageFilesMetadata);
-      // Nice-to-have convenience: default the new-discs toggle to match whatever the EXISTING cold storage
-      // already does, rather than always defaulting to SHA-256 regardless of what's being added to - the user
-      // can still change it before continuing.
-      const existingEntriesHaveSha256 = this.json_coldStorageFilesMetadata.some(disc => disc.some(f => !!f.stats.sha256));
-      this.selectedIntegrityDataOption = existingEntriesHaveSha256 ? this.integrityDataOptions[0] : this.integrityDataOptions[1];
     }else{
       this.externalMetadataJSONpath = "";
       this.showJsonSelectionErrorDialog("JSON selection", `This JSON is not recognised as a files metadata type.`);
@@ -694,27 +678,33 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     return this.entireColdStorageMetadata.length + disk_id + 1;
   }
 
-  /** If the "File integrity data" option is set to SHA-256, computes and attaches a `sha256` hash to every
-   *  non-directory entry of `finalStats` (mutated in place) - see computeSha256ForBackedUpFiles in worker.ts
-   *  and its identical counterpart in backup-to-optical-media.component.ts. Must be called after
-   *  createOpticalMediaDiscPartials has already produced this disc's real, final file list (every entry
-   *  must already exist on disk, under this.backup.targetPath here rather than a "source" path), and before
-   *  anything else about this disc (its label hash, its metadata JSON entry, its .ibb file) is computed from
-   *  that list. A no-op when the option is "None", or when finalStats has no non-directory entries. */
+  /** Computes and attaches a `sha256` hash to every non-directory entry of `finalStats` (mutated in place) -
+   *  see computeSha256ForBackedUpFiles in worker.ts and its identical counterpart in
+   *  backup-to-optical-media.component.ts. Must be called after createOpticalMediaDiscPartials has already
+   *  produced this disc's real, final file list (every entry must already exist on disk, under
+   *  this.backup.targetPath here rather than a "source" path), and before anything else about this disc (its
+   *  label hash, its metadata JSON entry, its .ibb file) is computed from that list. Always runs - SHA-256
+   *  integrity data is mandatory for every NEW disc, independently of whether the EXISTING discs being added
+   *  to already carry SHA-256 hashes or not (an older cold storage backed up before this feature existed, or
+   *  from before it became mandatory, simply has no recorded hash for those older entries - see
+   *  verifyRecoveredFileIntegrity/the standalone verify wizard, which both already report that as "no
+   *  integrity data available" per file rather than a failure). A no-op when finalStats has no non-directory
+   *  entries. */
   private async attachSha256HashesToDiscFiles(finalStats: filesMetadata[]): Promise<void> {
-    if (this.selectedIntegrityDataOption.value !== 'sha256') { return; }
     const hashableEntries = finalStats.filter(e => !e.stats.isDirectory);
     if (hashableEntries.length === 0) { return; }
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
     loadingDialogRef.componentInstance.showCancelButton = false;
     loadingDialogRef.componentInstance.message = "Calculating SHA-256 hashes";
-    loadingDialogRef.componentInstance.lines = [];
-    loadingDialogRef.componentInstance.total = hashableEntries.length;
+    let hashedCount = 0;
     const listener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         if (response.key === 'compute-sha256-for-backed-up-files' && response.status === 'running') {
-          loadingDialogRef.componentInstance.pushLines(response.res as string[]);
+          const newLines = response.res as string[];
+          hashedCount += newLines.length;
+          loadingDialogRef.componentInstance.message = newLines[newLines.length - 1];
+          loadingDialogRef.componentInstance.percent = Math.round((hashedCount / hashableEntries.length) * 100);
         }
       });
     });
@@ -845,9 +835,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         }
       }
 
-      // Hashes finalStats in place (if the "File integrity data" option is SHA-256) BEFORE anything below is
-      // computed from it - the disc label hash, the metadata JSON entry, and the .ibb file all already see the
-      // hash this way, rather than needing a second pass to attach it later.
+      // Hashes finalStats in place BEFORE anything below is computed from it - the disc label hash, the
+      // metadata JSON entry, and the .ibb file all already see the hash this way, rather than needing a second
+      // pass to attach it later.
       //
       // Explicitly caught (unlike createOpticalMediaDiscPartials just above, which still isn't) - a failure
       // here (e.g. a file vanished/got locked in the moment between being created and being hashed) must

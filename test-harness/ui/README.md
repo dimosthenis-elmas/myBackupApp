@@ -443,32 +443,21 @@ node test-harness/ui/test-backup-to-optical-media-sha256.js
 Proves the SHA-256 integrity-checksum feature's BACKUP-SIDE half actually works, through the real "Backup to
 optical media" wizard - not by hand-building a metadata JSON with hand-computed hashes (that's what
 `test-recover-integrity-detects-corruption.js` below does, deliberately, to test recovery-side detection in
-isolation), but by actually clicking the "File integrity data" toggle and checking what the wizard really writes.
+isolation), but by actually clicking through the wizard and checking what it really writes. SHA-256 hashing is
+mandatory (there is no toggle to opt out of it), so this is a single-phase check: back up a small, single-disc
+tree with no large file - the split/partitioning machinery is already proven by `test-backup-to-optical-media.js`;
+this script's only job is the hashing itself.
 
-Two independent phases, each its own full app launch (kept separate rather than navigating one still-open app
-back to the main menu, to avoid any risk of leftover state leaking between them): **default** (the toggle never
-touched - SHA-256 is the default) and **None** (the toggle switched explicitly). A small, single-disc tree with
-no large file - the split/partitioning machinery is already proven by `test-backup-to-optical-media.js`; this
-script's only job is the toggle and the hashing it triggers.
+**What it actually checks:** reads the real saved metadata JSON, independently re-hashes every real source file,
+and confirms it matches what got written (`stats.sha256`) - not just that SOME string is present - and confirms
+no directory entry has one at all (hashing a directory makes no sense).
 
-**What it actually checks, after each phase:** reads the real saved metadata JSON and, for the default phase,
-independently re-hashes every real source file and confirms it matches what got written (`stats.sha256`) -
-not just that SOME string is present - and confirms no directory entry has one at all (hashing a directory
-makes no sense). For the "None" phase, confirms NO entry (file or directory) has the field at all - genuinely
-omitted, not just empty.
-
-**A real regression this script's own construction found and fixed elsewhere:** adding the "File integrity
-data" dropdown right next to the pre-existing "Optical medium type" dropdown on the same screen made
-`getByRole('combobox')` (used unscoped, since there used to be only one) ambiguous in THREE other places:
-`test-backup-to-optical-media.js`, `test-backup-to-optical-media-overflow-disc.js`, and
-`capture-readme-screenshots.js`. All three now scope to `.first()` (medium type is always first in DOM order).
-
-**A real cleanup gap found and fixed in this script itself:** neither phase ever clicks "Confirm disc burned"
-(nothing to confirm - a small tree has no real split pieces to clean up), so each phase's own real `.ibb` file
-and temp-dir session subfolder would otherwise be left sitting in the app's REAL temp/cache directory forever -
+**A real cleanup gap found and fixed in this script itself:** the job never clicks "Confirm disc burned"
+(nothing to confirm - a small tree has no real split pieces to clean up), so its own real `.ibb` file and
+temp-dir session subfolder would otherwise be left sitting in the app's REAL temp/cache directory forever -
 breaking the NEXT script's (or your own next real use of the app's) `assertRealTempDataDirectoryIsSafeToUse`
-check. Cleaned up explicitly at the end of each phase, best-effort (logged, not thrown, so a cleanup failure
-never masks the phase's actual pass/fail result).
+check. Cleaned up explicitly at the end, best-effort (logged, not thrown, so a cleanup failure never masks the
+test's actual pass/fail result).
 
 ## `test-recover-integrity-detects-corruption.js`
 

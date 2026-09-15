@@ -164,16 +164,6 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    *  selected_optical_medium.capacity. */
   private effectiveMediaCapacityInBytes!: number;
 
-  /** "File integrity data" toggle offered at step 1, default SHA-256 - recorded into each disc's cold storage
-   *  metadata entry (see attachSha256HashesToDiscFiles) so a later recovery, or the standalone "verify integrity of
-   *  cold storage disc" wizard, can check a file's bytes weren't silently corrupted (a drive read error, disc
-   *  handling damage) independent of the optical medium's own error correction. */
-  public integrityDataOptions: {value: 'sha256' | 'none', viewValue: string}[] = [
-    {value: 'sha256', viewValue: 'SHA-256'},
-    {value: 'none', viewValue: 'None'}
-  ];
-  public selectedIntegrityDataOption: {value: 'sha256' | 'none', viewValue: string} = this.integrityDataOptions[0];
-
   optical_media_choices: {value: string, viewValue: string, capacity: number}[] = [
     {value: 'cd', viewValue: 'CD (700 MB)', capacity: 0.7e9},
     {value: 'dvd', viewValue: 'DVD (4.7 GB)', capacity: 4.7e9},
@@ -552,28 +542,35 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     await ipc.createIBB_file(disk_id, paths, sourcePath, this.tempSessionId, volumeLabel);
   }
 
-  /** If the "File integrity data" option is set to SHA-256, computes and attaches a `sha256` hash to every
-   *  non-directory entry of `finalStats` (mutated in place) - see computeSha256ForBackedUpFiles in worker.ts.
-   *  Must be called after createOpticalMediaDiscPartials has already produced this disc's real, final file
-   *  list (every entry must already exist on disk), and before anything else about this disc (its label hash,
-   *  its metadata JSON entry, its .ibb file) is computed from that list. A no-op when the option is "None", or
-   *  when finalStats has no non-directory entries. Shows its own progress dialog ("Calculating SHA-256 for
-   *  file: ... (n of m files)"), driven by this same worker channel's `running` pushes - see
-   *  LoadingDialogComponent's `message`. */
+  /** Computes and attaches a `sha256` hash to every non-directory entry of `finalStats` (mutated in place) -
+   *  see computeSha256ForBackedUpFiles in worker.ts. Must be called after createOpticalMediaDiscPartials has
+   *  already produced this disc's real, final file list (every entry must already exist on disk), and before
+   *  anything else about this disc (its label hash, its metadata JSON entry, its .ibb file) is computed from
+   *  that list. Shows its own progress dialog (a real percentage plus the current file name, e.g. "Calculating
+   *  SHA-256 for file: ... (3 of 42 files)"), driven by this same worker channel's `running` pushes - see
+   *  LoadingDialogComponent's `message`/`percent`. Deliberately just the current line, not the accumulating
+   *  `lines` scrolling list (which reserves a fixed 220px box regardless of content - way too much real estate
+   *  for what's usually a handful of files). Always runs - SHA-256
+   *  integrity data is mandatory, not a toggle (there used to be a "File integrity data" option offered
+   *  alongside collection name at step 1, since removed): every file backed up gets a recorded hash so a later
+   *  recovery, or the standalone "verify integrity of cold storage disc" wizard, can check its bytes weren't
+   *  silently corrupted (a drive read error, disc handling damage) independent of the optical medium's own
+   *  error correction. A no-op when finalStats has no non-directory entries. */
   private async attachSha256HashesToDiscFiles(finalStats: filesMetadata[]): Promise<void> {
-    if (this.selectedIntegrityDataOption.value !== 'sha256') { return; }
     const hashableEntries = finalStats.filter(e => !e.stats.isDirectory);
     if (hashableEntries.length === 0) { return; }
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
     loadingDialogRef.componentInstance.showCancelButton = false;
     loadingDialogRef.componentInstance.message = "Calculating SHA-256 hashes";
-    loadingDialogRef.componentInstance.lines = [];
-    loadingDialogRef.componentInstance.total = hashableEntries.length;
+    let hashedCount = 0;
     const listener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         if (response.key === 'compute-sha256-for-backed-up-files' && response.status === 'running') {
-          loadingDialogRef.componentInstance.pushLines(response.res as string[]);
+          const newLines = response.res as string[];
+          hashedCount += newLines.length;
+          loadingDialogRef.componentInstance.message = newLines[newLines.length - 1];
+          loadingDialogRef.componentInstance.percent = Math.round((hashedCount / hashableEntries.length) * 100);
         }
       });
     });
@@ -726,9 +723,9 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         }
       }
 
-      // Hashes finalStats in place (if the "File integrity data" option is SHA-256) BEFORE anything below is
-      // computed from it - the disc label hash, the metadata JSON entry, and the .ibb file all already see the
-      // hash this way, rather than needing a second pass to attach it later.
+      // Hashes finalStats in place BEFORE anything below is computed from it - the disc label hash, the
+      // metadata JSON entry, and the .ibb file all already see the hash this way, rather than needing a second
+      // pass to attach it later.
       //
       // Explicitly caught (unlike createOpticalMediaDiscPartials just above, which still isn't) - a failure
       // here (e.g. a file vanished/got locked in the moment between being created and being hashed) must

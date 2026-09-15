@@ -26,9 +26,10 @@ export interface WorkerListener {
 }
 
 export type ColdStorageMetadata =
-  // "sha256" is optional - present per file when the "File integrity data" option was set to SHA-256 at backup
-  // time, absent entirely for older cold storage JSONs and for anything backed up with that option set to
-  // None. Never present on a directory entry.
+  // "sha256" is optional on this type - every file backed up by a current version of the app always gets one
+  // (SHA-256 integrity data is mandatory, not a toggle), but the field stays optional here for backward
+  // compatibility with cold storage JSONs written before this feature existed, where it's absent entirely.
+  // Never present on a directory entry.
   Array<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean, "sha256"?: string}}>>
 
 export type OpticalMediaPartitioning<WorkerResponse> = {

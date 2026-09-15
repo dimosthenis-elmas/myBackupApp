@@ -15,10 +15,10 @@ export interface filesMetadata {
     "size": number;
     "mtime": Date;
     "isDirectory": boolean;
-    // Optional SHA-256 hex digest of this exact physical entry's bytes (a split large file's .partNNN piece is
-    // hashed as itself, never the whole reassembled original). Present only when the "File integrity data"
-    // option was set to SHA-256 at backup time - absent for older cold storage JSONs and for anything backed
-    // up with that option set to None.
+    // SHA-256 hex digest of this exact physical entry's bytes (a split large file's .partNNN piece is hashed as
+    // itself, never the whole reassembled original). Always present for anything backed up by a current version
+    // of the app (SHA-256 integrity data is mandatory, not a toggle) - optional here only for backward
+    // compatibility with older cold storage JSONs written before this feature existed, where it's absent.
     "sha256"?: string;
   };
 }

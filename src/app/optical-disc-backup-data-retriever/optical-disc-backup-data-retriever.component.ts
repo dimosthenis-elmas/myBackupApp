@@ -830,13 +830,18 @@ import { parseProgressFromLine } from '../shared/utils/progress-line';
       const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
       loadingDialogRef.componentInstance.showCancelButton = false;
       loadingDialogRef.componentInstance.message = "Verifying SHA-256 hashes";
-      loadingDialogRef.componentInstance.lines = [];
-      loadingDialogRef.componentInstance.total = filesToHash.length;
       let results: Array<{ path: string, sha256: string, matched?: boolean }> = [];
+      // Shows the current file name plus a real percentage (not the accumulating `lines` scrolling list, which
+      // reserves a fixed 220px box regardless of content) - see attachSha256HashesToDiscFiles's identical
+      // pattern in backup-to-optical-media.component.ts.
+      let hashedCount = 0;
       const listener = ipc.onResponseFromWorker((event, response) => {
         this.ngZone.run(() => {
           if (response.key === 'verify-file-hashes' && response.status === 'running') {
-            loadingDialogRef.componentInstance.pushLines(response.res as string[]);
+            const newLines = response.res as string[];
+            hashedCount += newLines.length;
+            loadingDialogRef.componentInstance.message = newLines[newLines.length - 1];
+            loadingDialogRef.componentInstance.percent = Math.round((hashedCount / filesToHash.length) * 100);
           }
         });
       });
