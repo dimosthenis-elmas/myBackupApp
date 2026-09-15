@@ -304,6 +304,11 @@ export class SyncDirsComponent {
           for (const line of lines) {
             const progress = parseProgressFromLine(line);
             if (progress) {
+              // Also updates `message` (not just `percent`) - without this, the heading stayed frozen on
+              // whichever scan-phase "Scanning ...: N items found so far" line happened to be last, for the
+              // entire comparison phase, while the bar underneath it had already moved on to tracking
+              // comparison progress instead.
+              loadingDialogRef.componentInstance.message = 'Comparing items';
               loadingDialogRef.componentInstance.percent = Math.round((progress.current / progress.total) * 100);
             } else {
               loadingDialogRef.componentInstance.percent = undefined;

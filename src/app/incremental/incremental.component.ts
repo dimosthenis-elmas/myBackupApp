@@ -10,6 +10,7 @@ import { Subject } from 'rxjs';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
+import { parseProgressFromLine } from '../shared/utils/progress-line';
 
 @Component({
   selector: 'app-incremental',
@@ -178,6 +179,30 @@ export class IncrementalComponent implements OnInit, OnDestroy {
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
 
+    // Shows this step's own real progress instead of a plain spinner: an open-ended "items found so far" count
+    // (via `message`) while diff()'s two scan phases run (no known total until a scan finishes - see
+    // SCAN_PROGRESS_REPORT_INTERVAL's own doc comment in worker.ts), then a real percentage (via `percent`) once
+    // its comparison phase starts reporting "(i of N)" - see parseProgressFromLine (shared/utils). A local
+    // listener (not this.workerListener, which proceedToPreview/onError use for a later, separate phase of this
+    // same wizard) so the two can never be confused with or clobber each other.
+    const diffProgressListener = ipc.onResponseFromWorker((event, response) => {
+      this.ngZone.run(() => {
+        if (response.key === 'diff' && response.status === 'running') {
+          const lines = response.res as string[];
+          for (const line of lines) {
+            const progress = parseProgressFromLine(line);
+            if (progress) {
+              loadingDialogRef.componentInstance.message = 'Comparing items';
+              loadingDialogRef.componentInstance.percent = Math.round((progress.current / progress.total) * 100);
+            } else {
+              loadingDialogRef.componentInstance.percent = undefined;
+              loadingDialogRef.componentInstance.message = line;
+            }
+          }
+        }
+      });
+    });
+
     let diffPromise = ipc.diff(this.backup.sourcePath, this.backup.targetPath)
     /*
     //This block is useful for testing only. Use this to avoid having to wait for diff to complete when testing with large directories.
@@ -199,10 +224,12 @@ export class IncrementalComponent implements OnInit, OnDestroy {
     */
 
     diffPromise.then((args)=>{
+      diffProgressListener.removeListener();
       this.createDiffTree(args.res).then(()=>{
         loadingDialogRef.close();
       });
     }).catch((error)=>{
+      diffProgressListener.removeListener();
       // Without this, a rejected diff() (e.g. sourcePath/targetPath became inaccessible) left the disableClose
       // loading dialog open forever with no error shown and no way for the user to dismiss it.
       loadingDialogRef.close();
