@@ -1376,7 +1376,11 @@ const deletePartialsForDisc = async function (partialAbsolutePaths: Array<string
   if (problems.length === 0) {
     return { cleared: true, message: `Removed ${deletedItems.length} item(s) for this disc.`, deletedItems };
   }
-  return { cleared: deletedItems.length > 0, message: `Removed ${deletedItems.length} of ${partialAbsolutePaths.length} item(s). ` + problems.join(' '), deletedItems };
+  // false for any partial run, even if some items DID delete successfully - same fix as
+  // clearTempDataDirectory's own identical `cleared` flag (see its doc comment): the caller only shows
+  // `message`'s actual problem detail when `cleared` is false, so a partial failure here must report `cleared:
+  // false` too, or the fact that this disc's temp cleanup didn't fully succeed would be silently lost.
+  return { cleared: false, message: `Removed ${deletedItems.length} of ${partialAbsolutePaths.length} item(s). ` + problems.join(' '), deletedItems };
 }
 
 

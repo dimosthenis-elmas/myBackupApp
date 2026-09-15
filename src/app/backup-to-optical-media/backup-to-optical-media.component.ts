@@ -923,7 +923,16 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       const rawTempDataDirectoryPath: string = (await ipc.getTempDataDirectoryPath()).res;
       const tempDirNormalized = rawTempDataDirectoryPath.replace(/\\$/, '') + '\\' + this.tempSessionId;
       const partialPaths = partRelativePaths.map(p => tempDirNormalized + '\\' + p);
-      await ipc.deletePartialsForDisc(partialPaths);
+      const response = await ipc.deletePartialsForDisc(partialPaths);
+      const result: { cleared: boolean; message: string; deletedItems: string[] } = response.res;
+      if (!result.cleared) {
+        const warnDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        warnDialog.componentInstance.title = "Temp cleanup incomplete";
+        warnDialog.componentInstance.message = `Disc ${i + 1} was confirmed burned, but its temporary split-part files could not all be removed: ${result.message} You can safely ignore this - leftover temp files are cleaned up automatically the next time the app starts.`;
+        warnDialog.componentInstance.actionsNum = 1;
+        warnDialog.componentInstance.action1Label = "Ok";
+        warnDialog.componentInstance.action1Callback = () => { warnDialog.close(); };
+      }
     }
     this.confirmedDiscs[i] = true;
   }
