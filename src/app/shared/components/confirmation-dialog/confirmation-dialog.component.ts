@@ -25,6 +25,10 @@ export class ConfirmationDialogComponent implements OnInit {
    *  empty `items` array. Left undefined, every existing caller keeps showing plain message-only text,
    *  unchanged. */
   public lists?: Array<{ label: string, items: string[] }>;
+  /** Optional raw technical detail (a stack trace, a raw process dump, ...) for an error dialog - see
+   *  ErrorReporterService. Rendered collapsed by default below `message`: the user should read a plain-language
+   *  explanation first, with the technical detail available on request rather than presented as "the message". */
+  public technicalDetails?: string;
 
   ngOnInit(): void {
    

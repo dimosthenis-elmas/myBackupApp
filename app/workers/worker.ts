@@ -6,6 +6,7 @@ import { WorkerCommunicator as ipc } from './worker-communicator'
 import { LogsBuffer } from './logsbuffer'
 import { filesMetadata } from '../../src/types/interface';
 import { ColdStorageMetadata, WorkerResponse, OpticalMediaPartitioning } from './ipc.interfaces';
+import { installConsoleLogging } from '../logging';
 
 const contextBridgeAPI =require("./preload/contextBridge_api");
 
@@ -147,6 +148,42 @@ const CONFIG_PATH = () => node_path_module.join(__dirname, `../../appData/config
 /** The app's appData/ directory, resolved to an absolute path. Relative cacheDataDirectoryPath values are
  *  resolved against this - see resolveTempDataDirectoryPath below. */
 const APP_DATA_DIRECTORY_PATH = () => node_path_module.resolve(__dirname, '../../appData');
+
+// ============================================================================
+// ===== Logging: every console.log/warn/error in this file is appended to the
+// ===== same logs.txt main.ts writes to (see logging.ts and that file's own
+// ===== comment), via the same appData path resolution this file already uses
+// ===== for config.json. This is the worker's half of the reason its window can
+// ===== be hidden in a packaged build (see main.ts's winWorker creation)
+// ===== without losing anything that used to only be visible in its DevTools
+// ===== console. console.error additionally reports a plain-language summary
+// ===== to main over 'app-error' below to show as a dialog - full technical
+// ===== detail (stack traces, raw dumps) stays in logs.txt and the dialog's
+// ===== collapsed "technical details" section, never the primary message.
+// ============================================================================
+
+const LOG_FILE_PATH = node_path_module.join(APP_DATA_DIRECTORY_PATH(), 'logs.txt');
+
+// error vs warn is a real severity call at each call site, not just style - see main.ts's identical comment on
+// its own copy of this: console.error also interrupts the user with a dialog, console.warn only logs.
+installConsoleLogging('worker', LOG_FILE_PATH, 'Something unexpected went wrong in the background service.', (reported) => {
+  // A dedicated 'app-error' channel, not ipc.sendResponseToMain/'response-to-main' - see main.ts's
+  // ipcMain.on('app-error') for why reusing the request/response channel here would corrupt whatever real
+  // request happens to be in flight at the time.
+  electron.ipcRenderer.send('app-error', { source: 'worker', ...reported });
+});
+
+// Belt-and-suspenders for errors nobody wrote a try/catch for at all - see main.ts's identical pair of handlers
+// for the equivalent main-process case.
+const UNCAUGHT_WORKER_ERROR_SUMMARY = 'Something unexpected went wrong in the background service and the app may need to be restarted.';
+
+process.on('uncaughtException', (error) => {
+  console.error(UNCAUGHT_WORKER_ERROR_SUMMARY, error);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error(UNCAUGHT_WORKER_ERROR_SUMMARY, reason);
+});
 
 /** True if `candidatePath` is a real descendant of `containerPath` - not equal to it, and not "escaped" via a
  *  leading ".." after resolution or by landing on a different drive. Both arguments must already be absolute,
@@ -827,8 +864,11 @@ const mergeFileParts = async function(partFilePaths: Array<string>, originalFile
       fs.unlinkSync(partPath);
     } catch (error) {
       // The merge itself succeeded; failing to delete a leftover .part file is a much smaller problem than
-      // deleting something we should not have, so this does not count as a failed merge.
-      console.error('Failed to delete partial file after a successful merge: ' + partPath, error);
+      // deleting something we should not have, so this does not count as a failed merge - console.warn (logged,
+      // not dialog'd) rather than console.error accordingly. See src/main.ts's console.error wrapper for why
+      // that distinction matters here: every console.error anywhere in the app now also interrupts the user
+      // with a dialog, so the log level here is a real severity decision, not just cosmetic.
+      console.warn('Failed to delete partial file after a successful merge: ' + partPath, error);
     }
   }
 

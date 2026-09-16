@@ -7,6 +7,10 @@
       <div *cdkVirtualFor="let item of section.items" class="confirmation-dialog-list-item">{{ item }}</div>
     </cdk-virtual-scroll-viewport>
   </div>
+  <details *ngIf="technicalDetails" class="confirmation-dialog-technical-details">
+    <summary>Technical details</summary>
+    <pre>{{technicalDetails}}</pre>
+  </details>
 </mat-dialog-content>
 <mat-dialog-actions *ngIf="actionsNum == 2" align="end">
   <button mat-button [mat-dialog-close]="action1" (click)="action1Callback()">{{action1Label}}</button>

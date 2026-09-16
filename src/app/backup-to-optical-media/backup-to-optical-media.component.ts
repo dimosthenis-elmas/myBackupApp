@@ -529,7 +529,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
             break;
           }
           default:
-            console.error('Got unknown message from ipcMain.')
+            console.error('The app received an unexpected internal message and may be out of sync. It is best to restart it.', response)
             break;
         }
       });

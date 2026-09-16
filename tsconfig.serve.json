@@ -19,6 +19,7 @@
   },
   "files": [
     "app/main.ts",
+    "app/logging.ts",
     "app/workers/worker.ts",
     "app/workers/worker-communicator.ts",
     "app/workers/logsbuffer.ts",

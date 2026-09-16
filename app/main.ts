@@ -2,10 +2,72 @@ import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { Dialog } from '@angular/cdk/dialog';
+import { appendToLogFile, installConsoleLogging, ReportedError, rotateAndWriteSessionHeader } from './logging';
 
 
 let win: BrowserWindow | null = null;
 let winWorker: BrowserWindow;
+
+// ============================================================================
+// ===== Logging: every console.log/warn/error in this process is appended to a
+// ===== single logs.txt (see logging.ts), and every ERROR-level one is also
+// ===== forwarded to the renderer as a plain-language summary to show as a
+// ===== dialog (see forwardErrorToRenderer below and error-log.ts on the
+// ===== renderer side) - full technical detail (stack traces, raw dumps) stays
+// ===== in logs.txt and the dialog's collapsed "technical details" section,
+// ===== never thrown at the user as the primary message. worker.ts uses the
+// ===== same logging.ts to write to the same file and reports its own errors
+// ===== over the 'app-error' IPC channel relayed below - together these three
+// ===== sources (main, worker, renderer) are meant to cover everything that
+// ===== used to only be visible in the worker window's DevTools console (see
+// ===== that window's show/openDevTools gating further down, now off in
+// ===== packaged builds).
+// ============================================================================
+
+/** Same appData folder worker.ts's own APP_DATA_DIRECTORY_PATH resolves (see that file's identical comment) -
+ *  packaged builds keep it under resourcesPath (mirrors resolveIndexHtmlUrl's own app.isPackaged branch below),
+ *  unpacked/dev runs keep it one level up from this file (app/main.js -> <repo>/appData). */
+function resolveAppDataDirectoryPath(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'appData');
+  }
+  return path.resolve(__dirname, '../appData');
+}
+
+const LOG_FILE_PATH = path.join(resolveAppDataDirectoryPath(), 'logs.txt');
+rotateAndWriteSessionHeader(LOG_FILE_PATH);
+
+/** Sends an already-occurred error to the main window to show as a dialog (see error-log.ts's 'app-error'
+ *  listener on the renderer side). Best-effort only - no-ops if the main window does not exist yet/anymore,
+ *  which is why the uncaughtException/unhandledRejection handlers below additionally use dialog.showErrorBox
+ *  (synchronous and native, so it works even when this can't). */
+function forwardErrorToRenderer(reported: ReportedError): void {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('app-error', { source: 'main', ...reported });
+  }
+}
+
+// error vs warn is a real severity call at each existing console.error/console.warn call site throughout this
+// codebase, not a stylistic choice - only error interrupts the user (see logging.ts's own comment on this).
+installConsoleLogging('main', LOG_FILE_PATH, 'Something unexpected went wrong in the app.', forwardErrorToRenderer);
+
+// Belt-and-suspenders for errors nobody wrote a try/catch for at all (as opposed to the many existing
+// console.error calls throughout this codebase, which installConsoleLogging above already turns into
+// dialogs+log lines without needing every one of them touched individually). dialog.showErrorBox is used here
+// specifically (rather than relying only on forwardErrorToRenderer above) because it's synchronous, native, and
+// works regardless of the renderer's state - the point of this handler is exactly the case where something has
+// gone wrong badly enough that nothing else can be trusted to still be working.
+const UNCAUGHT_ERROR_SUMMARY = 'Something unexpected went wrong in the app and it may need to be restarted.';
+
+process.on('uncaughtException', (error) => {
+  console.error(UNCAUGHT_ERROR_SUMMARY, error);
+  dialog.showErrorBox('Unexpected error', UNCAUGHT_ERROR_SUMMARY + '\n\n' + (error.stack || String(error)));
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error(UNCAUGHT_ERROR_SUMMARY, reason);
+  dialog.showErrorBox('Unexpected error', UNCAUGHT_ERROR_SUMMARY + '\n\n' + (reason instanceof Error ? (reason.stack || reason.message) : String(reason)));
+});
 
 // The renderer can start sending 'message-to-worker' IPC as soon as its own Angular app bootstraps (e.g.
 // AppComponent's ngOnInit, which runs the startup config check). The worker window is created around the same
@@ -88,10 +150,12 @@ function createWindow(): BrowserWindow {
   });
 
 
-  // create worker window (visible in both dev and packaged builds - see the "Do not hide the worker window"
-  // request)
+  // Create worker window - visible with DevTools open in dev, hidden in a packaged build. Safe to hide in
+  // production because that DevTools console is no longer the only place worker.ts's console.log/warn/error
+  // calls go: every one of them is also appended to logs.txt, and every error is additionally forwarded to the
+  // renderer as a dialog (see this file's own logging setup above, and worker.ts's copy of it).
   winWorker = new BrowserWindow({
-    show: true,
+    show: !app.isPackaged,
     webPreferences: {
       nodeIntegration: true,
       allowRunningInsecureContent: (serve),
@@ -102,8 +166,9 @@ function createWindow(): BrowserWindow {
   });
 
   winWorker.loadFile(path.join(__dirname, '../app/workers/worker.html'));
-  //Debug
-  winWorker.webContents.openDevTools();
+  if (!app.isPackaged) {
+    winWorker.webContents.openDevTools();
+  }
 
   // See the winWorkerReady/pendingMessagesToWorker comment above: only start delivering messages once the
   // worker window has actually finished loading and its own message listener is guaranteed to be attached.
@@ -207,6 +272,22 @@ try {
   });
   ipcMain.on('response-to-main', (event, arg) => {
     win?.webContents.send('message-from-worker', arg);
+  });
+
+  // Raw log line from the renderer (see error-log.ts's appendLogLine) - the renderer has no direct fs access
+  // (contextIsolation), so every renderer-originated line is shipped here to be appended by the one
+  // appendToLogFile this process already has, same as this process's own console output above.
+  ipcMain.on('append-log', (event, line: string) => {
+    appendToLogFile(LOG_FILE_PATH, line);
+  });
+
+  // Relays a worker-originated error (see worker.ts's own console.error wrapper) to the renderer to show as a
+  // dialog - deliberately a channel of its own, not reused from message-from-worker/response-to-main above:
+  // those are keyed request/response pairs (see WorkerCommunicator.sendAndAwaitResponse), and an unsolicited
+  // message on that channel with no matching pending request is treated as a protocol error and wrongly rejects
+  // whatever request actually is in flight.
+  ipcMain.on('app-error', (event, arg: { source: string } & ReportedError) => {
+    win?.webContents.send('app-error', arg);
   });
 
   // Used by AppComponent's startup checks (e.g. checkTempDataDirectoryOwnership) to close the app outright

@@ -5,6 +5,11 @@
 # by coincidence of being empty - if you change cacheDataDirectoryPath, add a matching rule for the new name)
 /appData/tempFilesCanBeDeleted
 
+# app's own runtime log (see app/logging.ts) - never cleared, grows/rotates across real runs, so it's always
+# either empty or full of one particular machine's paths/timestamps, neither of which belongs in git
+/appData/logs.txt
+/appData/logs.txt.old
+
 # compiled output
 /dist
 /tmp
@@ -12,6 +17,7 @@
 /app-builds
 /release
 main.js
+logging.js
 src/**/*.js
 *.js.map
 /app/workers/*.js

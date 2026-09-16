@@ -686,8 +686,10 @@ import { parseProgressFromLine } from '../shared/utils/progress-line';
               }           
               break;
             default:
-              console.error('Got unknown message from ipcMain: ');
-              console.error(response);
+              // One call, not two (used to be a separate console.error(response) right after) - each
+              // console.error now also shows a dialog, so two calls for what is conceptually one event would
+              // have shown the user two dialogs back to back for it.
+              console.error('The app received an unexpected internal message and may be out of sync. It is best to restart it.', response);
               break;
           }
         });

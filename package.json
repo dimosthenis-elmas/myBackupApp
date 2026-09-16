@@ -116,6 +116,7 @@
     },
     "extraResources": [
       "app/workers/worker.html",
+      "app/logging.js",
       "app/workers/worker.js",
       "app/workers/worker-communicator.js",
       "app/workers/logsbuffer.js",

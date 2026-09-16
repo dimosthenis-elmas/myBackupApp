@@ -29,14 +29,16 @@ export class ElectronService {
 
       this.fs = (window as any).require('fs');
 
+      // console.warn, not console.error: this is only a debug probe (logging the Node version at startup), with
+      // no effect on anything the app actually does - not worth interrupting the user with a dialog over.
       this.childProcess = (window as any).require('child_process');
       this.childProcess.exec('node -v', (error, stdout, stderr) => {
         if (error) {
-          console.error(`error: ${error.message}`);
+          console.warn(`error: ${error.message}`);
           return;
         }
         if (stderr) {
-          console.error(`stderr: ${stderr}`);
+          console.warn(`stderr: ${stderr}`);
           return;
         }
         console.log(`stdout:\n${stdout}`);

@@ -9,6 +9,7 @@ import { ConfirmationDialogComponent } from './shared/components/confirmation-di
 import { LoadingDialogComponent } from './shared/components/loading-dialog/loading-dialog.component';
 import { WorkerCommunicator as ipc } from '../../app/workers/worker-communicator';
 import { goToMainMenuAndReload } from './shared/utils/go-to-main-menu';
+import { ErrorReporterService } from './core/services/error-reporter/error-reporter.service';
 
 interface StringIndexedObject {
   [key: string]: string;
@@ -35,7 +36,11 @@ export class AppComponent implements OnInit {
     private translate: TranslateService,
     public router: Router,
     private dialog: MatDialog,
-    private snackBar: MatSnackBar
+    private snackBar: MatSnackBar,
+    // Not otherwise referenced here - injecting it forces this root-provided singleton to construct now, at
+    // startup, rather than lazily on first use elsewhere, so its error-dialog/IPC listener registration
+    // (see ErrorReporterService's own comment) is in place as early as possible.
+    private errorReporter: ErrorReporterService
   ) {
 
 
@@ -224,7 +229,10 @@ export class AppComponent implements OnInit {
     try {
       result = (await ipc.ensureTempDataDirectoryOwnership()).res;
     } catch (error) {
-      console.error('Failed to verify the temp/cache directory', error);
+      // console.warn, not console.error: a dedicated dialog for this specific check would be redundant, not just
+      // unnecessary - see "Fails open" below for why a real ownership problem still gets caught (and shown to
+      // the user) elsewhere regardless of whether this particular check succeeded.
+      console.warn('Failed to verify the temp/cache directory', error);
       // Fails open (lets startup continue) rather than blocking on an unrelated failure (e.g. an IPC hiccup) -
       // every function that actually touches this directory (getTempDataDirectoryPath,
       // partitionBackupToOpticalMedia, clearTempDataDirectory) performs this same ownership check again
@@ -317,11 +325,17 @@ export class AppComponent implements OnInit {
           }
         } catch (error) {
           loadingDialogRef.close();
+          // Kept as console.error (dialog'd), unlike the background check below: the user explicitly clicked
+          // "Clear" for this one, and the loading spinner above just vanished with no other feedback - staying
+          // silent here would leave them with no idea whether it worked.
           console.error('Failed to clear the temp data directory after the startup snackbar\'s "Clear" action', error);
         }
       });
     } catch (error) {
-      console.error('Failed to check the temp data directory for leftovers on startup', error);
+      // console.warn: this is a passive startup check offering to clear leftovers (see this method's own doc
+      // comment) - if it fails, the offer just doesn't show this launch, and it always tries again next launch.
+      // Nothing the user did, nothing lost by staying quiet about it.
+      console.warn('Failed to check the temp data directory for leftovers on startup', error);
     }
   }
 
