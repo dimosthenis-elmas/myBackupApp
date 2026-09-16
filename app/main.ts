@@ -125,6 +125,34 @@ function resolveIndexHtmlUrl(): string {
   return new URL(path.join('file:', __dirname, pathIndex)).href;
 }
 
+/** Resolves the app's own icon - passed explicitly to both BrowserWindows below (main window and worker) as
+ *  their `icon` option. Without this, BrowserWindow falls back to Electron's own generic default icon (a plain
+ *  dark window silhouette, not this app's actual branding) for the taskbar/title bar - happens in dev for sure
+ *  (there is no packaged .exe resource to inherit from at all there), and isn't guaranteed not to happen in a
+ *  packaged build either.
+ *
+ *  Deliberately a PNG, not favicon.ico (which electron-builder's own win.icon config still uses, correctly, for
+ *  the .exe's packaging resource - that's a separate code path from this one and was verified fine): passing a
+ *  multi-frame .ico straight to BrowserWindow's `icon` option is a known Electron-on-Windows sore spot - it
+ *  does not reliably parse/resize every embedded frame, and can end up handing Windows a naive crop of one
+ *  frame instead of a properly scaled icon (the "cropped shield, only the top sliver shows" bug this fixes). A
+ *  single clean PNG is what Electron's own nativeImage resizes correctly for the taskbar/title bar.
+ *
+ *  Same dual dev/packaged resolution as resolveIndexHtmlUrl above: packaged builds keep the whole dist/ folder
+ *  under resourcesPath (extraResources' {from: "dist", to: "dist"} entry), unpacked/dev runs prefer the built
+ *  dist/ copy if ng build has already produced one, falling back to the source file directly (guaranteed to
+ *  exist even before a build has ever run, unlike dist/index.html). */
+function resolveAppIconPath(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'dist', 'assets', 'icons', 'favicon.256x256.png');
+  }
+  const builtIconPath = path.join(__dirname, '../dist/assets/icons/favicon.256x256.png');
+  if (fs.existsSync(builtIconPath)) {
+    return builtIconPath;
+  }
+  return path.join(__dirname, '../src/assets/icons/favicon.256x256.png');
+}
+
 function createWindow(): BrowserWindow {
   // Reset worker-readiness state in case a window is being (re)created after the first one (e.g. macOS
   // 'activate' with no windows open) - each worker window needs its own did-finish-load before it's safe to
@@ -133,6 +161,7 @@ function createWindow(): BrowserWindow {
   pendingMessagesToWorker = [];
 
   const size = screen.getPrimaryDisplay().workAreaSize;
+  const appIconPath = resolveAppIconPath();
 
   // Create the browser window.
   win = new BrowserWindow({
@@ -140,6 +169,7 @@ function createWindow(): BrowserWindow {
     y: 0,
     width: size.width,
     height: size.height,
+    icon: appIconPath,
     webPreferences: {
       nodeIntegration: true,
       allowRunningInsecureContent: (serve),
@@ -156,6 +186,7 @@ function createWindow(): BrowserWindow {
   // renderer as a dialog (see this file's own logging setup above, and worker.ts's copy of it).
   winWorker = new BrowserWindow({
     show: !app.isPackaged,
+    icon: appIconPath,
     webPreferences: {
       nodeIntegration: true,
       allowRunningInsecureContent: (serve),
