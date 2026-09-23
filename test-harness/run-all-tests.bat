@@ -46,6 +46,7 @@ call :run "worker-ipc: test-partitioning" "test-harness\worker-ipc\test-partitio
 call :run "worker-ipc: test-merge" "test-harness\worker-ipc\test-merge.js"
 call :run "worker-ipc: test-incremental-backup" "test-harness\worker-ipc\test-incremental-backup.js"
 call :run "worker-ipc: test-sync-dirs" "test-harness\worker-ipc\test-sync-dirs.js"
+call :run "worker-ipc: test-scan-progress" "test-harness\worker-ipc\test-scan-progress.js"
 call :run "worker-ipc: test-large-file-split" "test-harness\worker-ipc\test-large-file-split.js"
 call :run "worker-ipc: test-large-file-split-boundary" "test-harness\worker-ipc\test-large-file-split-boundary.js"
 call :run "worker-ipc: test-multi-large-file-split" "test-harness\worker-ipc\test-multi-large-file-split.js"

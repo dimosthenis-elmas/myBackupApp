@@ -296,6 +296,7 @@ export class AppComponent implements OnInit {
       snackBarRef.onAction().subscribe(async () => {
         const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
         loadingDialogRef.componentInstance.showCancelButton = false;
+        loadingDialogRef.componentInstance.message = "Clearing temporary files";
         try {
           const response = await ipc.clearTempDataDirectory();
           const result: { cleared: boolean; message: string; deletedItems: string[] } = response.res;

@@ -11,7 +11,7 @@ import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communica
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
 import { getDiscIdHash } from '../shared/utils/disc-id-hash';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
-import { stripTrailingCounter, parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
+import { parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
 
 import {FormBuilder, Validators, FormsModule, ReactiveFormsModule} from '@angular/forms';
 import {MatButtonModule} from '@angular/material/button';
@@ -457,8 +457,6 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
           if (lines.length > 0) {
             const progress = parseScanItemsProgress(lines[lines.length - 1]);
             if (progress) {
-              loadingDialogRef.componentInstance.progressCurrent = progress.current;
-              loadingDialogRef.componentInstance.progressTotal = progress.total;
               loadingDialogRef.componentInstance.percent = Math.round((progress.current / progress.total) * 100);
             }
           }
@@ -536,8 +534,6 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       // instead of stopping short whenever totalFilesToCompare isn't an exact multiple of the interval.
       const isLastItem = index === totalFilesToCompare - 1;
       if ((index + 1) % 50 === 0 || isLastItem) {
-        loadingDialogRef.componentInstance.progressCurrent = index + 1;
-        loadingDialogRef.componentInstance.progressTotal = totalFilesToCompare;
         loadingDialogRef.componentInstance.percent = Math.round(((index + 1) / totalFilesToCompare) * 100);
         await new Promise<void>(resolve => setTimeout(resolve, 0));
       }
@@ -632,8 +628,6 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
             for (const line of lines) {
               const packProgress = parsePackingProgress(line);
               if (packProgress) {
-                loadingDialogRef.componentInstance.progressCurrent = packProgress.current;
-                loadingDialogRef.componentInstance.progressTotal = packProgress.total;
                 loadingDialogRef.componentInstance.percent = Math.round((packProgress.current / packProgress.total) * 100);
               }
             }
@@ -746,16 +740,12 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
     loadingDialogRef.componentInstance.showCancelButton = false;
-    loadingDialogRef.componentInstance.message = "Calculating SHA-256 hashes";
-    let hashedCount = 0;
+    loadingDialogRef.componentInstance.message = "Calculating SHA-256 hashes";    let hashedCount = 0;
     const listener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         if (response.key === 'compute-sha256-for-backed-up-files' && response.status === 'running') {
           const newLines = response.res as string[];
           hashedCount += newLines.length;
-          loadingDialogRef.componentInstance.detail = stripTrailingCounter(newLines[newLines.length - 1]);
-          loadingDialogRef.componentInstance.progressCurrent = hashedCount;
-          loadingDialogRef.componentInstance.progressTotal = hashableEntries.length;
           loadingDialogRef.componentInstance.percent = Math.round((hashedCount / hashableEntries.length) * 100);
         }
       });
@@ -851,7 +841,18 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       // given large file's real split is offered that file's sliver first, purely as a byproduct of triggering
       // the split - not because it's guaranteed to belong there. Whether it actually ends up on THIS disc is
       // decided below, by the capacity check.
-      const realStats: filesMetadata[] = (await ipc.createOpticalMediaDiscPartials(this.backup.targetPath, bareRelativePaths, this.tempSessionId)).res;
+      //
+      // Behind its own loading dialog: a real 7-Zip split of a large file can take minutes, and this step used to
+      // run with nothing on screen at all. No progress to report (7-Zip gives none), so a plain spinner.
+      const splitDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+      splitDialogRef.componentInstance.showCancelButton = false;
+      splitDialogRef.componentInstance.message = "Preparing disc files";
+      let realStats: filesMetadata[];
+      try {
+        realStats = (await ipc.createOpticalMediaDiscPartials(this.backup.targetPath, bareRelativePaths, this.tempSessionId)).res;
+      } finally {
+        splitDialogRef.close();
+      }
 
       // Split the response back into what this disc was actually planned to hold and any surplus sliver(s)
       // riding along with it (see createOpticalMediaDiscPartials's own comment).
@@ -931,6 +932,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       });
 
       const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+      loadingDialogRef.componentInstance.message = "Preparing ImgBurn project";
 
       // Enqueue this disc's read-modify-write onto the shared serial queue (see metadataUpdateQueue's own doc
       // comment) and await its own turn specifically - not just whatever else is queued - so a later disc's

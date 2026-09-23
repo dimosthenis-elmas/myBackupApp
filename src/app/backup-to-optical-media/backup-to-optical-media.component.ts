@@ -14,7 +14,7 @@ import { filesMetadata } from '../../types/interface';
 import { SerialQueue } from '../shared/utils/serial-queue';
 import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
-import { stripTrailingCounter, parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
+import { parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
 
 import {FormBuilder, Validators, FormsModule, ReactiveFormsModule} from '@angular/forms';
 import {MatButtonModule} from '@angular/material/button';
@@ -290,12 +290,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
                 const scanProgress = parseScanItemsProgress(line);
                 const packProgress = parsePackingProgress(line);
                 if (scanProgress) {
-                  loadingDialogRef.componentInstance.progressCurrent = scanProgress.current;
-                  loadingDialogRef.componentInstance.progressTotal = scanProgress.total;
                   loadingDialogRef.componentInstance.percent = Math.round((scanProgress.current / scanProgress.total) * 50);
                 } else if (packProgress) {
-                  loadingDialogRef.componentInstance.progressCurrent = packProgress.current;
-                  loadingDialogRef.componentInstance.progressTotal = packProgress.total;
                   loadingDialogRef.componentInstance.percent = 50 + Math.round((packProgress.current / packProgress.total) * 50);
                 }
               }
@@ -590,13 +586,11 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    *  see computeSha256ForBackedUpFiles in worker.ts. Must be called after createOpticalMediaDiscPartials has
    *  already produced this disc's real, final file list (every entry must already exist on disk), and before
    *  anything else about this disc (its label hash, its metadata JSON entry, its .ibb file) is computed from
-   *  that list. Shows its own progress dialog, driven by this same worker channel's `running` pushes - a static
-   *  heading, the current file name (via LoadingDialogComponent's `detail`, stripped of its own "(i of N
-   *  files)" suffix - see stripTrailingCounter), and a real percentage plus a live "i of N" counter bound as
-   *  plain numbers (`percent`/`progressCurrent`/`progressTotal`) so only those numbers change on screen rather
-   *  than the whole line being replaced on every single file. Deliberately not the accumulating `lines`
-   *  scrolling list (which reserves a fixed 220px box regardless of content - way too much real estate for
-   *  what's usually a handful of files). Always runs - SHA-256
+   *  that list. Shows its own progress dialog, driven by this same worker channel's `running` pushes - just a
+   *  real percentage (LoadingDialogComponent's `percent`, derived from how many files have been hashed so far
+   *  out of hashableEntries.length). Deliberately not the accumulating `lines` scrolling list (which reserves
+   *  a fixed 220px box regardless of content - way too much real estate for what's usually a handful of
+   *  files). Always runs - SHA-256
    *  integrity data is mandatory, not a toggle (there used to be a "File integrity data" option offered
    *  alongside collection name at step 1, since removed): every file backed up gets a recorded hash so a later
    *  recovery, or the standalone "verify integrity of cold storage disc" wizard, can check its bytes weren't
@@ -608,16 +602,12 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
     loadingDialogRef.componentInstance.showCancelButton = false;
-    loadingDialogRef.componentInstance.message = "Calculating SHA-256 hashes";
-    let hashedCount = 0;
+    loadingDialogRef.componentInstance.message = "Calculating SHA-256 hashes";    let hashedCount = 0;
     const listener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         if (response.key === 'compute-sha256-for-backed-up-files' && response.status === 'running') {
           const newLines = response.res as string[];
           hashedCount += newLines.length;
-          loadingDialogRef.componentInstance.detail = stripTrailingCounter(newLines[newLines.length - 1]);
-          loadingDialogRef.componentInstance.progressCurrent = hashedCount;
-          loadingDialogRef.componentInstance.progressTotal = hashableEntries.length;
           loadingDialogRef.componentInstance.percent = Math.round((hashedCount / hashableEntries.length) * 100);
         }
       });
@@ -735,7 +725,18 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       // given large file's real split is offered that file's sliver first, purely as a byproduct of triggering
       // the split - not because it's guaranteed to belong there. Whether it actually ends up on THIS disc is
       // decided below, by the capacity check.
-      const realStats: filesMetadata[] = (await ipc.createOpticalMediaDiscPartials(this.backup.sourcePath, selectedRelativePaths, this.tempSessionId)).res;
+      //
+      // Behind its own loading dialog: a real 7-Zip split of a large file can take minutes, and this step used to
+      // run with nothing on screen at all. No progress to report (7-Zip gives none), so a plain spinner.
+      const splitDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+      splitDialogRef.componentInstance.showCancelButton = false;
+      splitDialogRef.componentInstance.message = "Preparing disc files";
+      let realStats: filesMetadata[];
+      try {
+        realStats = (await ipc.createOpticalMediaDiscPartials(this.backup.sourcePath, selectedRelativePaths, this.tempSessionId)).res;
+      } finally {
+        splitDialogRef.close();
+      }
 
       // Split the response back into what this disc's tree actually asked for and any surplus sliver(s) riding
       // along with it (see createOpticalMediaDiscPartials's own comment).
@@ -818,6 +819,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       });
 
       const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+      loadingDialogRef.componentInstance.message = "Preparing ImgBurn project";
       // Enqueue this disc's read-modify-write (see metadataUpdateQueue's own doc comment) and await its turn
       // specifically - not just whatever else is queued - so a later disc's call, enqueued after this one, can
       // never run its own read until this write has actually finished.

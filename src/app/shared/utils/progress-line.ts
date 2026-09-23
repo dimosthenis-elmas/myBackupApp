@@ -11,19 +11,6 @@ export function parseProgressFromLine(line: string): { current: number, total: n
   return m ? { current: Number(m[1]), total: Number(m[2]) } : null;
 }
 
-/** Strips a trailing "(i of N)" or "(i of N files)" counter - the same "(i of N)" convention as
- *  parseProgressFromLine above, just embedded at the end of a descriptive line instead of being the whole line
- *  (e.g. computeSha256ForBackedUpFiles/verifyFileHashes in worker.ts push "Calculating SHA-256 for file: <path>
- *  (3 of 42 files)") - leaving just the description (here, the file path). Callers bind the counter itself as
- *  its own live number (LoadingDialogComponent's `progressCurrent`/`progressTotal`, set directly from the
- *  caller's own already-known current/total) instead of re-displaying the whole sentence, counter included, on
- *  every single tick - otherwise the on-screen text is fully replaced dozens or hundreds of times a second for
- *  a large batch, instead of just the number changing in place. Returns the line unchanged if it has no such
- *  trailing counter. */
-export function stripTrailingCounter(line: string): string {
-  return line.replace(/ \(\d+ of \d+(?: files)?\)$/, '');
-}
-
 /** Same "(i of N)" convention as parseProgressFromLine above, for a scan phase (getAllFiles/getAllFilesSet/
  *  getAllFilePathsWithStats in worker.ts) that would otherwise only be able to report an open-ended running
  *  count - once countAllFilesQuick (worker.ts) has probed a real total upfront, e.g. diff()'s own "Scanning

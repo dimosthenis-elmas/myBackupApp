@@ -30,6 +30,8 @@ const { launchApp } = require('../worker-ipc/call-worker');
 const { resolveRealTempDataDirectory, assertRealTempDataDirectoryIsSafeToUse, MARKER_FILENAME } = require('../worker-ipc/temp-dir-guard');
 
 const SNACKBAR_TEXT_FRAGMENT = 'leftover item(s) from a previous session';
+// The heading of the blocking loading dialog "Clear" opens - see the "Clear" subscription in app.component.ts.
+const CLEARING_DIALOG_TEXT = 'Clearing temporary files';
 // The app's own snackbar duration (see the `duration` option on the MatSnackBar.open call in
 // app.component.ts) plus a real margin, so waiting for it to auto-dismiss isn't a race against the exact same
 // deadline the app itself is using.
@@ -113,13 +115,13 @@ async function main() {
     // the delete is still running could otherwise have its own just-created files swept up by it). Checked here,
     // not just inferred from the end state below, since a regression that dropped the blocking dialog entirely
     // would still leave the temp dir empty afterward and pass an end-state-only check.
-    console.log('  waiting for the "Please wait" loading dialog to appear...');
-    await win.getByText('Please wait', { exact: false }).waitFor({ timeout: 5000 });
+    console.log(`  waiting for the "${CLEARING_DIALOG_TEXT}" loading dialog to appear...`);
+    await win.getByText(CLEARING_DIALOG_TEXT, { exact: false }).waitFor({ timeout: 5000 });
     results.loadingDialogAppearsWhileClearing = true;
     console.log('  loading dialog appeared - OK');
 
     console.log('  waiting for the loading dialog to disappear once the clear finishes...');
-    await win.getByText('Please wait', { exact: false }).waitFor({ state: 'hidden', timeout: 15_000 });
+    await win.getByText(CLEARING_DIALOG_TEXT, { exact: false }).waitFor({ state: 'hidden', timeout: 15_000 });
     results.loadingDialogDisappearsWhenDone = true;
     console.log('  loading dialog disappeared - OK');
 

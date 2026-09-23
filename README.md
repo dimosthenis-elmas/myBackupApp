@@ -37,11 +37,7 @@ I built it during a migration project to back up my own files to optical discs a
   uninstall.
 
 ---
-Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY KIND. Please be mindful when using it because there may be unknown bugs.
-I am not in any way, shape, or form responsible for any loss of data due to a malfunction of this application!
-This project started as a kind of exercise for me to learn the Angular framework.
-This is a hobby project!
-
+Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY KIND. Although I have put effort in testing all the features, bugs may remain.
 ---
 ## Features
 

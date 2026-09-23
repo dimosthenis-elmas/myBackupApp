@@ -1,8 +1,6 @@
 <mat-dialog-content class="mat-typography container">
     <div>
         <h3>{{ message || 'Please wait' }}</h3>
-        <p *ngIf="detail">{{ detail }}</p>
-        <p *ngIf="progressCurrent !== undefined && progressTotal !== undefined">{{ progressCurrent }} of {{ progressTotal }}</p>
         <mat-progress-spinner *ngIf="progressPercent !== undefined" mode="determinate" [value]="progressPercent"></mat-progress-spinner>
         <mat-spinner *ngIf="progressPercent === undefined"></mat-spinner>
     </div>

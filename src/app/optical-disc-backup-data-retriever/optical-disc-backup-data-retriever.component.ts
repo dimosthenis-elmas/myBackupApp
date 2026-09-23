@@ -12,7 +12,7 @@ import { filesMetadata } from '../../types/interface';
 import { ColdStorageMetadata } from '../../../app/workers/ipc.interfaces';
 import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
-import { parseProgressFromLine, stripTrailingCounter, parseScanItemsProgress } from '../shared/utils/progress-line';
+import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/progress-line';
  
   @Component({
     selector: 'optical-disc-backup-data-retriever',
@@ -876,20 +876,16 @@ import { parseProgressFromLine, stripTrailingCounter, parseScanItemsProgress } f
 
       const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
       loadingDialogRef.componentInstance.showCancelButton = false;
-      loadingDialogRef.componentInstance.message = "Verifying SHA-256 hashes";
-      let results: Array<{ path: string, sha256: string, matched?: boolean }> = [];
-      // Shows the current file name plus a real percentage and a live "i of N" counter, all bound as their own
-      // fields (not the accumulating `lines` scrolling list, which reserves a fixed 220px box regardless of
-      // content) - see attachSha256HashesToDiscFiles's identical pattern in backup-to-optical-media.component.ts.
+      loadingDialogRef.componentInstance.message = "Verifying SHA-256 hashes";      let results: Array<{ path: string, sha256: string, matched?: boolean }> = [];
+      // Shows just a real percentage (not the accumulating `lines` scrolling list, which reserves a fixed 220px
+      // box regardless of content) - see attachSha256HashesToDiscFiles's identical pattern in
+      // backup-to-optical-media.component.ts.
       let hashedCount = 0;
       const listener = ipc.onResponseFromWorker((event, response) => {
         this.ngZone.run(() => {
           if (response.key === 'verify-file-hashes' && response.status === 'running') {
             const newLines = response.res as string[];
             hashedCount += newLines.length;
-            loadingDialogRef.componentInstance.detail = stripTrailingCounter(newLines[newLines.length - 1]);
-            loadingDialogRef.componentInstance.progressCurrent = hashedCount;
-            loadingDialogRef.componentInstance.progressTotal = filesToHash.length;
             loadingDialogRef.componentInstance.percent = Math.round((hashedCount / filesToHash.length) * 100);
           }
         });
@@ -951,6 +947,7 @@ import { parseProgressFromLine, stripTrailingCounter, parseScanItemsProgress } f
 
       const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
       loadingDialogRef.componentInstance.showCancelButton = false;
+      loadingDialogRef.componentInstance.message = "Reassembling split files";
 
       const results: Array<{ group: { originalFileName: string; partFilePaths: string[] }, merged: boolean, message: string }> = [];
       for (const group of partFileGroups) {

@@ -119,6 +119,24 @@ in, and the final target matches a freshly rebuilt manifest with zero `EXTRA` en
 own independent directory listing confirms the leftovers are really gone, not just the two paths this script
 expected).
 
+### `test-scan-progress.js` — the progress numbers behind the UI's filling circle
+```
+node test-harness/worker-ipc/test-scan-progress.js
+```
+Every worker operation that scans a folder (`get-file-paths-with-stats`, `get-file-paths`, `diff`,
+`partition-backup-to-optical-media`) first probes the folder's real size and then reports "(i of N)" progress lines
+against it, which the UI turns into its progress circle. This collects those lines (via `callWorkerWithProgress` in
+`call-worker.js`) and checks the things that would silently break the circle: N equals an independent count of
+what's really in the folder (the source tree includes a directory junction to a second folder, because the real
+scanners follow links and a probe that didn't would undercount); a leftover cancel from an earlier operation
+doesn't zero the total or turn the scan into "stopped"; `diff` reports its scan phase and then its comparison
+phase in order, ending exactly on its last item; and `partition-backup-to-optical-media` reports its scan phase
+and then one "Packing items" line per disc — and, when handed the file list up front, doesn't scan at all (proved
+by pointing it at a folder that doesn't exist).
+
+Only reads what it generates itself under `generated-fixtures/`; touches the real temp folder the same way
+`test-partitioning.js` does, so it uses the same guard.
+
 ### `test-large-file-split.js` — the REAL "split a too-large-for-any-disc file" path, at real scale
 ```
 node test-harness/worker-ipc/test-large-file-split.js

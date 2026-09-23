@@ -15,7 +15,7 @@ import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communica
 import { ColdStorageMetadata } from '../../../app/workers/ipc.interfaces';
 import { getDiscIdHashForPaths, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
-import { stripTrailingCounter, parseScanItemsProgress } from '../shared/utils/progress-line';
+import { parseScanItemsProgress } from '../shared/utils/progress-line';
 const mySchema = require('../schemas/filesMetadata.schema.json');
 
 /**
@@ -120,6 +120,7 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
     loadingDialogRef.componentInstance.showCancelButton = false;
+    loadingDialogRef.componentInstance.message = "Loading metadata JSON";
     try {
       const res = (await ipc.readJSONfromDisk(this.metadataJSONPath)).res;
       const schemaNode = compileSchema(mySchema);
@@ -294,8 +295,7 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
     loadingDialogRef.componentInstance.showCancelButton = false;
-    loadingDialogRef.componentInstance.message = "Verifying SHA-256 hashes";
-    // Shows the current file name plus a real percentage (not the accumulating `lines` scrolling list, which
+    loadingDialogRef.componentInstance.message = "Verifying SHA-256 hashes";    // Shows the current file name plus a real percentage (not the accumulating `lines` scrolling list, which
     // reserves a fixed 220px box regardless of content) - see attachSha256HashesToDiscFiles's identical pattern
     // in backup-to-optical-media.component.ts.
     let hashedCount = 0;
@@ -304,9 +304,6 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
         if (response.key === 'verify-file-hashes' && response.status === 'running') {
           const newLines = response.res as string[];
           hashedCount += newLines.length;
-          loadingDialogRef.componentInstance.detail = stripTrailingCounter(newLines[newLines.length - 1]);
-          loadingDialogRef.componentInstance.progressCurrent = hashedCount;
-          loadingDialogRef.componentInstance.progressTotal = filesToHash.length;
           loadingDialogRef.componentInstance.percent = filesToHash.length > 0 ? Math.round((hashedCount / filesToHash.length) * 100) : 100;
         }
       });

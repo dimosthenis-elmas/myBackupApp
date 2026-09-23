@@ -80,20 +80,43 @@ const HEARTBEAT_INTERVAL_MS = 10_000;
  * having to go check Task Manager or guess. Cleared the moment the call actually settles either way.
  */
 async function callWorker(win, key, params, timeoutMs = 5 * 60 * 1000) {
+  return withHeartbeat(key, () => callWorkerInner(win, key, params, timeoutMs, false));
+}
+
+/**
+ * Same as callWorker, but also returns every progress line the worker pushed while the call was in flight (the
+ * `status: 'running'` messages callWorker deliberately skips over - see its own comment on that). Resolves with
+ * `{ response, progressLines }`, where `response` is exactly what callWorker would have resolved with and
+ * `progressLines` is every string from every running message's `res`, in the order they arrived.
+ */
+async function callWorkerWithProgress(win, key, params, timeoutMs = 5 * 60 * 1000) {
+  return withHeartbeat(key, () => callWorkerInner(win, key, params, timeoutMs, true));
+}
+
+/** Sends one message to the worker and returns immediately, without waiting for any response - for requests
+ *  that never get one (e.g. 'stop', which only sets a flag in the worker - see worker.ts's `case 'stop'`). */
+async function sendToWorker(win, key, params) {
+  await win.evaluate(({ key, params }) => {
+    window.electronAPI.ipcRenderer_send('message-to-worker', { key, params });
+  }, { key, params });
+}
+
+async function withHeartbeat(key, run) {
   const startedAt = Date.now();
   const heartbeat = setInterval(() => {
     console.log(`  (still waiting for a response to "${key}"... ${Math.round((Date.now() - startedAt) / 1000)}s elapsed)`);
   }, HEARTBEAT_INTERVAL_MS);
   try {
-    return await callWorkerInner(win, key, params, timeoutMs);
+    return await run();
   } finally {
     clearInterval(heartbeat);
   }
 }
 
-async function callWorkerInner(win, key, params, timeoutMs) {
-  return win.evaluate(({ key, params, timeoutMs }) => {
+async function callWorkerInner(win, key, params, timeoutMs, collectProgress) {
+  return win.evaluate(({ key, params, timeoutMs, collectProgress }) => {
     return new Promise((resolve, reject) => {
+      const progressLines = [];
       const timer = setTimeout(() => {
         window.electronAPI.ipcRenderer_removeAllListeners('message-from-worker');
         reject(new Error(`Timed out after ${timeoutMs}ms waiting for a response to "${key}"`));
@@ -107,7 +130,10 @@ async function callWorkerInner(win, key, params, timeoutMs) {
         // and WorkerCommunicator.sendAndAwaitResponse's real behavior - without this check, a call whose
         // operation reports ANY progress before finishing would resolve early with that progress update's own
         // (irrelevant, possibly empty) `res` instead of the operation's real result.
-        if (response.status === 'running') { return; }
+        if (response.status === 'running') {
+          if (collectProgress && Array.isArray(response.res)) { progressLines.push(...response.res); }
+          return;
+        }
         clearTimeout(timer);
         window.electronAPI.ipcRenderer_removeAllListeners('message-from-worker');
         if (response.status === 'error') {
@@ -125,13 +151,13 @@ async function callWorkerInner(win, key, params, timeoutMs) {
           const detail = { message: r.message, name: r.name, msg: r.msg, err_code: r.err_code, stack: r.stack, ...r };
           reject(new Error(`Worker returned status "error" for "${key}": ${JSON.stringify(detail)}`));
         } else {
-          resolve(response);
+          resolve(collectProgress ? { response, progressLines } : response);
         }
       });
 
       window.electronAPI.ipcRenderer_send('message-to-worker', { key, params });
     });
-  }, { key, params, timeoutMs });
+  }, { key, params, timeoutMs, collectProgress });
 }
 
-module.exports = { launchApp, callWorker };
+module.exports = { launchApp, callWorker, callWorkerWithProgress, sendToWorker };

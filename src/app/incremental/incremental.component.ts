@@ -197,9 +197,8 @@ export class IncrementalComponent implements OnInit, OnDestroy {
     // (0-50%) is diff()'s scan phase, reporting a real "(i of N)" percentage against an upfront probed total
     // (see countAllFilesQuick/parseScanItemsProgress) rather than an open-ended running count, and the second
     // half (50-100%) is its comparison phase, reporting its own real "(i of N)" (see parseProgressFromLine) -
-    // both known totals, so both halves are genuine percentages, not an estimate. Bound as plain fields
-    // (`percent`/`progressCurrent`/`progressTotal`) so only the numbers change on screen, never the whole line.
-    // A local listener (not this.workerListener, which proceedToPreview/onError use for a later, separate phase
+    // both known totals, so both halves are genuine percentages, not an estimate. Shown by LoadingDialogComponent
+    // as just its filling circle (`percent`) - no text or counter. A local listener (not this.workerListener, which proceedToPreview/onError use for a later, separate phase
     // of this same wizard) so the two can never be confused with or clobber each other.
     const diffProgressListener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
@@ -209,12 +208,8 @@ export class IncrementalComponent implements OnInit, OnDestroy {
             const compareProgress = parseProgressFromLine(line);
             const scanProgress = parseScanItemsProgress(line);
             if (compareProgress) {
-              loadingDialogRef.componentInstance.progressCurrent = compareProgress.current;
-              loadingDialogRef.componentInstance.progressTotal = compareProgress.total;
               loadingDialogRef.componentInstance.percent = 50 + Math.round((compareProgress.current / compareProgress.total) * 50);
             } else if (scanProgress) {
-              loadingDialogRef.componentInstance.progressCurrent = scanProgress.current;
-              loadingDialogRef.componentInstance.progressTotal = scanProgress.total;
               loadingDialogRef.componentInstance.percent = Math.round((scanProgress.current / scanProgress.total) * 50);
             }
           }

@@ -24,7 +24,6 @@
                 </div>
                 <div *ngIf="(opticalMediumLoaded && !finishedReadingFilePaths && scanPercentComplete !== undefined)" class="flex-centered">
                     <mat-progress-spinner mode="determinate" [value]="scanPercentComplete"></mat-progress-spinner>
-                    <p>{{ scanPercentComplete }}%</p>
                 </div>
             </div>           
         </div>
