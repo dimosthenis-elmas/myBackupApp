@@ -1,5 +1,9 @@
 # My Backup App
 
+<p align="center">
+<img src="src/assets/icons/MyBackupApp_icon_512x512.png" width="180" alt="My Backup App logo - a shield containing a folder, an optical disc, and a sync icon">
+</p>
+
 This app is a set of very simple and minimal utilities for creating home backups.
 
 I built it during a migration project to back up my own files to optical discs as cold storage and in general to manage my personal backups. It's a simple, fun little hobby project, and it's scoped to what I personally needed at the time (see the disclaimer below).
