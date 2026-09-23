@@ -410,18 +410,22 @@ const REQUIRED_CONFIG_EXECUTABLE_PATHS: { [key: string]: string } = {
   'imgBurnExecutablePath': 'ImgBurn executable (ImgBurn.exe)'
 };
 
-/** Baseline values for the non-executable config.json fields the rest of the app assumes are present (e.g.
- *  partitionBackupToOpticalMedia multiplies by maxOpticalMediumRepletionRatio - if that field is missing this
- *  silently computes NaN rather than throwing). These mirror the values the shipped appData/config.json
- *  template ships with. Used by updateConfig below to backfill anything not already in the file, so that
- *  writing just the two executable paths (e.g. from the setup dialog) never leaves the rest of the file
- *  incomplete - notably when config.json did not exist at all before that write.
+/** The one place in the app that defines the default burn-safety margin (see
+ *  getEffectiveOpticalMediumCapacityInBytes below) - both DEFAULT_CONFIG_FIELDS' backfill-on-write value and
+ *  getEffectiveOpticalMediumCapacityInBytes' own runtime fallback (used whenever config.json doesn't have, or
+ *  has an invalid, maxOpticalMediumRepletionRatio) read from this single constant, so changing the app's
+ *  default ratio never requires touching more than this one line - config.json itself no longer needs to carry
+ *  this value at all unless someone deliberately wants to override it for their own install. */
+const DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO = 0.99;
+
+/** Baseline values for the non-executable config.json fields the rest of the app assumes are present. Used by
+ *  updateConfig below to backfill anything not already in the file, so that writing just the two executable
+ *  paths (e.g. from the setup dialog) never leaves the rest of the file incomplete - notably when config.json
+ *  did not exist at all before that write.
  *  Deliberately excludes the two REQUIRED_CONFIG_EXECUTABLE_PATHS fields - defaulting those to a guessed
  *  install path would silently defeat the setup dialog's entire point of getting the user to confirm them. */
 const DEFAULT_CONFIG_FIELDS: { [key: string]: any } = {
-  maxOpticalMediumRepletionRatio: 0.95,
-  defaultSourcePath: '',
-  defaultTargetPath: '',
+  maxOpticalMediumRepletionRatio: DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO,
   cacheDataDirectoryPath: DEFAULT_CACHE_DATA_DIRECTORY_NAME
 };
 
@@ -446,11 +450,14 @@ const readConfig = async function (): Promise<{ [key: string]: any }> {
  *  slivers (see estimateLargeFileSplitPartials/createOpticalMediaDiscPartials) - callers reasoning about
  *  whether something fits on a disc, including a surplus sliver, must always compare against this effective
  *  capacity, never the medium's raw rated capacity, exactly like any other content being packed onto a disc.
- *  Clamped to a hard maximum of 0.99 regardless of what's configured, so a config value close to or at 1.0 can
- *  never remove this margin entirely. */
+ *  Falls back to DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO if config.json doesn't have a valid (numeric)
+ *  maxOpticalMediumRepletionRatio of its own. Clamped to a hard maximum of 0.99 regardless of what's
+ *  configured, so a config value close to or at 1.0 can never remove this margin entirely. */
 const getEffectiveOpticalMediumCapacityInBytes = async function (rawCapacityInBytes: number): Promise<number> {
   const parsedConfig = await readConfig();
-  return rawCapacityInBytes * Math.min(parsedConfig.maxOpticalMediumRepletionRatio, 0.99);
+  const configuredRatio = parsedConfig.maxOpticalMediumRepletionRatio;
+  const ratio = typeof configuredRatio === 'number' ? configuredRatio : DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO;
+  return rawCapacityInBytes * Math.min(ratio, 0.99);
 }
 
 /** Checks the required executable paths in config.json (see REQUIRED_CONFIG_EXECUTABLE_PATHS) and reports

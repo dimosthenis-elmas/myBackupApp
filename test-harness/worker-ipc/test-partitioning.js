@@ -37,12 +37,15 @@ async function main() {
   const tempDir = assertRealTempDataDirectoryIsSafeToUse();
   console.log(`OK - using: ${tempDir}\n`);
 
+  // maxOpticalMediumRepletionRatio is optional in config.json - the app itself falls back to
+  // DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO (worker.ts) when it's absent, so this mirrors that same
+  // fallback rather than requiring the field to be explicitly set.
+  const DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO = 0.99;
   const appDataDir = path.resolve(__dirname, '../../appData');
   const config = JSON.parse(fs.readFileSync(path.join(appDataDir, 'config.json'), 'utf8'));
-  const repletionRatio = config.maxOpticalMediumRepletionRatio;
-  if (typeof repletionRatio !== 'number') {
-    throw new Error('appData/config.json is missing maxOpticalMediumRepletionRatio - cannot compute expected per-disc limits.');
-  }
+  const repletionRatio = typeof config.maxOpticalMediumRepletionRatio === 'number'
+    ? config.maxOpticalMediumRepletionRatio
+    : DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO;
   const effectiveCapacity = TEST_DISC_CAPACITY_BYTES * repletionRatio;
 
   // 1. Generate a small random tree, with every file safely under the test capacity (so nothing needs splitting).

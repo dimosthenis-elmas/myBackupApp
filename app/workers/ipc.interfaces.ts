@@ -1,6 +1,6 @@
 export type WorkerChannel =
 "diff" | "incremental-preview" | "incremental-copy-files" | "unknown-channel" |
-"stop" | "test" | "get-paths-and-stats" | "partition-backup-to-optical-media" |
+"stop" | "partition-backup-to-optical-media" |
 "create-IBB-file" | "wait-for-optical-disk-to-be-mounted" | "get-file-paths" |
 "delete-files-and-dirs-for-dir-sync" | 'get-temp-data-directory-path' | 'get-file-paths-with-stats' |
 "read-json-from-disk" | "write-json-to-disk" | "merge-file-parts" | "clear-temp-data-directory" |
