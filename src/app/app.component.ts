@@ -78,18 +78,16 @@ export class AppComponent implements OnInit {
    *  validateConfigPaths in worker.ts). This covers config.json being missing entirely, being empty, or
    *  simply not having been filled in yet (the README currently asks the user to edit this file by hand) -
    *  as well as a path that no longer points to an existing file (e.g. the program was moved or uninstalled).
-   *  For each missing one, the user is walked through a native file picker to locate it, with the option to
-   *  skip. Anything they provide is saved back to config.json (merged in - nothing else in the file is
-   *  touched). This never blocks app startup - skipping just means the optical-media features that need that
-   *  path will fail when actually used, same as today, until it is configured (here or by hand).
+   *  For each missing one, the user is walked through a native file picker to locate it - there is no way to
+   *  skip a field, so this blocks until a real path has been provided for every one. Anything they provide is
+   *  saved back to config.json (merged in - nothing else in the file is touched).
    *
    *  Gating: showing this dialog is NOT based on whether the configured paths currently exist on disk.
    *  config.json ships with hardcoded default paths (the developer's own install locations) - on some machines
    *  those coincidentally already exist (e.g. 7-Zip/ImgBurn installed at their usual default location) without
    *  the user ever having actually confirmed them for this install. So a `setupAcknowledged` flag is persisted
-   *  to config.json once the user has been through this flow at least once (whether they filled in every field
-   *  or skipped some) - the dialog appears on every startup until that flag is set (asking about EVERY
-   *  required field, not just currently-invalid ones - see requiredFields vs missingFields below), and never
+   *  to config.json once the user has been through this flow (asking about EVERY required field, not just
+   *  currently-invalid ones - see requiredFields vs missingFields below), and the dialog is never shown
    *  automatically again afterwards, even if a path stops existing later (e.g. uninstalled). */
   private async checkAndFixMissingConfigPaths(): Promise<void> {
     let validation: {
@@ -117,8 +115,7 @@ export class AppComponent implements OnInit {
       introDialog.componentInstance.message =
         `Please confirm the following paths, required for the optical media backup features (splitting, ` +
         `reassembling, and burning large files) to work: ` +
-        `${validation.requiredFields.map(f => f.label).join(', ')}. You'll now be asked to locate each one - ` +
-        `you can also skip this and set it later yourself in appData\\config.json.`;
+        `${validation.requiredFields.map(f => f.label).join(', ')}. You'll now be asked to locate each one.`;
       introDialog.componentInstance.actionsNum = 1;
       introDialog.componentInstance.action1Label = "Ok";
       introDialog.componentInstance.action1Callback = () => {
@@ -131,7 +128,7 @@ export class AppComponent implements OnInit {
     const missingKeys = new Set((validation.missingFields || []).map(f => f.key));
     // Ask about every required field, not just validation.missingFields - a shipped default path that happens
     // to already exist on this machine still hasn't actually been confirmed by this user (see the gating
-    // comment above). Skipping a field here leaves its current value (default or otherwise) untouched.
+    // comment above).
     for (const field of validation.requiredFields) {
       // If this field's current config.json value already points at a real file (i.e. it's not in
       // missingFields), pre-select it in the picker so confirming it is a single click rather than having to
@@ -140,15 +137,11 @@ export class AppComponent implements OnInit {
       const currentValidPath = (!missingKeys.has(field.key) && typeof currentValue === 'string' && currentValue.trim() !== '')
         ? currentValue
         : undefined;
-      const chosenPath = await this.chooseExecutablePathWithRetry(field.label, currentValidPath);
-      if (chosenPath) {
-        updates[field.key] = chosenPath;
-      }
+      updates[field.key] = await this.chooseExecutablePathWithRetry(field.label, currentValidPath);
     }
 
-    // Always mark setup as acknowledged at this point, even if every field was skipped - the dialog has done
-    // its job of asking, and per the "then don't display the dialog any more" requirement it should not keep
-    // reappearing on every subsequent startup just because some fields were left unset.
+    // Mark setup as acknowledged now that every required field has a confirmed path - the dialog is never
+    // shown automatically again on a subsequent startup.
     updates['setupAcknowledged'] = true;
 
     try {
@@ -166,15 +159,16 @@ export class AppComponent implements OnInit {
     }
   }
 
-  /** Asks the user to locate one required executable via a native file picker. If they cancel, offers to
-   *  retry or skip. Resolves to the chosen path, or undefined if skipped. Does not touch config.json itself -
-   *  the caller collects all chosen paths and saves them together.
+  /** Asks the user to locate one required executable via a native file picker. If they cancel, they are told
+   *  to retry - there is no way to skip a required field, so this keeps looping until the user actually
+   *  selects a path. Resolves to the chosen path. Does not touch config.json itself - the caller collects all
+   *  chosen paths and saves them together.
    *
    *  If currentValidPath is given (the field's current config.json value, already confirmed to point at an
    *  existing file), the picker opens with that file pre-selected - the native dialog opens directly in its
    *  folder with the filename pre-filled, so the user only has to press the select button to confirm it
    *  rather than hunt the file down again. Left undefined, the picker just opens with nothing pre-selected. */
-  private async chooseExecutablePathWithRetry(label: string, currentValidPath?: string): Promise<string | undefined> {
+  private async chooseExecutablePathWithRetry(label: string, currentValidPath?: string): Promise<string> {
     const dialogConfig: { [key: string]: any } = {
       title: `Select the ${label}`,
       buttonLabel: 'Select',
@@ -191,21 +185,16 @@ export class AppComponent implements OnInit {
       return chosenPath;
     }
 
-    return new Promise<string | undefined>((resolve) => {
+    return new Promise<string>((resolve) => {
       const infoDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
       infoDialog.disableClose = true;
       infoDialog.componentInstance.title = "Nothing selected";
-      infoDialog.componentInstance.message = `You did not select a path for the ${label}. This feature will not work until it is configured.`;
-      infoDialog.componentInstance.actionsNum = 2;
+      infoDialog.componentInstance.message = `You did not select a path for the ${label}. This is required before the app can continue.`;
+      infoDialog.componentInstance.actionsNum = 1;
       infoDialog.componentInstance.action1Label = "Retry";
-      infoDialog.componentInstance.action2Label = "Skip";
       infoDialog.componentInstance.action1Callback = async () => {
         infoDialog.close();
         resolve(await this.chooseExecutablePathWithRetry(label, currentValidPath));
-      }
-      infoDialog.componentInstance.action2Callback = () => {
-        infoDialog.close();
-        resolve(undefined);
       }
     });
   }

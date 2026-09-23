@@ -11,6 +11,7 @@
     <summary>Technical details</summary>
     <pre>{{technicalDetails}}</pre>
   </details>
+  <mat-checkbox *ngIf="checkboxLabel" [(ngModel)]="checkboxChecked" class="confirmation-dialog-checkbox">{{checkboxLabel}}</mat-checkbox>
 </mat-dialog-content>
 <mat-dialog-actions *ngIf="actionsNum == 2" align="end">
   <button mat-button [mat-dialog-close]="action1" (click)="action1Callback()">{{action1Label}}</button>

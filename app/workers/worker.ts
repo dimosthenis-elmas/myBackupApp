@@ -1423,6 +1423,68 @@ const deletePartialsForDisc = async function (partialAbsolutePaths: Array<string
   return { cleared: false, message: `Removed ${deletedItems.length} of ${partialAbsolutePaths.length} item(s). ` + problems.join(' '), deletedItems };
 }
 
+/** Deletes exactly the given real, absolute paths of recovered files that FAILED SHA-256 verification after a
+ *  "recover data from optical media" job (see verifyRecoveredFileIntegrity in optical-disc-backup-data-
+ *  retriever.component.ts) - and nothing else. Mirrors deletePartialsForDisc's safety pattern (containment
+ *  check against a known-safe root, then delete only the exact caller-supplied paths) but scoped to
+ *  `targetDirectory` - the user's chosen recovery destination - instead of the app's own temp directory, since
+ *  recovered files can be written anywhere the user picked, not just under app-owned storage.
+ *
+ *  Each path is only ever deleted if it resolves (via realpath) to a location strictly inside
+ *  targetDirectory, AND is a real, regular file (fs.lstatSync(...).isFile()) - never a directory, and never a
+ *  symbolic link (its actual target cannot be vouched for, so it is left alone rather than risk deleting
+ *  something it points to elsewhere). A path that no longer exists is treated as already gone, not a problem
+ *  (idempotent - e.g. it belonged to a .part.NNN group that the optional reassembly step, which runs before
+ *  this, already merged and cleaned up). */
+const deleteRecoveredFailedFiles = async function (failedAbsolutePaths: Array<string>, targetDirectory: string): Promise<{ cleared: boolean, message: string, deletedItems: string[] }> {
+  let realTargetDirectory: string;
+  try {
+    realTargetDirectory = fs.realpathSync(targetDirectory);
+  } catch (error) {
+    return { cleared: false, message: 'Refusing to delete: could not resolve the real path of the recovery target directory: ' + (error && (error as any).message ? (error as any).message : String(error)), deletedItems: [] };
+  }
+
+  const deletedItems: string[] = [];
+  const problems: string[] = [];
+  for (const entryPath of failedAbsolutePaths) {
+    if (!fs.existsSync(entryPath)) {
+      continue;
+    }
+    let entryRealPath: string;
+    let stats;
+    try {
+      entryRealPath = fs.realpathSync(entryPath);
+      // lstat, not stat: a symbolic link must be recognized (and rejected below) as itself, not silently
+      // resolved through to whatever it points at.
+      stats = fs.lstatSync(entryPath);
+    } catch (error) {
+      problems.push(`"${entryPath}" was skipped: could not resolve its real path.`);
+      continue;
+    }
+    if (!isPathStrictlyInside(entryRealPath, realTargetDirectory)) {
+      problems.push(`"${entryPath}" was skipped: it does not resolve to a location inside the recovery target directory.`);
+      continue;
+    }
+    if (!stats.isFile()) {
+      problems.push(`"${entryPath}" was skipped: it is not a regular file (directories and symbolic links are never deleted by this feature).`);
+      continue;
+    }
+    try {
+      fs.unlinkSync(entryPath);
+      deletedItems.push(entryPath);
+    } catch (error) {
+      problems.push(`"${entryPath}" could not be deleted: ${error && (error as any).message ? (error as any).message : String(error)}.`);
+    }
+  }
+
+  if (problems.length === 0) {
+    return { cleared: true, message: `Deleted ${deletedItems.length} file(s) which failed integrity verification.`, deletedItems };
+  }
+  // false for any partial run, even if some items DID delete successfully - same reasoning as
+  // deletePartialsForDisc/clearTempDataDirectory's own identical `cleared` flag.
+  return { cleared: false, message: `Deleted ${deletedItems.length} of ${failedAbsolutePaths.length} file(s). ` + problems.join(' '), deletedItems };
+}
+
 
 /** @return an array that contains the absolute paths of all files in "dirPath" (in a recursive fashion).
  *  It also takes into account empty directories. 
@@ -2418,6 +2480,14 @@ const init = function() : void
           ipc.sendResponseToMain({ key: 'delete-partials-for-disc', res: d, status: "completed" });
         }).catch((err)=>{
           ipc.sendResponseToMain({ key: 'delete-partials-for-disc', res: err, status: "error" });
+        });
+        break;
+      case 'delete-recovered-failed-files':
+        console.log("(worker) in delete-recovered-failed-files")
+        deleteRecoveredFailedFiles(arg.params.failedAbsolutePaths, arg.params.targetDirectory).then((d)=>{
+          ipc.sendResponseToMain({ key: 'delete-recovered-failed-files', res: d, status: "completed" });
+        }).catch((err)=>{
+          ipc.sendResponseToMain({ key: 'delete-recovered-failed-files', res: err, status: "error" });
         });
         break;
       case 'get-temp-data-directory-path':

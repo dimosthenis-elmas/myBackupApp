@@ -754,12 +754,13 @@ import { parseProgressFromLine } from '../shared/utils/progress-line';
       let message = `The recovery of your data has been completed successfully!`;
       if (integrity) {
         message = anyFailed
-          ? `The recovery finished, but SHA-256 integrity verification found one or more problems - see the list(s) below.`
+          ? `The recovery finished, but SHA-256 integrity verification found one or more problems - see the full recovered file paths below.`
           : `The recovery of your data has been completed successfully, and SHA-256 integrity verification confirmed every file with recorded hash data matches.`;
         // Full lists, not a truncated "first 15, and N more" string - see ConfirmationDialogComponent's own
         // `lists` field: each renders as a real virtualized scrolling list, so however many files are in a
         // given category, only the ones actually visible are ever real DOM nodes. Only non-empty sections are
-        // included (an empty `items` array is never shown, per that field's own contract).
+        // included (an empty `items` array is never shown, per that field's own contract). Every entry is the
+        // file's full absolute path (see verifyRecoveredFileIntegrity), not just its name.
         infoDialog.componentInstance.lists = [
           integrity.failed.length ? { label: `FAILED integrity check (${integrity.failed.length}) - this can mean real data corruption (a bad drive read, disc handling damage):`, items: integrity.failed } : undefined,
           integrity.verified.length ? { label: `Verified (${integrity.verified.length}):`, items: integrity.verified } : undefined,
@@ -769,60 +770,82 @@ import { parseProgressFromLine } from '../shared/utils/progress-line';
       infoDialog.componentInstance.message = message;
       infoDialog.componentInstance.actionsNum = 1;
       infoDialog.componentInstance.action1Label = "Ok";
-      infoDialog.componentInstance.action1Callback = () => {
+      if (anyFailed) {
+        // Offered only when there is something to delete, and defaults unchecked - deleting recovered data is
+        // never done unless the user explicitly opts into it right here.
+        infoDialog.componentInstance.checkboxLabel = 'Delete all the recovered files which did not pass the verification test.';
+        infoDialog.componentInstance.checkboxChecked = false;
+      }
+      infoDialog.componentInstance.action1Callback = async () => {
           infoDialog.close();
+          if (anyFailed && infoDialog.componentInstance.checkboxChecked) {
+            await this.deleteFailedIntegrityFiles(integrity!.failed);
+          }
           this.finishedCopyingFiles = true;
           this.recoveredAllFilesFromAllDiscs = true;
         }
     }
 
+    /** Deletes exactly the recovered files that FAILED SHA-256 verification - the same full absolute paths
+     *  just shown to the user in the "FAILED integrity check" list above, nothing more. Only ever called when
+     *  the user explicitly ticked the "Delete all the recovered files which did not pass the verification
+     *  test." checkbox; the actual safety checks (only real, on-disk files strictly inside the recovery target
+     *  directory are ever touched - never a directory, a symlink, or anything outside it) live in
+     *  deleteRecoveredFailedFiles in worker.ts, run on the worker side so they cannot be bypassed by anything
+     *  going wrong here in the renderer. */
+    private async deleteFailedIntegrityFiles(failedAbsolutePaths: string[]): Promise<void> {
+      let result: { cleared: boolean, message: string, deletedItems: string[] };
+      try {
+        result = (await ipc.deleteRecoveredFailedFiles(failedAbsolutePaths, this.backup.targetPath)).res;
+      } catch (error) {
+        result = { cleared: false, message: `The deletion could not be completed: ${error}`, deletedItems: [] };
+      }
+      await new Promise<void>((resolve) => {
+        const resultDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '600px' });
+        resultDialog.disableClose = true;
+        resultDialog.componentInstance.title = result.cleared ? "Failed files deleted" : "Some failed files could not be deleted";
+        resultDialog.componentInstance.message = result.message;
+        if (result.deletedItems.length) {
+          resultDialog.componentInstance.lists = [{ label: `Deleted (${result.deletedItems.length}):`, items: result.deletedItems }];
+        }
+        resultDialog.componentInstance.actionsNum = 1;
+        resultDialog.componentInstance.action1Label = "Ok";
+        resultDialog.componentInstance.action1Callback = () => { resultDialog.close(); resolve(); };
+      });
+    }
+
     /** Runs SHA-256 integrity verification (see verifyFileHashes in worker.ts) over every recovered file that
-     *  has a stored hash. Grouped by LOGICAL file - reuses the same .partNNN grouping groupSelectedPartialFiles
-     *  already uses for the merge offer, so a large file split across several pieces reports as ONE line: it is
-     *  "verified" only if every one of its constituent pieces that HAD a stored hash actually matched, and
-     *  "FAILED" if any did not. An ordinary (non-split) file is just its own one-piece group. A group where NONE
-     *  of its pieces carry a stored hash at all (an old cold storage metadata JSON, or the "None" integrity
-     *  option was used at backup time) reports as "no integrity data available" - NOT a failure.
+     *  has a stored hash - one line per physical recovered file (deliberately NOT grouped by logical/original
+     *  file the way groupSelectedPartialFiles groups .part.NNN pieces for the separate merge offer below: the
+     *  user needs to see, and be able to selectively delete, the exact physical file that actually failed, not
+     *  a merged-file label that may cover pieces that were fine). Each entry in the returned lists is the
+     *  file's full, absolute on-disk path (this.backup.targetPath + its relative path within the recovery),
+     *  never just a bare file name. A file with no stored hash at all (an old cold storage metadata JSON, or
+     *  the "None" integrity option was used at backup time) reports under `noData` - NOT a failure.
      *  @return undefined (nothing to show) if nothing selected carries any stored hash at all - callers should
      *  skip showing an integrity summary entirely for a recovery that simply never had hash data to check,
      *  rather than a summary that's all "no data". */
     private async verifyRecoveredFileIntegrity(): Promise<{ verified: string[], noData: string[], failed: string[] } | undefined> {
       // Built once as a Map (bare path -> hash) rather than a per-call Array.find() scan - a cold storage with
-      // many discs/files otherwise makes this an O(files selected * files in cold storage) scan, done twice
-      // over (once building filesToHash, once tallying results below).
+      // many discs/files otherwise makes this an O(files selected * files in cold storage) scan.
       const hashByBarePath = new Map<string, string>();
       this.coldStorageMetadataForAllOpticalDiscs.flat().forEach((e) => {
         if (e.stats.sha256) { hashByBarePath.set(e.path.replace(OPTICAL_DRIVE_LETTER_CONVENTION, ''), e.stats.sha256); }
       });
-      const findExpectedHash = (barePath: string): string | undefined => hashByBarePath.get(barePath);
 
       let target = this.backup.targetPath;
       if (target[target.length - 1] != '\\') { target += '\\'; }
 
-      const partFilePattern = /^(.+)\.part\.\d+$/i;
-      const groups = new Map<string, { label: string, barePaths: string[] }>();
-      (this.selectedFilePathsWithExtraInfo || []).forEach((entry) => {
-        const lastSlash = entry.path.lastIndexOf('\\');
-        const dir = lastSlash >= 0 ? entry.path.substring(0, lastSlash + 1) : '';
-        const fileName = lastSlash >= 0 ? entry.path.substring(lastSlash + 1) : entry.path;
-        const match = partFilePattern.exec(fileName);
-        const label = match ? dir + match[1] : entry.path;
-        if (!groups.has(label)) { groups.set(label, { label, barePaths: [] }); }
-        groups.get(label)!.barePaths.push(entry.path);
-      });
-
       const filesToHash: Array<{ absolutePath: string, expectedSha256: string }> = [];
-      const groupHasAnyHash = new Map<string, boolean>();
-      groups.forEach((group) => {
-        let anyHash = false;
-        group.barePaths.forEach((barePath) => {
-          const expected = findExpectedHash(barePath);
-          if (expected) {
-            anyHash = true;
-            filesToHash.push({ absolutePath: target + barePath, expectedSha256: expected });
-          }
-        });
-        groupHasAnyHash.set(group.label, anyHash);
+      const noData: string[] = [];
+      (this.selectedFilePathsWithExtraInfo || []).forEach((entry) => {
+        const absolutePath = target + entry.path;
+        const expected = hashByBarePath.get(entry.path);
+        if (expected) {
+          filesToHash.push({ absolutePath, expectedSha256: expected });
+        } else {
+          noData.push(absolutePath);
+        }
       });
 
       if (filesToHash.length === 0) {
@@ -875,21 +898,10 @@ import { parseProgressFromLine } from '../shared/utils/progress-line';
       listener.removeListener();
       loadingDialogRef.close();
 
-      const matchedByAbsolutePath = new Map<string, boolean>(results.map(r => [r.path, !!r.matched]));
-
       const verified: string[] = [];
-      const noData: string[] = [];
       const failed: string[] = [];
-      groups.forEach((group) => {
-        if (!groupHasAnyHash.get(group.label)) {
-          noData.push(group.label);
-          return;
-        }
-        const everyHashedPieceMatched = group.barePaths.every((barePath) => {
-          const expected = findExpectedHash(barePath);
-          return !expected || matchedByAbsolutePath.get(target + barePath) === true;
-        });
-        (everyHashedPieceMatched ? verified : failed).push(group.label);
+      results.forEach((r) => {
+        (r.matched ? verified : failed).push(r.path);
       });
 
       return { verified, noData, failed };

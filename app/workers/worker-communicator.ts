@@ -383,6 +383,14 @@ export class WorkerCommunicator {
         return this.sendAndAwaitResponse('verify-file-hashes', { files: files }, 'response.res');
     }
 
+    /** Deletes exactly the given real, absolute paths of recovered files that FAILED SHA-256 verification - see
+     *  deleteRecoveredFailedFiles in worker.ts. `targetDirectory` is the recovery's own chosen destination
+     *  directory (this.backup.targetPath in optical-disc-backup-data-retriever.component.ts) - every path is
+     *  required to resolve inside it, or it is left untouched. */
+    static deleteRecoveredFailedFiles(failedAbsolutePaths: Array<string>, targetDirectory: string): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('delete-recovered-failed-files', { failedAbsolutePaths: failedAbsolutePaths, targetDirectory: targetDirectory });
+    }
+
     static validateConfigPaths(): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('validate-config-paths', {});
     }

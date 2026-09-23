@@ -29,6 +29,13 @@ export class ConfirmationDialogComponent implements OnInit {
    *  ErrorReporterService. Rendered collapsed by default below `message`: the user should read a plain-language
    *  explanation first, with the technical detail available on request rather than presented as "the message". */
   public technicalDetails?: string;
+  /** Optional single checkbox rendered below the lists, defaulting to unchecked (e.g. "Delete all the
+   *  recovered files which did not pass the verification test."). Left undefined, no checkbox is rendered. The
+   *  caller reads `checkboxChecked` from its own action callback (it closes over this dialog's
+   *  componentInstance) to decide what to do - this component itself has no opinion on what the checkbox
+   *  means. */
+  public checkboxLabel?: string;
+  public checkboxChecked = false;
 
   ngOnInit(): void {
    

@@ -8,7 +8,7 @@ export type WorkerChannel =
 "create-optical-media-disc-partials" | "delete-partials-for-disc" |
 "get-effective-optical-medium-capacity" | "check-temp-data-directory-for-leftovers" |
 "open-existing-ibb-file" | "imgburn-launch-failed" |
-"compute-sha256-for-backed-up-files" | "verify-file-hashes";
+"compute-sha256-for-backed-up-files" | "verify-file-hashes" | "delete-recovered-failed-files";
 
 export interface WorkerRequest {
   key: WorkerChannel;
