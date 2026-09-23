@@ -16,91 +16,85 @@ I built it during a migration project to back up my own files to optical discs a
 <sub>Recovering a backup from a JSON-provided disc listing - including reassembling a large file that was split across two discs.</sub>
 </p>
 
-## A few things about how it's built, if you're skimming this as a portfolio piece:
+## A few things about how it's built, if you're skimming this as a portfolio piece
+
 - Angular (renderer) + Electron (main process) + a separate worker process, talking over IPC.
 - Files too large for a single disc are split via 7-Zip and reassembled on recovery, with a real bin-packing pass
   deciding what goes on which disc.
-- It has an automated test harness (see [test-harness/](test-harness/) and [docs/TESTING.md](docs/TESTING.md))
-  that drives the actual Electron UI end-to-end - clicking through the real wizards, with a virtual .iso disc
-  standing in for a physical one - and verifies results byte-for-byte, rather than just unit-testing in isolation.
+- Every backed-up file gets a SHA-256 checksum recorded at burn time (always on, not a toggle), re-checked again on
+  recovery or on demand via a standalone verify wizard - real defense-in-depth against a drive read error or disc
+  damage, not just "the copy finished."
+- An automated test harness (see [test-harness/](test-harness/) and [docs/TESTING.md](docs/TESTING.md)) drives the
+  real Electron UI end-to-end with [Playwright](https://playwright.dev) - clicking through the actual wizards, with
+  a virtual `.iso` disc standing in for a physical one - and verifies results byte-for-byte, rather than just
+  unit-testing in isolation. All 6 main-menu features have a Playwright test; `test-harness\run-all-tests.bat` runs
+  the entire suite in one go with a PASS/FAIL summary.
 - A portable installer ([installer/](installer/)) - no registry entries, no Program Files, delete-the-folder to
   uninstall.
 
-----------------------------------------------------------------
+---
 Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY KIND. Please be mindful when using it because there may be unknown bugs.
 I am not in any way, shape, or form responsible for any loss of data due to a malfunction of this application!
 This project started as a kind of exercise for me to learn the Angular framework.
 This is a hobby project!
-----------------------------------------------------------------
 
-## The features of the application:
-- **Incremental backup:** (Perhaps a more appropriate name would be: Cumulative backup)
-This mode only adds the files not present, or re-writes the modified ones, in your current backup location.
-It will not delete files that were deleted from the source location.
+---
+## Features
 
-- **Synchronize dirs:** Adds and deletes files in order to make a 'target' directory exactly the same as the 'master' directory. Caution is needed
-because this feature may also delete files from the target directory.
+- **Incremental backup** (perhaps a more fitting name would be "Cumulative backup"): copies files that are new or
+  changed into your backup location. It never deletes anything that was removed from the source.
 
-- **Backup to optical media:** Partitions your files to a collection of optical disks and sends them to
-ImgBurn in order to be burned. It can also split large files which do not fit to a single optical disc.
-It also records a SHA-256 checksum for every file in the cold storage metadata json - this is not optional -
-defense-in-depth against a drive read error or disc handling damage later on, independent of whatever error
-correction the disc/burner itself already does. See "Verify integrity of cold storage disc" below for how these
-checksums actually get used.
+- **Synchronize dirs:** makes a "target" directory an exact copy of a "master" directory, adding and deleting files
+  as needed. Because it can delete files from the target, use it with care.
 
-- **Recover data from optical media:** Recovers all, or a partial selection of the contents of a backup stored in a
-collection of optical media. You can now optionally provide the cold storage metadata json file (the one saved
-when you first created the backup, or later updated it - see the "Add missing files" note below) so that you don't
-have to insert every single disc one by one just to see what's in your cold storage. The app builds the recoverable
-files list straight from the json, and will only ask you to insert the specific disc(s) that actually contain the
-files you chose to recover. Important: the discs must be labeled/numbered exactly according to their order in the
-json file (i.e. the disc you call "disc 1" in real life must be the first disc listed in the json), so please take
-care to get that numbering right when you label your discs.
+- **Backup to optical media:** splits your files across as many discs as needed and sends them to ImgBurn to burn.
+  Large files that don't fit on one disc are split automatically. Every file also gets a SHA-256 checksum recorded
+  in the cold storage metadata JSON (always on, not optional) - protection against a later drive read error or disc
+  damage. See "Verify integrity of cold storage disc" below for how these checksums get used.
 
-If any of the files you selected to recover turn out to be partial files (parts of a large file which didn't fit on
-a single disc - see below), the app will notice once the relevant disc(s) have been copied, and will offer to
-automatically reassemble the original file for you using 7-Zip. If you say no, or if the automatic reassembly fails
-for some reason (e.g. a missing or corrupted part), nothing gets deleted and the app shows you the exact 7-Zip
-command to reassemble the file by hand yourself later.
+- **Recover data from optical media:** recovers all, or just a selection of files, of a backup stored across your discs. You
+  can optionally provide the cold storage metadata JSON file saved earlier (see "Add missing files" below) instead
+  of inserting every disc just to see what's on it - the app builds the file list straight from the JSON, then only
+  asks you to insert the specific disc(s) that hold what you selected. Important: label your discs in the same
+  order they appear in the JSON file (the disc you call "disc 1" must be the first one listed).
 
-If the cold storage you're recovering from was backed up with SHA-256 checksums recorded (see above), the app
-automatically re-checks every recovered file's checksum once copying finishes, and tells you exactly which files
-(if any) failed - a real, actionable sign of drive/disc trouble, not just "recovery completed." If some or all of
-the files you're recovering come from an older cold storage that predates this feature (or otherwise has no
-recorded checksum for a given file), those are simply listed as having no integrity data available, rather than
-as a failure.
+  If any recovered files are parts of a large file that was split across discs, the app offers to reassemble the
+  original file with 7-Zip once every needed disc has been copied. If you decline, or reassembly fails (e.g. a
+  missing or corrupted part), nothing is deleted - you get the exact 7-Zip command to do it by hand later.
 
-- **Add missing (new) files to existing optical media cold storage:** It also accounts for large files that can't fit on a single optical disc, splitting them so the large file can be distributed across multiple discs.
-Every new disc gets the same mandatory SHA-256 checksums as backup-to-optical-media, independently of whether the
-EXISTING discs you're adding to already carry them or not - if you load an existing cold storage json whose
-discs predate this feature (or otherwise have no recorded checksums), those older entries are simply listed as
-having no integrity data available when later verified or recovered, rather than as a failure.
-Note that this simple app uses a rather rudimentary check (at this point) in order to recognize that a large file has been backed up in several parts. It basically uses
-a naming convention (a large file e.g.: largeFile.data will be split to largeFile.data.part.001 etc.). Note that this simple assumption might cause problems in some scenarios with naming conflicts. I know, I will have to make this more robust in the future but for now, that's how it works. Sorry folks, will have to review this.
+  If the cold storage has SHA-256 checksums recorded, the app re-checks every recovered file once copying finishes
+  and tells you exactly which ones (if any) failed - a real, actionable sign of drive or disc trouble, not just
+  "recovery completed." Files recovered from an older cold storage with no recorded checksum are listed as having
+  no integrity data, not as a failure. If any files do fail the check, you can choose to have just those files
+  deleted.
 
-Both when you first back up to optical media, and whenever you add missing files to an existing cold storage
-afterwards, the app now asks you where to save the resulting cold storage metadata json file - it used to always
-get dumped into the app's internal temp folder, now you pick the folder and file name yourself via a normal save
-dialog. Please keep this file somewhere safe, since it's what lets you use the "Recover data from optical media"
-and "Add missing files" features without physically inserting every single disc again.
+- **Add missing (new) files to existing optical media cold storage:** adds only the files that are new since your
+  last backup, onto new discs - large files that don't fit on one disc are split the same way as in "Backup to
+  optical media." New discs always get SHA-256 checksums; if the existing cold storage JSON predates this feature,
+  those older entries are simply listed as having no integrity data when later verified or recovered.
 
-- **Verify integrity of cold storage disc:** A separate, read-only wizard for checking a cold storage disc's
-SHA-256 checksums on their own, without recovering/copying anything - useful for periodically spot-checking a set
-of discs you already have, independent of ever actually needing to recover from them. Point it at the cold
-storage metadata json, then insert discs one at a time (in any order) - it auto-identifies each one, hashes every
-file on it directly off the disc, and reports Verified/FAILED/no-integrity-data for each, with a running per-disc
-tally as you go. Does nothing at all (tells you up front, before asking you to insert anything) if the json has
-no checksums recorded for any file.
+  Split files are recognized by a naming convention (`largeFile.data` becomes `largeFile.data.part.001`, etc.),
+  which can misfire if you happen to have unrelated files matching that same pattern.
 
-- On startup, the app now does a couple of housekeeping checks for you:
-  - It checks whether its internal temp folder still has leftover partial (.part.NNN) files from a previous
-    large-file split that never got cleaned up, and offers to clear them out for you.
-  - It checks whether config.json (see "Other stuff" below) is missing the paths to 7-Zip and/or ImgBurn, or
-    whether a previously configured path no longer points to an existing program (e.g. you moved or reinstalled
-    it). If so, it walks you through picking the right .exe file(s) with a normal file picker and saves them back
-    to config.json for you. You can still edit config.json by hand if you prefer - this is just there so you don't
-    have to.
-----------------------------------------------------------------
+  Both "Backup to optical media" and "Add missing files" ask you where to save the resulting cold storage metadata
+  JSON file, via a normal save dialog. Keep this file safe - it's what lets you use "Recover data from optical
+  media" and "Add missing files" again without physically inserting every disc.
+
+- **Verify integrity of cold storage disc:** a read-only wizard that checks a disc's SHA-256 checksums without
+  recovering or copying anything - useful for periodically spot-checking discs you already have. Point it at the
+  cold storage metadata JSON, then insert your discs one at a time in any order - it identifies each disc
+  automatically, hashes every file on it, and reports Verified/FAILED/no-data for each, with a running tally. If
+  the JSON has no checksums recorded at all, it tells you up front instead of asking you to insert anything.
+
+- On startup, the app runs a couple of housekeeping checks:
+  - It checks whether its internal temp folder has leftover partial (`.part.NNN`) files from an interrupted
+    large-file split, and offers to clear them out.
+  - It checks whether `config.json` (see "Other stuff" below) is missing the paths to 7-Zip and/or ImgBurn, or
+    whether a configured path no longer points to a real program (e.g. it was moved or reinstalled). If so, it
+    walks you through picking the right `.exe` file(s) with a file picker - each path is required, so it keeps
+    asking until you provide a valid one. You can still edit `config.json` by hand instead, if you prefer.
+
+---
 Screenshots (click any of them to view at full resolution - GitHub's inline rendering below is shrunk to fit
 the page width, which can make the in-app dialog text hard to read at a glance):
 
@@ -129,97 +123,112 @@ the page width, which can make the in-app dialog text hard to read at a glance):
 <sub><b>Verify integrity of cold storage disc</b> - a running per-disc tally as a real scrolling list, so it stays readable no matter how many discs a session checks.</sub>
 </p>
 
-----------------------------------------------------------------
-## Build this project:
+---
+## Build this project
+
 You will need:
-Angular 17.3.6
-Angular CLI 17.3.6 (note Angular and the CLI must be the exact same version number)
-NodeJS v18.20.5
+- Angular 17.3.6 and Angular CLI 17.3.6 (must be the exact same version number)
+- Node.js v18.20.5
 
-Then use npm install to install dependencies.
-You must npm install in both the ./ directory and the ./app directory.
+Run `npm install` in both the project root (`./`) and `./app` - the Electron part of the app lives in `./app`,
+the Angular part in `./src/app`.
 
-The ./app directory contains the Electron part of the application.
-The ./src/app directory contains the Angular part of the application.
+Angular Material is 17.3.10, Electron is 30.0.1.
 
-The Angular Material version is 17.3.10
-The Electron version is 30.0.1
+Start the app in debug mode with `npm start`.
 
-To start the app in debug mode run `npm start`
+### Building a Windows .exe
 
-----------------------------------------------------------------
-Note for building the project in windows (.exe):
-To build a .exe file for windows you can use the command `npm run electron:build`
-This will create the release/ directory and your working .exe is in the win-unpacked directory.
-Note that if you want to install the app somewhere else you will have to copy 
-the entire release/ directory and use the aforementioned .exe to open the app.
+Run `npm run electron:build` - it creates `release/`, with the working app under `release/win-unpacked/`. To move
+the app elsewhere, copy the whole `release/win-unpacked/` folder, not just the `.exe`.
 
-There's a simple portable installer for actually installing the app somewhere - see "How to install" below.
+For an actual installer experience (rather than just a folder you copy by hand), see "How to install" below.
 
-----------------------------------------------------------------
-## Testing:
+---
+## Testing
 
-This app's backup/split/recover/sync flow has an automated test harness under test-harness/ - it can click
-through the real on-screen wizards for you (no physical disc needed - a .iso file is made to look like a real
-inserted disc to Windows) and/or talk directly to the app's file-handling engine, then verify results
-byte-for-byte. See docs/TESTING.md for the full overview (what's covered, how to run it, real bugs it has found)
-and test-harness/README.md for the implementation details.
+This app's backup/split/recover/sync flow has an automated test harness under `test-harness/`, in two styles:
 
---------------------------------------------------------------
-## How to install (a simple, portable installer - no admin rights, no registry entries, no Program Files):
-1) Build the app first: `npm run electron:build` (see above - this produces release/win-unpacked).
+- **UI tests** (`test-harness/ui/`) drive the real, visible Electron window through
+  [Playwright](https://playwright.dev) - clicking through the actual on-screen wizards exactly like a person would,
+  with a virtual `.iso` file standing in for a real inserted disc (no physical disc or drive needed). This is the
+  only style that can catch problems in the screens themselves - a button that doesn't do what it says, a dialog
+  that never appears, a checkbox that lies about its own state - rather than just the underlying engine. All 6
+  main-menu features have a Playwright UI test, including the SHA-256 integrity-checksum feature and multi-disc
+  recovery with large files split across discs.
+- **Worker-IPC tests** (`test-harness/worker-ipc/`) talk directly to the app's file-handling engine over the same
+  IPC messages the UI sends, skipping the screens entirely - faster, and useful for testing logic like the
+  bin-packing pass (which files go on which disc) in isolation.
+
+Every test verifies its result byte-for-byte against a manifest, rather than just checking that nothing threw an
+error. To run everything - every worker-IPC test, then every Playwright UI test - in one go, with a PASS/FAIL
+summary at the end, just double-click `test-harness\run-all-tests.bat` (or run it from a terminal). It cleans up
+scratch data before starting and after a fully-passing run, and leaves it in place for inspection if anything
+fails.
+
+To run things one at a time instead:
+```
+node test-harness/worker-ipc/test-partitioning.js       # fastest, safest place to start
+node test-harness/ui/test-recover-single-disc.js        # a full Playwright-driven wizard, clicked through for real
+node test-harness/cleanup.js --dry-run                  # see what (if anything) needs cleaning up
+```
+
+See [docs/TESTING.md](docs/TESTING.md) for the full overview (what's covered, how to run it, real bugs it has
+found) and [test-harness/README.md](test-harness/README.md) for implementation details, including the Playwright
+setup itself.
+
+---
+## How to install (a simple, portable installer - no admin rights, no registry entries, no Program Files)
+
+1) Build the app first: `npm run electron:build` (see above - this produces `release/win-unpacked/`).
 2) Double-click `installer/install.bat` (or run `installer/install.ps1` directly via PowerShell).
-3) Follow the prompts: pick (or create) the folder you want the app's files installed into, optionally point it
-at your 7z.exe and ImgBurn.exe (you can also skip these and set them later - the app will ask again itself the
-first time it actually needs one), and optionally create a shortcut (defaults to your Desktop, but you can pick
-anywhere).
+3) Follow the prompts: pick (or create) the folder to install into, optionally point it at your `7z.exe` and
+   `ImgBurn.exe` (or skip this here and set them the next time you start the app, which will walk you through it
+   and require a real path before you can continue), and optionally create a shortcut (defaults to your Desktop,
+   but you can pick anywhere).
 
 That's it - everything the app needs lives inside the one folder you chose, including its own temp/cache
 directory. To uninstall, just delete that folder (and the shortcut, if you made one) - nothing else on your
-computer was ever touched. See installer/README.md for more detail.
+computer is ever touched. See [installer/README.md](installer/README.md) for more detail.
 
-----------------------------------------------------------------
-## Other stuff:
-1) For this app to work you need to install ImgBurn in your computer. Please go to the official ImgBurn website and download the installer.
-This app is essentially a utility which makes it easier to create the .ibb files which can then be used (opened) by the ImgBurn software for actually burning
-your data to optical media.
-We used the ImgBurn version 2.5.8.0
-After installing the software, you need to point the app to the ImgBurn.exe file. The app will actually ask you for
-this itself on startup if it notices config.json is missing this path (or if the path no longer points to an
-existing file) - just follow the file picker dialog it shows you. If you'd rather do it by hand (or the guided
-prompt isn't available for some reason), you can go to the file config.json (located in the appData/ directory)
-and put the path to the ImgBurn.exe file yourself under 'imgBurnExecutablePath'. Either way, this has to be done
-both for dev and the "dist" mode (dist\ directory). Note that if you
-build the project using `npm run electron:build` and have already configured the config.json file, the appData\ directory
-will be copied in the dist\ directory automatically, so you don't have to do anything. 
+---
+## Other stuff
 
-Also, note that the app will save the .ibb files for burning backups to optical media (used by ImgBurn) in the appData\ directory.
-You may delete these files if you don't want or need them (these could be used to re-burn the optical disks if you wish, by just double clicking on them).
-But you should not delete or modify the IBB_TEMPLATE.ibb file. This file must be included in the appData\ directory,
-and it already is - it's committed in this repository, so you don't need to recreate it yourself. In case you
-ever do need to regenerate it, here's how:
-Go to ImgBurn and select "write files/folders to disk". Then, under the 'source' area select
-'show disk layout editor'. Then add some files to your project and save the .ibb file. Then edit the file to delete the part between
-[START_BACKUP_LIST] and [END_BACKUP_LIST]. (But keep these [START_BACKUP_LIST] and [END_BACKUP_LIST] tags). Then rename the file to IBB_TEMPLATE.ibb.
-Also, note that before saving the .ibb from ImgBurn you may want
-to check the options 'Allow more than 8 directory levels', 'Allow more than 255 characters in path' ... etc. These options are located in Advanced > Restrictions.
+### 1. ImgBurn
 
-2) This app also makes use of the 7-zip software.
-Essentially, our app calls the 7-zip using the command line in order to split large files, and (since a recent
-update) to reassemble them back together again when recovering from optical media.
-You will have to install the 7-zip software from the official website.
-We have used version 22.01.
-Just like with ImgBurn above, the app will now ask you for the path to 7z.exe itself on startup if it's missing or
-no longer valid - just follow the file picker it shows you. Or, if you'd rather set it by hand, open the file
-config.json (located in the appData/ directory) and add the path to the 7z.exe file under '_7zipExecutablePath'.
+Install [ImgBurn](https://www.imgburn.com/) (we used version 2.5.8.0) - this app generates the `.ibb` project
+files that ImgBurn then actually burns to disc.
 
-Note that this application only uses these 2 programs (ImgBurn and 7-Zip) through their officially provided command line interface and does not
-interfere with them in any other way.
+Point the app at your `ImgBurn.exe`: it asks you for this itself on startup if the path is missing or no longer
+valid, via a normal file picker. You can also set it by hand, by editing `config.json` (in `appData/`) and setting
+`imgBurnExecutablePath`. This applies both in dev and in a packaged build - `npm run electron:build` copies
+`appData/` into `release/win-unpacked/resources/appData/` automatically, so an already-configured `config.json`
+carries over.
 
+The app saves the `.ibb` files it generates into `appData/`. You can delete these if you don't need them (they can
+also be used to re-burn a disc later, just by double-clicking one) - but don't delete or modify
+`IBB_TEMPLATE.ibb`, which is required and already committed in this repository.
+
+If you ever need to regenerate `IBB_TEMPLATE.ibb`: in ImgBurn, choose "Write files/folders to disc", open "Show
+disk layout editor" under Source, add some files, and save the `.ibb`. Then edit the saved file to delete
+everything between `[START_BACKUP_LIST]` and `[END_BACKUP_LIST]` (keep the tags themselves), and rename it to
+`IBB_TEMPLATE.ibb`. Before saving from ImgBurn, also enable "Allow more than 8 directory levels" and "Allow more
+than 255 characters in path", under Advanced > Restrictions.
+
+### 2. 7-Zip
+
+Install [7-Zip](https://www.7-zip.org/) (we used version 22.01) - the app calls it via the command line to split
+large files, and to reassemble them again during recovery.
+
+Same as ImgBurn: the app asks for `7z.exe`'s path on startup if it's missing or no longer valid, or you can set it
+by hand in `config.json` under `_7zipExecutablePath`.
+
+The app only ever calls ImgBurn and 7-Zip through their official command-line interfaces - it doesn't interfere
+with either program in any other way.
+
+---
 This app started from the code provided by Maxime GRIS (angular-electron starter): https://github.com/maximegris/angular-electron. Thanks.
 
---------------------------------------------------------------
+---
 
 ## Take care and God bless y'all!
-
-
