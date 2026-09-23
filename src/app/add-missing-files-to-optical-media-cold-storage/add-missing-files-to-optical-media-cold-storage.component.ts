@@ -11,6 +11,7 @@ import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communica
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
 import { getDiscIdHash } from '../shared/utils/disc-id-hash';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
+import { stripTrailingCounter, parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
 
 import {FormBuilder, Validators, FormsModule, ReactiveFormsModule} from '@angular/forms';
 import {MatButtonModule} from '@angular/material/button';
@@ -440,12 +441,11 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     }
   }
 
-  /** Scans the master directory (ipc.getFilePathsWithStats) behind a LoadingDialogComponent that shows the
-   *  scan's own live, open-ended "items found so far" count as it comes in (see get-file-paths-with-stats in
-   *  worker.ts) - this is the most time-consuming step of this wizard's step_1, and previously ran with
-   *  no visible feedback at all (the dialog diff() itself opens only starts AFTER this already-finished scan is
-   *  passed into it). There's no known total until the scan finishes, so this is a live count, not a
-   *  percentage - see getAllFilePathsWithStats' own SCAN_PROGRESS_REPORT_INTERVAL doc comment in worker.ts. */
+  /** Scans the master directory (ipc.getFilePathsWithStats) behind a LoadingDialogComponent that shows a real,
+   *  live percentage (see get-file-paths-with-stats in worker.ts, which probes the real total upfront via
+   *  countAllFilesQuick before scanning - see its own doc comment) - this is the most time-consuming step of
+   *  this wizard's step_1, and previously ran with no visible feedback at all (the dialog diff() itself opens
+   *  only starts AFTER this already-finished scan is passed into it). */
   private async scanMasterDirectoryWithProgress(): Promise<filesMetadata[]> {
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
     loadingDialogRef.componentInstance.showCancelButton = false;
@@ -454,7 +454,14 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       this.ngZone.run(() => {
         if (response.key === 'get-file-paths-with-stats' && response.status === 'running') {
           const lines = response.res as string[];
-          if (lines.length > 0) { loadingDialogRef.componentInstance.message = lines[lines.length - 1]; }
+          if (lines.length > 0) {
+            const progress = parseScanItemsProgress(lines[lines.length - 1]);
+            if (progress) {
+              loadingDialogRef.componentInstance.progressCurrent = progress.current;
+              loadingDialogRef.componentInstance.progressTotal = progress.total;
+              loadingDialogRef.componentInstance.percent = Math.round((progress.current / progress.total) * 100);
+            }
+          }
         }
       });
     });
@@ -469,6 +476,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   async diff(coldStoragePathsWithStats: filesMetadata[], masterPathsWithStats: filesMetadata[]){
     this.step='step_3';
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+    loadingDialogRef.componentInstance.message = 'Comparing directories';
     this.masterPathsWithStats = masterPathsWithStats;
     await this.holdOn(500);
     let coldStoragePathsWithoutPartials = this.replacePartialFileSplits(coldStoragePathsWithStats, JSON.parse(JSON.stringify(masterPathsWithStats)));
@@ -478,14 +486,23 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
 
     // Deep copy because this will mutate the values;
     let masterPathsWithStats_ : filesMetadata[]= JSON.parse(JSON.stringify(this.masterPathsWithStats))
-    // Set when a modified/out-of-sync file is found below - used after the .filter() to actually stop diff()
-    // from continuing on to build and display a (truncated) missing-files tree, which it previously did
-    // regardless, right after telling the user the operation could not proceed and was being cancelled.
+    // Set when a modified/out-of-sync file is found below - used after the loop to actually stop diff() from
+    // continuing on to build and display a (truncated) missing-files tree, which it previously did regardless,
+    // right after telling the user the operation could not proceed and was being cancelled.
     let outOfSync = false;
-    let missingFiles = masterPathsWithStats_.filter(file => {
+    // An explicit loop (rather than the plain .filter() this used to be) so this comparison - potentially over
+    // tens of thousands of files - can report a real "i of N" percentage (the total, masterPathsWithStats_.length,
+    // is already known upfront, unlike a disk scan) instead of running behind a plain indeterminate spinner, and
+    // so it can periodically yield back to the renderer's event loop (a `setTimeout(0)` - there is no worker
+    // thread to hand this off to, it's a pure in-memory comparison against already-loaded data) rather than
+    // blocking the UI solid for the whole comparison.
+    const totalFilesToCompare = masterPathsWithStats_.length;
+    let missingFiles: filesMetadata[] = [];
+    for (let index = 0; index < totalFilesToCompare; index++) {
+      const file = masterPathsWithStats_[index];
       const b = coldStoragePathsWithoutPartials.find((o)=> o.path==file.path.replace(this.backup.targetPath, this.opticalDiscVolumeLetter));
       if (b == undefined) {
-        return true // missing
+        missingFiles.push(file); // missing
       } else if ((new Date(file.stats.mtime).getTime() > new Date(b.stats.mtime).getTime()) || (file.stats.size != b.stats.size)) {
         // Wrapped both sides in `new Date(...).getTime()`: file.stats.mtime (from a live ipc.getFilePathsWithStats
         // scan of the master directory) is always a real Date, but b.stats.mtime is only a Date when the cold
@@ -501,7 +518,6 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         // modified. This would be an problem. Show some kind of warning and cancel the operation.
         // Stop the loop
         outOfSync = true;
-        masterPathsWithStats_.splice(0);
         this.step = "step_4";
         const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
         errorDialog.componentInstance.title = "Error";
@@ -512,10 +528,20 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
           // Exit to main menu.
           goToMainMenuAndReload(this.router);
         });
-      } else {
-        return false // backed up
+        break;
+      } // else: backed up - not included
+
+      // Reported every 50 items rather than every single one (same reasoning as SCAN_PROGRESS_REPORT_INTERVAL in
+      // worker.ts) - and always on the very last item, so the bar visibly reaches 100% right as this finishes
+      // instead of stopping short whenever totalFilesToCompare isn't an exact multiple of the interval.
+      const isLastItem = index === totalFilesToCompare - 1;
+      if ((index + 1) % 50 === 0 || isLastItem) {
+        loadingDialogRef.componentInstance.progressCurrent = index + 1;
+        loadingDialogRef.componentInstance.progressTotal = totalFilesToCompare;
+        loadingDialogRef.componentInstance.percent = Math.round(((index + 1) / totalFilesToCompare) * 100);
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
       }
-    });
+    }
 
     if (outOfSync) {
       loadingDialogRef.close();
@@ -578,6 +604,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     }
 
     this.isPartitioning = true;
+    let partitionProgressListener: WorkerListener | undefined;
     try {
       // Ask where to save the updated metadata JSON before doing any of the (potentially slow) partitioning
       // work, so a canceled save dialog doesn't waste it. Defaults to a name/location distinct from the original
@@ -591,6 +618,28 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       this.coldStorageMetadataJSONPathToSave = chosenPath;
 
       let loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+      loadingDialogRef.componentInstance.message = 'Planning discs';
+      // Real 0-100% across partitionBackupToOpticalMedia's bin-packing loop ("Packing items (i of N)", one disc
+      // at a time - see worker.ts). Its scan phase never runs here at all - selectedPathsWithMetadata below is
+      // always passed as filesMetadata, which partitionBackupToOpticalMedia already has every path/stat it
+      // needs from, so it skips scanning targetPath itself entirely (see its own doc comment) - unlike
+      // backup-to-optical-media.component.ts's WriteToOpticalMediaProceed, which never supplies filesMetadata
+      // and so does see a real scan phase (0-50%) ahead of packing (50-100%).
+      partitionProgressListener = ipc.onResponseFromWorker((event, response) => {
+        this.ngZone.run(() => {
+          if (response.key === 'partition-backup-to-optical-media' && response.status === 'running') {
+            const lines = response.res as string[];
+            for (const line of lines) {
+              const packProgress = parsePackingProgress(line);
+              if (packProgress) {
+                loadingDialogRef.componentInstance.progressCurrent = packProgress.current;
+                loadingDialogRef.componentInstance.progressTotal = packProgress.total;
+                loadingDialogRef.componentInstance.percent = Math.round((packProgress.current / packProgress.total) * 100);
+              }
+            }
+          }
+        });
+      });
       let selectedPaths = this.filesTree.getSelectedData().map((m)=>{return this.backup.targetPath.concat(m)});
 
       let selectedPathsWithMetadata: filesMetadata[] = [];
@@ -647,6 +696,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       It will be filled in, one disc at a time, as you send each new disc to ImgBurn below - once every disc has been sent, you may keep this .json file for future updates to your cold storage without having to input all the optical discs one by one again.`;
     } finally {
       this.isPartitioning = false;
+      partitionProgressListener?.removeListener();
     }
   }
 
@@ -703,7 +753,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         if (response.key === 'compute-sha256-for-backed-up-files' && response.status === 'running') {
           const newLines = response.res as string[];
           hashedCount += newLines.length;
-          loadingDialogRef.componentInstance.message = newLines[newLines.length - 1];
+          loadingDialogRef.componentInstance.detail = stripTrailingCounter(newLines[newLines.length - 1]);
+          loadingDialogRef.componentInstance.progressCurrent = hashedCount;
+          loadingDialogRef.componentInstance.progressTotal = hashableEntries.length;
           loadingDialogRef.componentInstance.percent = Math.round((hashedCount / hashableEntries.length) * 100);
         }
       });

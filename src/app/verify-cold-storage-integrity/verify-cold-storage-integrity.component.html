@@ -42,8 +42,9 @@
         <h2>Reading and identifying the inserted disc</h2>
         <span class="dots"><span><h2>.</h2></span><span><h2>.</h2></span><span><h2>.</h2></span></span>
       </div>
-      <div *ngIf="opticalMediumLoaded && readingDisc && scanProgressMessage" class="flex-centered">
-        <p>{{ scanProgressMessage }}</p>
+      <div *ngIf="opticalMediumLoaded && readingDisc && scanPercentComplete !== undefined" class="flex-centered">
+        <mat-progress-spinner mode="determinate" [value]="scanPercentComplete"></mat-progress-spinner>
+        <p>{{ scanPercentComplete }}%</p>
       </div>
     </div>
     <br>

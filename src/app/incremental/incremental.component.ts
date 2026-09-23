@@ -10,7 +10,7 @@ import { Subject } from 'rxjs';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
-import { parseProgressFromLine } from '../shared/utils/progress-line';
+import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/progress-line';
 
 @Component({
   selector: 'app-incremental',
@@ -79,6 +79,16 @@ export class IncrementalComponent implements OnInit, OnDestroy {
 
   proceedToPreview(){
     this.backup.resetStream();
+
+    let selectedFiles = this.filesTree.getSelectedData();
+    if (!selectedFiles.length) {
+      const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
+      loadingDialogRef.componentInstance.message =
+        `You have not selected any files or folders`;
+      loadingDialogRef.componentInstance.title = "Paths selection"
+      return;
+    }
+
     this.workerListener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         //console.log(arg);
@@ -86,7 +96,18 @@ export class IncrementalComponent implements OnInit, OnDestroy {
         switch (response.key) {
           case 'incremental-preview':
             if(response.status == 'running'){
-              this.backup.previewLogsStream.next(response.res);
+              // Split out the per-item "(i of N)" progress marker (see createTree in worker.ts) from the rest
+              // of this batch's descriptive lines before forwarding to the visible log - it drives the
+              // dialog's progress bar, not one more line in the scrolling list.
+              const visibleLines = (response.res as string[]).filter((line) => {
+                const progress = parseProgressFromLine(line);
+                if (progress) {
+                  dialogRef.componentInstance.updateProgress(Math.round((progress.current / selectedFiles.length) * 100));
+                  return false;
+                }
+                return true;
+              });
+              if (visibleLines.length > 0) { this.backup.previewLogsStream.next(visibleLines); }
             }else if(response.status == 'completed' || response.status == 'stopped'){
               this.backup.previewLogsStream.complete();
             }
@@ -94,19 +115,11 @@ export class IncrementalComponent implements OnInit, OnDestroy {
         }
       });
     });
-    
-    let logsPromise: Promise<WorkerResponse>    
-    
-    let selectedFiles = this.filesTree.getSelectedData();
-    if (!selectedFiles.length) {
-      this.workerListener.removeListener();
-      const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
-      loadingDialogRef.componentInstance.message =
-        `You have not selected any files or folders`;
-      loadingDialogRef.componentInstance.title = "Paths selection"
-      return;
-    }
+
+    let logsPromise: Promise<WorkerResponse>
+
     const dialogRef = this.dialog.open(IncrementalDialogComponent, { disableClose: true, width: 'inherit'});
+    dialogRef.componentInstance.showProgressBar();
     /*ipc.sendRequestToWorker({ 
       key: 'incremental-preview',
       params:{
@@ -178,25 +191,31 @@ export class IncrementalComponent implements OnInit, OnDestroy {
     //setTimeout(() => {}, 0);
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+    loadingDialogRef.componentInstance.message = 'Comparing directories';
 
-    // Shows this step's own real progress instead of a plain spinner: an open-ended "items found so far" count
-    // (via `message`) while diff()'s two scan phases run (no known total until a scan finishes - see
-    // SCAN_PROGRESS_REPORT_INTERVAL's own doc comment in worker.ts), then a real percentage (via `percent`) once
-    // its comparison phase starts reporting "(i of N)" - see parseProgressFromLine (shared/utils). A local
-    // listener (not this.workerListener, which proceedToPreview/onError use for a later, separate phase of this
-    // same wizard) so the two can never be confused with or clobber each other.
+    // Shows this whole step as one real, continuous 0-100% bar instead of a plain spinner - the first half
+    // (0-50%) is diff()'s scan phase, reporting a real "(i of N)" percentage against an upfront probed total
+    // (see countAllFilesQuick/parseScanItemsProgress) rather than an open-ended running count, and the second
+    // half (50-100%) is its comparison phase, reporting its own real "(i of N)" (see parseProgressFromLine) -
+    // both known totals, so both halves are genuine percentages, not an estimate. Bound as plain fields
+    // (`percent`/`progressCurrent`/`progressTotal`) so only the numbers change on screen, never the whole line.
+    // A local listener (not this.workerListener, which proceedToPreview/onError use for a later, separate phase
+    // of this same wizard) so the two can never be confused with or clobber each other.
     const diffProgressListener = ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         if (response.key === 'diff' && response.status === 'running') {
           const lines = response.res as string[];
           for (const line of lines) {
-            const progress = parseProgressFromLine(line);
-            if (progress) {
-              loadingDialogRef.componentInstance.message = 'Comparing items';
-              loadingDialogRef.componentInstance.percent = Math.round((progress.current / progress.total) * 100);
-            } else {
-              loadingDialogRef.componentInstance.percent = undefined;
-              loadingDialogRef.componentInstance.message = line;
+            const compareProgress = parseProgressFromLine(line);
+            const scanProgress = parseScanItemsProgress(line);
+            if (compareProgress) {
+              loadingDialogRef.componentInstance.progressCurrent = compareProgress.current;
+              loadingDialogRef.componentInstance.progressTotal = compareProgress.total;
+              loadingDialogRef.componentInstance.percent = 50 + Math.round((compareProgress.current / compareProgress.total) * 50);
+            } else if (scanProgress) {
+              loadingDialogRef.componentInstance.progressCurrent = scanProgress.current;
+              loadingDialogRef.componentInstance.progressTotal = scanProgress.total;
+              loadingDialogRef.componentInstance.percent = Math.round((scanProgress.current / scanProgress.total) * 50);
             }
           }
         }

@@ -7,6 +7,7 @@ import { MatButton } from '@angular/material/button';
 import { MatCard, MatCardModule } from '@angular/material/card';
 import { MatIcon } from '@angular/material/icon';
 import { MatDivider } from '@angular/material/divider';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { compileSchema } from "json-schema-library";
 import { ConfirmationDialogComponent } from '../shared/components/confirmation-dialog/confirmation-dialog.component';
 import { LoadingDialogComponent } from '../shared/components/loading-dialog/loading-dialog.component';
@@ -14,6 +15,7 @@ import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communica
 import { ColdStorageMetadata } from '../../../app/workers/ipc.interfaces';
 import { getDiscIdHashForPaths, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
+import { stripTrailingCounter, parseScanItemsProgress } from '../shared/utils/progress-line';
 const mySchema = require('../schemas/filesMetadata.schema.json');
 
 /**
@@ -44,7 +46,8 @@ const mySchema = require('../schemas/filesMetadata.schema.json');
     MatCard,
     MatCardModule,
     MatIcon,
-    MatDivider
+    MatDivider,
+    MatProgressSpinnerModule
   ],
   templateUrl: './verify-cold-storage-integrity.component.html',
   styleUrl: './verify-cold-storage-integrity.component.scss'
@@ -61,9 +64,10 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
   private discIdHashes: number[] = [];
   opticalMediumLoaded = false;
   readingDisc = false;
-  /** Live "items found so far" text for the current disc scan (get-file-paths-with-stats) - see
-   *  verifyNextDiscInner's scanListener. Undefined between scans. */
-  scanProgressMessage?: string;
+  /** Real (0-100) percentage for the current disc scan (get-file-paths-with-stats) - see verifyNextDiscInner's
+   *  scanListener. Probes its real total upfront (see countAllFilesQuick/parseScanItemsProgress, worker.ts and
+   *  shared/utils) rather than only reporting an open-ended running count. Undefined between scans. */
+  scanPercentComplete?: number;
   /** disc index (0-based) -> whether that disc's verification passed, filled in as each disc is actually
    *  verified this session - drives the running tally shown at the "verify another?" prompt. Intentionally
    *  pure in-memory state, never persisted, matching every other wizard's own "no resume support" decision. */
@@ -234,7 +238,10 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
       this.ngZone.run(() => {
         if (response.key === 'get-file-paths-with-stats' && response.status === 'running') {
           const lines = response.res as string[];
-          if (lines.length > 0) { this.scanProgressMessage = lines[lines.length - 1]; }
+          if (lines.length > 0) {
+            const progress = parseScanItemsProgress(lines[lines.length - 1]);
+            if (progress) { this.scanPercentComplete = Math.round((progress.current / progress.total) * 100); }
+          }
         }
       });
     });
@@ -246,7 +253,7 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
       return;
     } finally {
       scanListener.removeListener();
-      this.scanProgressMessage = undefined;
+      this.scanPercentComplete = undefined;
     }
 
     // Same disc-identification convention as recovery (see readAllDiscsToReconstructTheCompleteBackupFilePaths's
@@ -297,7 +304,9 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
         if (response.key === 'verify-file-hashes' && response.status === 'running') {
           const newLines = response.res as string[];
           hashedCount += newLines.length;
-          loadingDialogRef.componentInstance.message = newLines[newLines.length - 1];
+          loadingDialogRef.componentInstance.detail = stripTrailingCounter(newLines[newLines.length - 1]);
+          loadingDialogRef.componentInstance.progressCurrent = hashedCount;
+          loadingDialogRef.componentInstance.progressTotal = filesToHash.length;
           loadingDialogRef.componentInstance.percent = filesToHash.length > 0 ? Math.round((hashedCount / filesToHash.length) * 100) : 100;
         }
       });

@@ -7,6 +7,7 @@ import { LogsBuffer } from './logsbuffer'
 import { filesMetadata } from '../../src/types/interface';
 import { ColdStorageMetadata, WorkerResponse, OpticalMediaPartitioning } from './ipc.interfaces';
 import { installConsoleLogging } from '../logging';
+import type { Dirent } from 'fs';
 
 const contextBridgeAPI =require("./preload/contextBridge_api");
 
@@ -57,11 +58,47 @@ const holdOnIfDue = async () => {
 }*/
 
 /** How often (every Nth item found) the disk-scanning functions below (getAllFiles, getAllFilesSet,
- *  getAllFilePathsWithStats) report their running count via `onProgress` - there is no way to know the total
- *  ahead of time (discovering it IS the operation), so this is an open-ended live counter, not a percentage -
- *  reported every Nth item rather than every single one so a huge directory doesn't spam its caller (and, for
- *  callers that forward it into logsBuffer, the IPC channel) with an update per file. */
+ *  getAllFilePathsWithStats) report their running count via `onProgress` - reported every Nth item rather than
+ *  every single one so a huge directory doesn't spam its caller (and, for callers that forward it into
+ *  logsBuffer, the IPC channel) with an update per file. None of them know their own real total ahead of time
+ *  (discovering it IS the operation) - a caller that wants a real percentage rather than just an open-ended
+ *  running count probes it upfront instead, via countAllFilesQuick below. */
 const SCAN_PROGRESS_REPORT_INTERVAL = 25;
+
+/** Quick recursive file count for `dirPath`, used as a fast upfront "probe" so a caller driving a progress bar
+ *  off of getAllFiles/getAllFilesSet/getAllFilePathsWithStats's `onProgress` (see SCAN_PROGRESS_REPORT_INTERVAL
+ *  above) can report a real "(i of N)" percentage - see parseScanItemsProgress, shared/utils - instead of just
+ *  an open-ended running count. Uses `withFileTypes` (a Dirent already knows whether an entry is a directory,
+ *  without a separate stat() syscall) rather than those functions' own fs.statSync-per-entry traversal, so this
+ *  probe pass is meaningfully cheaper than the real scan that follows it - still a full tree walk, just a
+ *  lighter one, EXCEPT for a symlink/junction entry, which still needs one real fs.statSync call: a Dirent's
+ *  own isDirectory() does NOT follow links (a symlinked directory reports false), while getAllFiles/
+ *  getAllFilesSet/getAllFilePathsWithStats all use fs.statSync (which DOES follow links) to decide whether to
+ *  recurse - without this fallback, a symlinked subdirectory would be counted here as a single file while the
+ *  real scan recurses into its full contents, undercounting the probe's total (the on-screen percentage would
+ *  then reach "100%"/N-of-N well before the real scan actually finishes). Doesn't need to match those
+ *  functions' exact final count otherwise (it's only ever used as a percentage denominator, and every caller
+ *  forces its bar to the real 100%/next-phase boundary once its own real scan actually finishes, regardless of
+ *  what this probe predicted) - so small edge-case mismatches (a file deleted between the probe and the real
+ *  scan, a permission error skipped one way but not the other) are harmless. */
+const countAllFilesQuick = async function (dirPath: string): Promise<number> {
+  let entries: Dirent[];
+  try {
+    entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  } catch {
+    return 1; // unreadable - treated the same as the "no entries" case below.
+  }
+  if (entries.length === 0) { return 1; } // matches getAllFiles' own "empty directory counts as one item".
+  let count = 0;
+  for (const entry of entries) {
+    if (process.env._stop == 'stop') { break; }
+    const entryPath = node_path_module.join(dirPath, entry.name);
+    const isDirectory = entry.isSymbolicLink() ? fs.statSync(entryPath).isDirectory() : entry.isDirectory();
+    count += isDirectory ? await countAllFilesQuick(entryPath) : 1;
+    await holdOnIfDue();
+  }
+  return count;
+}
 
 /** @return an array that contains the absolute paths of all files in "dirPath" (in a recursive fashion).
  *  It also takes into account empty directories.
@@ -687,11 +724,11 @@ const checkTempDataDirectoryForLeftovers = async function (): Promise<{ path: st
     return { path: tempDataDirectoryPath, hasLeftovers: false, entryNames: [] };
   }
 
-  const entries = fs.readdirSync(tempDataDirectoryPath, { withFileTypes: true });
+  const entries: Dirent[] = fs.readdirSync(tempDataDirectoryPath, { withFileTypes: true });
   const entryNames = entries
-    .filter((e) => e.name !== CACHE_DIRECTORY_OWNERSHIP_MARKER_FILENAME)
-    .filter((e) => isRecognizedTempContent(node_path_module.join(tempDataDirectoryPath, e.name), e.isSymbolicLink()))
-    .map((e) => e.name);
+    .filter((e: Dirent) => e.name !== CACHE_DIRECTORY_OWNERSHIP_MARKER_FILENAME)
+    .filter((e: Dirent) => isRecognizedTempContent(node_path_module.join(tempDataDirectoryPath, e.name), e.isSymbolicLink()))
+    .map((e: Dirent) => e.name);
 
   return { path: tempDataDirectoryPath, hasLeftovers: entryNames.length > 0, entryNames };
 }
@@ -902,7 +939,14 @@ const partitionArrayBasedOnFilter = <T,>(
 // true (to predict split-partial paths under this job's own session subfolder) - still required either way, so
 // the same one value the caller generated for this job is always available regardless of which of the two
 // planning calls a wizard's own retry-without-then-with-splitting flow ends up needing it for.
-const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, splitLargeFiles:boolean=false, sessionId: string, filesMetadata?:filesMetadata[]): Promise<ColdStorageMetadata>{
+/** @param onProgress optional - reports this call's progress as plain text lines, same "(i of N)" convention as
+ *  diff's own two phases (see parseProgressFromLine/parseScanItemsProgress, shared/utils): a real percentage for
+ *  the upfront directory scan (via countAllFilesQuick's probe - "Scanning items (i of N)"), then one for the
+ *  bin-packing loop below (a known total by then - "Packing items (i of N)", see parsePackingProgress) once per
+ *  disc it fills (not per file - packing potentially hundreds of thousands of files into a couple dozen discs
+ *  is already coarse-grained at that level, so there's no need for a separate throttling interval the way the
+ *  per-item scan/hash loops elsewhere need one). Left undefined, behaves exactly as before (no probing overhead). */
+const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, splitLargeFiles:boolean=false, sessionId: string, filesMetadata?:filesMetadata[], onProgress?: (line: string) => void): Promise<ColdStorageMetadata>{
   assertValidSessionId(sessionId);
   process.env._stop="NoStop";
 
@@ -920,13 +964,22 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
   const tempDataDirectoryPath = ownership.path;
 
   if(dirPath.slice(-1) == '\\'){
-    dirPath = dirPath.slice(0, -1); 
+    dirPath = dirPath.slice(0, -1);
   }
 
-  let filePathsAndStats = await getAllFilePathsWithStats(dirPath)
-
-  if(filesMetadata!==undefined){
+  // Skips the scan entirely when filesMetadata is given (its result would just be thrown away below) - this
+  // used to run unconditionally, silently wasting however long a full scan of dirPath took even when the
+  // caller already had every path/stat it needed (e.g. add-missing-files-to-optical-media-cold-storage's own
+  // partition() call, which always supplies filesMetadata).
+  let filePathsAndStats: Awaited<ReturnType<typeof getAllFilePathsWithStats>>;
+  if (filesMetadata !== undefined) {
     filePathsAndStats = filesMetadata;
+  } else {
+    let scanProbedTotal = 0;
+    if (onProgress) { scanProbedTotal = await countAllFilesQuick(dirPath); }
+    filePathsAndStats = await getAllFilePathsWithStats(dirPath, [], onProgress
+      ? (count) => onProgress(`Scanning items (${Math.min(count, scanProbedTotal)} of ${scanProbedTotal})`)
+      : undefined)
   }
 
   let largeFilePathsAndStats: typeof filePathsAndStats = [];
@@ -954,6 +1007,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
   // below, unchanged - only the order items are offered to it changes.
   filePathsAndStats = filePathsAndStats.slice().sort((a, b) => b.stats.size - a.stats.size);
 
+  const totalFilesToPack = filePathsAndStats.length;
   while (filePathsAndStats.length > 0 && !(process.env._stop=="stop")) {
     if(process.env._stop == 'stop'){break;}
     let paths: {"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}[] = []
@@ -1002,9 +1056,17 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
 
     // Number of files assigned to the particular optical disk in the set.
     //console.log(paths.length)
-    
+
     partitioning.push(paths)
 
+    // Reported once per disc filled (see this function's own onProgress doc comment for why that's already
+    // coarse-grained enough) - the `await` also lets a pending Cancel (process.env._stop) actually take effect
+    // between discs, and lets this progress message's own IPC send actually flush, neither of which this loop
+    // otherwise yielded for at all.
+    if (onProgress && totalFilesToPack > 0) {
+      onProgress(`Packing items (${totalFilesToPack - filePathsAndStats.length} of ${totalFilesToPack})`);
+      await holdOn();
+    }
   }
   // number of optical disks needed for the entire backup
   // console.log(partitioning.length)
@@ -1648,9 +1710,11 @@ const waitForOpticalDiskToBeMounted = async function (): Promise<any|null> {
  */
 /** @param onProgress optional - reports this call's progress as plain text lines, same "(i of N)" convention as
  *  every other long-running operation's logsBuffer lines (see parseProgressFromLine, shared/utils) for the
- *  comparison phase below, and an open-ended "items found so far" running count (no known total until a scan
- *  finishes - see SCAN_PROGRESS_REPORT_INTERVAL) for the two scan phases. Left undefined, behaves exactly as
- *  before. */
+ *  comparison phase below, and - via an upfront countAllFilesQuick probe of both sides, see its own doc comment
+ *  - a real "(i of N)" percentage for the two scan phases too (see parseScanItemsProgress, shared/utils),
+ *  reported as ONE continuous count across both scans (target's count picks up where source's left off) against
+ *  their combined probed total, rather than two separate open-ended counters, so a caller can drive one smooth
+ *  progress bar across the whole scan phase. Left undefined, behaves exactly as before (no probing overhead). */
 const diff = async function (source: string, target: string, onProgress?: (line: string) => void): Promise<string[]> {
   process.env._stop = "noStop";
 
@@ -1658,9 +1722,19 @@ const diff = async function (source: string, target: string, onProgress?: (line:
   if (target[target.length - 1] != '\\') { target += "\\"; }
   console.log("Reading paths of: " + source)
   let time_start = performance.now();
-  let source_files = await getAllFiles(source, [], onProgress ? (count) => onProgress(`Scanning ${source}: ${count} items found so far`) : undefined)
+  let sourceProbedTotal = 0;
+  let combinedProbedTotal = 0;
+  if (onProgress) {
+    // Run concurrently (not sequentially) - two independent full-tree walks over unrelated directories, so
+    // there's no reason to pay their combined wall-clock cost one after another just to compute this progress
+    // bar's denominator, before either real scan below has even started.
+    let targetProbedTotal: number;
+    [sourceProbedTotal, targetProbedTotal] = await Promise.all([countAllFilesQuick(source), countAllFilesQuick(target)]);
+    combinedProbedTotal = sourceProbedTotal + targetProbedTotal;
+  }
+  let source_files = await getAllFiles(source, [], onProgress ? (count) => onProgress(`Scanning items (${Math.min(count, combinedProbedTotal)} of ${combinedProbedTotal})`) : undefined)
   console.log("\nReading paths of: " + target)
-  let target_files = await getAllFilesSet(target, new Set<string>(), onProgress ? (count) => onProgress(`Scanning ${target}: ${count} items found so far`) : undefined)
+  let target_files = await getAllFilesSet(target, new Set<string>(), onProgress ? (count) => onProgress(`Scanning items (${Math.min(sourceProbedTotal + count, combinedProbedTotal)} of ${combinedProbedTotal})`) : undefined)
   let time_end = performance.now();
   console.log("DONE READING FILES " + ((time_end - time_start) / 1000).toFixed(2))
   time_start = performance.now();
@@ -2411,7 +2485,9 @@ const init = function() : void
         break;
       case 'partition-backup-to-optical-media':
         console.log("(worker) in partition-backup-to-optical-media")
-        partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.splitLargeFiles, arg.params.sessionId, arg.params.filesMetadata).then((d)=>{
+        logsBuffer.setChannel('partition-backup-to-optical-media');
+        partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.splitLargeFiles, arg.params.sessionId, arg.params.filesMetadata, (line) => logsBuffer.push(line)).then((d)=>{
+          logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'partition-backup-to-optical-media', res: d, status: "completed" });
           }else{
@@ -2548,7 +2624,16 @@ const init = function() : void
       case 'get-file-paths-with-stats':
         console.log("(worker) in get-file-paths-with-stats")
         logsBuffer.setChannel('get-file-paths-with-stats');
-        getAllFilePathsWithStats(arg.params.dirPath, [], (count) => logsBuffer.push(`Scanning: ${count} items found so far`)).then((d)=>{
+        // Resets any stale `stop` left over from a previously canceled operation BEFORE the probe runs, not
+        // just before the real scan (getAllFilePathsWithStats's own first statement does that part) - otherwise
+        // countAllFilesQuick's own stop-check (it has no reset of its own - a mid-probe cancel must still work)
+        // would immediately break out and return 0, permanently freezing this scan's progress at "(0 of 0)".
+        process.env._stop = 'NoStop';
+        // Probes the real total upfront (see countAllFilesQuick) so this scan reports a real "(i of N)"
+        // percentage (parseScanItemsProgress, shared/utils) instead of an open-ended running count.
+        countAllFilesQuick(arg.params.dirPath).then((total) => {
+          return getAllFilePathsWithStats(arg.params.dirPath, [], (count) => logsBuffer.push(`Scanning items (${Math.min(count, total)} of ${total})`));
+        }).then((d)=>{
           logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'get-file-paths-with-stats', res: d, status: "completed" });
@@ -2589,7 +2674,16 @@ const init = function() : void
         case 'get-file-paths':
         console.log("(worker) in get-file-paths")
         logsBuffer.setChannel('get-file-paths');
-        getAllFiles(arg.params.sourceDir, [], (count) => logsBuffer.push(`Scanning: ${count} items found so far`)).then((d)=>{
+        // Resets any stale `stop` left over from a previously canceled operation - unlike
+        // getAllFilePathsWithStats, getAllFiles itself never resets this, so without this line a stale flag
+        // would break BOTH the new countAllFilesQuick probe (permanently freezing progress at "(0 of 0)") AND
+        // the real scan right after it (immediately returning an empty result).
+        process.env._stop = 'NoStop';
+        // Probes the real total upfront (see countAllFilesQuick) so this scan reports a real "(i of N)"
+        // percentage (parseScanItemsProgress, shared/utils) instead of an open-ended running count.
+        countAllFilesQuick(arg.params.sourceDir).then((total) => {
+          return getAllFiles(arg.params.sourceDir, [], (count) => logsBuffer.push(`Scanning items (${Math.min(count, total)} of ${total})`));
+        }).then((d)=>{
           logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'get-file-paths', res: d, status: "completed" });

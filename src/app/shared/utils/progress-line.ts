@@ -10,3 +10,37 @@ export function parseProgressFromLine(line: string): { current: number, total: n
   const m = line.match(/^(?:Processed item|Comparing items) \((\d+) of (\d+)\)$/);
   return m ? { current: Number(m[1]), total: Number(m[2]) } : null;
 }
+
+/** Strips a trailing "(i of N)" or "(i of N files)" counter - the same "(i of N)" convention as
+ *  parseProgressFromLine above, just embedded at the end of a descriptive line instead of being the whole line
+ *  (e.g. computeSha256ForBackedUpFiles/verifyFileHashes in worker.ts push "Calculating SHA-256 for file: <path>
+ *  (3 of 42 files)") - leaving just the description (here, the file path). Callers bind the counter itself as
+ *  its own live number (LoadingDialogComponent's `progressCurrent`/`progressTotal`, set directly from the
+ *  caller's own already-known current/total) instead of re-displaying the whole sentence, counter included, on
+ *  every single tick - otherwise the on-screen text is fully replaced dozens or hundreds of times a second for
+ *  a large batch, instead of just the number changing in place. Returns the line unchanged if it has no such
+ *  trailing counter. */
+export function stripTrailingCounter(line: string): string {
+  return line.replace(/ \(\d+ of \d+(?: files)?\)$/, '');
+}
+
+/** Same "(i of N)" convention as parseProgressFromLine above, for a scan phase (getAllFiles/getAllFilesSet/
+ *  getAllFilePathsWithStats in worker.ts) that would otherwise only be able to report an open-ended running
+ *  count - once countAllFilesQuick (worker.ts) has probed a real total upfront, e.g. diff()'s own "Scanning
+ *  items (i of N)" pushes. Kept separate from parseProgressFromLine (rather than added as a third alternative
+ *  there) since a caller generally needs to tell a scan phase apart from a comparison phase - e.g. to place
+ *  each in a different half of one combined progress bar - which a shared regex alternation would lose. */
+export function parseScanItemsProgress(line: string): { current: number, total: number } | null {
+  const m = line.match(/^Scanning items \((\d+) of (\d+)\)$/);
+  return m ? { current: Number(m[1]), total: Number(m[2]) } : null;
+}
+
+/** Same "(i of N)" convention as parseProgressFromLine/parseScanItemsProgress above, for
+ *  partitionBackupToOpticalMedia's own bin-packing loop (worker.ts) - "Packing items (i of N)", reported once
+ *  per disc it fills rather than once per file. Kept as its own parser (like parseScanItemsProgress) rather than
+ *  folded into parseProgressFromLine, since a caller placing this in its own half of a combined progress bar
+ *  (alongside that same call's own scan phase) needs to tell the two apart. */
+export function parsePackingProgress(line: string): { current: number, total: number } | null {
+  const m = line.match(/^Packing items \((\d+) of (\d+)\)$/);
+  return m ? { current: Number(m[1]), total: Number(m[2]) } : null;
+}

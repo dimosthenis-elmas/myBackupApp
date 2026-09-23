@@ -12,7 +12,7 @@ import { filesMetadata } from '../../types/interface';
 import { ColdStorageMetadata } from '../../../app/workers/ipc.interfaces';
 import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
-import { parseProgressFromLine } from '../shared/utils/progress-line';
+import { parseProgressFromLine, stripTrailingCounter, parseScanItemsProgress } from '../shared/utils/progress-line';
  
   @Component({
     selector: 'optical-disc-backup-data-retriever',
@@ -91,11 +91,11 @@ import { parseProgressFromLine } from '../shared/utils/progress-line';
      *  the two never show at the same time (different steps of the wizard) but keeping them distinct avoids any
      *  confusion about which operation a given value belongs to. */
     treeBuildPercentComplete: number = 0;
-    /** Live "items found so far" text for whichever disc scan (get-file-paths-with-stats/get-file-paths) is
-     *  currently running - see SCAN_PROGRESS_REPORT_INTERVAL's own doc comment in worker.ts for why this is a
-     *  running count rather than a percentage (there's no known total until a scan finishes). Undefined between
-     *  scans, so the template only shows it while one is actually in progress. */
-    scanProgressMessage?: string;
+    /** Real (0-100) percentage for whichever disc scan (get-file-paths-with-stats/get-file-paths) is currently
+     *  running - both probe their real total upfront (see countAllFilesQuick/parseScanItemsProgress, worker.ts
+     *  and shared/utils) rather than only reporting an open-ended running count. Undefined between scans, so
+     *  the template only shows a progress bar while one is actually in progress. */
+    scanPercentComplete?: number;
 
     constructor(public router: Router, private route: ActivatedRoute, public dialog: MatDialog, public backup: BackupService,
      private ngZone: NgZone, private eleRef: ElementRef) {
@@ -339,7 +339,7 @@ import { parseProgressFromLine } from '../shared/utils/progress-line';
 
         // Reading CD...
         this.finishedReadingFilePaths=false;
-        this.scanProgressMessage = undefined;
+        this.scanPercentComplete = undefined;
 
         // File paths with stats is going to be used in case the user requests the contents of the entire multi optical disc cold storage via
         // the promise getCombinedFilePathsFromAllOpticalDiscs.
@@ -347,14 +347,17 @@ import { parseProgressFromLine } from '../shared/utils/progress-line';
         // In such a case, the cold storage is out of spec and must be recreated from scratch again.
         // If the user just wants to recover the data in a cold storage (set of optical discs) we only need the file paths and not the stats (modified date, size etc).
         // Thus we keep both  filePathsWithStats and filePaths (created from filePathsWithStats by reducing), and use them accordingly.
-        // scanListener shows this scan's own live "items found so far" count (see get-file-paths-with-stats in
-        // worker.ts) under the "Reading data from the optical disc" text - a local listener (not this.workerListener,
-        // which this method doesn't otherwise use) so it can't be clobbered by/clobber anything else.
+        // scanListener shows this scan's own real percentage (see get-file-paths-with-stats in worker.ts) under
+        // the "Reading data from the optical disc" text - a local listener (not this.workerListener, which this
+        // method doesn't otherwise use) so it can't be clobbered by/clobber anything else.
         const scanListener = ipc.onResponseFromWorker((event, response) => {
           this.ngZone.run(() => {
             if (response.key === 'get-file-paths-with-stats' && response.status === 'running') {
               const lines = response.res as string[];
-              if (lines.length > 0) { this.scanProgressMessage = lines[lines.length - 1]; }
+              if (lines.length > 0) {
+                const progress = parseScanItemsProgress(lines[lines.length - 1]);
+                if (progress) { this.scanPercentComplete = Math.round((progress.current / progress.total) * 100); }
+              }
             }
           });
         });
@@ -370,7 +373,7 @@ import { parseProgressFromLine } from '../shared/utils/progress-line';
           filePathsWithStats = (await ipc.getFilePathsWithStats(mountedVolumeLetter)).res
         } finally {
           scanListener.removeListener();
-          this.scanProgressMessage = undefined;
+          this.scanPercentComplete = undefined;
         }
         let filePaths: string[] = [];
         filePaths = filePathsWithStats.reduce((acc: string[], obj) => {
@@ -569,6 +572,22 @@ import { parseProgressFromLine } from '../shared/utils/progress-line';
       this.opticalMediumLoaded=true;
 
       //Get the id of the disc inserted
+      // Shares the SAME progress bar the actual recovery copy below drives (percentComplete/step_5's template) -
+      // without this, that bar sat frozen at 0% (set just above) for this entire scan, which reads as more
+      // broken/stalled than a plain spinner would have, rather than as "loading". get-file-paths probes its
+      // real total upfront (see countAllFilesQuick/parseScanItemsProgress, worker.ts/shared/utils), so this is a
+      // genuine percentage, not an estimate. Reset back to 0 below once the real copy phase actually starts.
+      const scanListener = ipc.onResponseFromWorker((event, response) => {
+        this.ngZone.run(() => {
+          if (response.key === 'get-file-paths' && response.status === 'running') {
+            const lines = response.res as string[];
+            if (lines.length > 0) {
+              const progress = parseScanItemsProgress(lines[lines.length - 1]);
+              if (progress) { this.percentComplete = Math.round((progress.current / progress.total) * 100); }
+            }
+          }
+        });
+      });
       let filePaths: string[] = [];
       try{
         filePaths = (await ipc.getFilePaths(this.mountedVolumeLetter)).res;
@@ -584,8 +603,11 @@ import { parseProgressFromLine } from '../shared/utils/progress-line';
           this.recoverAllFilesFromAllDiscs();
         }
         return;
+      } finally {
+        scanListener.removeListener();
+        this.percentComplete = 0; // reset - the actual recovery copy phase below drives this same bar from 0 again.
       }
-      
+
       /* We want to create some kind of ID for each disc so that we can display useful messages to the user (for example: insert discs with id a,b,c etc.)
         For this reason we use a hash of the complete file paths contained in the optical medium. Becase we might get a different drive letter by the operating system
         we choose to replace E:\, G:\ or whatever with the fixed OPTICAL_DRIVE_LETTER_CONVENTION for the consistency of the IDs produced (see disc-id-hash.ts).
@@ -856,16 +878,18 @@ import { parseProgressFromLine } from '../shared/utils/progress-line';
       loadingDialogRef.componentInstance.showCancelButton = false;
       loadingDialogRef.componentInstance.message = "Verifying SHA-256 hashes";
       let results: Array<{ path: string, sha256: string, matched?: boolean }> = [];
-      // Shows the current file name plus a real percentage (not the accumulating `lines` scrolling list, which
-      // reserves a fixed 220px box regardless of content) - see attachSha256HashesToDiscFiles's identical
-      // pattern in backup-to-optical-media.component.ts.
+      // Shows the current file name plus a real percentage and a live "i of N" counter, all bound as their own
+      // fields (not the accumulating `lines` scrolling list, which reserves a fixed 220px box regardless of
+      // content) - see attachSha256HashesToDiscFiles's identical pattern in backup-to-optical-media.component.ts.
       let hashedCount = 0;
       const listener = ipc.onResponseFromWorker((event, response) => {
         this.ngZone.run(() => {
           if (response.key === 'verify-file-hashes' && response.status === 'running') {
             const newLines = response.res as string[];
             hashedCount += newLines.length;
-            loadingDialogRef.componentInstance.message = newLines[newLines.length - 1];
+            loadingDialogRef.componentInstance.detail = stripTrailingCounter(newLines[newLines.length - 1]);
+            loadingDialogRef.componentInstance.progressCurrent = hashedCount;
+            loadingDialogRef.componentInstance.progressTotal = filesToHash.length;
             loadingDialogRef.componentInstance.percent = Math.round((hashedCount / filesToHash.length) * 100);
           }
         });

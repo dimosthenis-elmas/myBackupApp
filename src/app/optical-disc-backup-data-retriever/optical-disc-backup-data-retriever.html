@@ -22,8 +22,9 @@
                     <h2>Reading data from the optical disc</h2>
                     <span class="dots"><span><h2>.</h2></span><span><h2>.</h2></span><span><h2>.</h2></span></span>
                 </div>
-                <div *ngIf="(opticalMediumLoaded && !finishedReadingFilePaths && scanProgressMessage)" class="flex-centered">
-                    <p>{{ scanProgressMessage }}</p>
+                <div *ngIf="(opticalMediumLoaded && !finishedReadingFilePaths && scanPercentComplete !== undefined)" class="flex-centered">
+                    <mat-progress-spinner mode="determinate" [value]="scanPercentComplete"></mat-progress-spinner>
+                    <p>{{ scanPercentComplete }}%</p>
                 </div>
             </div>           
         </div>

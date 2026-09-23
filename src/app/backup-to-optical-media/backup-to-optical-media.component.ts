@@ -1,6 +1,6 @@
 import { ChangeDetectorRef, Component, inject, NgZone, OnDestroy, OnInit, ViewChild, ViewChildren, QueryList } from '@angular/core';
 import { Router, ActivatedRoute } from '@angular/router';
-import { MatDialog } from '@angular/material/dialog';
+import { MatDialog, MatDialogRef } from '@angular/material/dialog';
 import { FilesTreeModule } from '../files-tree/files-tree.module';
 import { BackupService } from '../core/services/backup/backup.service';
 import { IncrementalDialogComponent } from '../incremental-dialog/incremental-dialog.component';
@@ -14,6 +14,7 @@ import { filesMetadata } from '../../types/interface';
 import { SerialQueue } from '../shared/utils/serial-queue';
 import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
+import { stripTrailingCounter, parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
 
 import {FormBuilder, Validators, FormsModule, ReactiveFormsModule} from '@angular/forms';
 import {MatButtonModule} from '@angular/material/button';
@@ -183,8 +184,9 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   ngAfterViewInit(): void {
     //console.log(this.filesTrees.toArray());
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+    loadingDialogRef.componentInstance.message = 'Building files tree';
 
-    this.createTrees().then(()=>{
+    this.createTrees(loadingDialogRef).then(()=>{
       loadingDialogRef.close();
     })
 
@@ -275,10 +277,36 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         this.isPartitioning = true;
 
         const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+        loadingDialogRef.componentInstance.message = 'Planning discs';
+        // Real 0-100% across both of partitionBackupToOpticalMedia's phases - a scan of sourcePath (0-50%,
+        // "Scanning items (i of N)" against countAllFilesQuick's upfront probe - see worker.ts) then the
+        // bin-packing loop itself (50-100%, "Packing items (i of N)", one disc at a time). See the identical
+        // diffProgressListener pattern in incremental.component.ts/sync-dirs.component.ts.
+        const partitionProgressListener = ipc.onResponseFromWorker((event, response) => {
+          this.ngZone.run(() => {
+            if (response.key === 'partition-backup-to-optical-media' && response.status === 'running') {
+              const lines = response.res as string[];
+              for (const line of lines) {
+                const scanProgress = parseScanItemsProgress(line);
+                const packProgress = parsePackingProgress(line);
+                if (scanProgress) {
+                  loadingDialogRef.componentInstance.progressCurrent = scanProgress.current;
+                  loadingDialogRef.componentInstance.progressTotal = scanProgress.total;
+                  loadingDialogRef.componentInstance.percent = Math.round((scanProgress.current / scanProgress.total) * 50);
+                } else if (packProgress) {
+                  loadingDialogRef.componentInstance.progressCurrent = packProgress.current;
+                  loadingDialogRef.componentInstance.progressTotal = packProgress.total;
+                  loadingDialogRef.componentInstance.percent = 50 + Math.round((packProgress.current / packProgress.total) * 50);
+                }
+              }
+            }
+          });
+        });
         let promise = ipc.partitionBackupToOpticalMedia(this.backup.sourcePath, this.selected_optical_medium.capacity, this.splitLargeFiles, this.tempSessionId);
 
         promise.then((response)=>{
           this.isPartitioning = false;
+          partitionProgressListener.removeListener();
 
           if(response.status == "completed"){
   
@@ -335,6 +363,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         }
         }).catch(err=>{
           this.isPartitioning = false;
+          partitionProgressListener.removeListener();
           console.log(JSON.stringify(err));
           loadingDialogRef.close();
 
@@ -444,7 +473,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
 
     await this.holdOn();
 
-    this.createTrees().then(()=>{
+    loadingDialogRef.componentInstance.message = 'Building files tree';
+    this.createTrees(loadingDialogRef).then(()=>{
       loadingDialogRef.close();
     })
 
@@ -458,14 +488,28 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   }
 
 
-  async createTrees():Promise<void> {
-    for (let i = 0; i < this.filesTrees.toArray().length; i++) {
-      await this.filesTrees.toArray()[i].setTreeData(
-        this.backup.opticalMediaPartitioning[i].map(x=>{return x.path}),
-        this.backup.opticalMediaPartitioning[i].map(x=>{return x.stats}));
-      this.filesTrees.toArray()[i].expandAllNodes();
-      this.filesTrees.toArray()[i].selectAllNodes();
-      
+  /** Builds every disc's <files-tree> from the already-known opticalMediaPartitioning (no disk I/O - just
+   *  turning already-planned data into displayed trees), behind `loadingDialogRef`'s real percentage: each
+   *  tree's own buildProgress (0-100, see FilesTreeComponent.setTreeData) is weighted into its own equal 1/N
+   *  slice of the overall 0-100 range, so multiple trees still add up to one smoothly climbing bar instead of
+   *  restarting from 0 (or just sitting on a plain spinner, as this used to) once per disc. */
+  async createTrees(loadingDialogRef: MatDialogRef<LoadingDialogComponent>):Promise<void> {
+    const trees = this.filesTrees.toArray();
+    for (let i = 0; i < trees.length; i++) {
+      const treeStart = Math.round((i / trees.length) * 100);
+      const treeEnd = Math.round(((i + 1) / trees.length) * 100);
+      const progressSubscription = trees[i].buildProgress.subscribe((percent) => {
+        loadingDialogRef.componentInstance.percent = treeStart + Math.round((percent / 100) * (treeEnd - treeStart));
+      });
+      try {
+        await trees[i].setTreeData(
+          this.backup.opticalMediaPartitioning[i].map(x=>{return x.path}),
+          this.backup.opticalMediaPartitioning[i].map(x=>{return x.stats}));
+      } finally {
+        progressSubscription.unsubscribe();
+      }
+      trees[i].expandAllNodes();
+      trees[i].selectAllNodes();
     }
   }
 
@@ -546,11 +590,13 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    *  see computeSha256ForBackedUpFiles in worker.ts. Must be called after createOpticalMediaDiscPartials has
    *  already produced this disc's real, final file list (every entry must already exist on disk), and before
    *  anything else about this disc (its label hash, its metadata JSON entry, its .ibb file) is computed from
-   *  that list. Shows its own progress dialog (a real percentage plus the current file name, e.g. "Calculating
-   *  SHA-256 for file: ... (3 of 42 files)"), driven by this same worker channel's `running` pushes - see
-   *  LoadingDialogComponent's `message`/`percent`. Deliberately just the current line, not the accumulating
-   *  `lines` scrolling list (which reserves a fixed 220px box regardless of content - way too much real estate
-   *  for what's usually a handful of files). Always runs - SHA-256
+   *  that list. Shows its own progress dialog, driven by this same worker channel's `running` pushes - a static
+   *  heading, the current file name (via LoadingDialogComponent's `detail`, stripped of its own "(i of N
+   *  files)" suffix - see stripTrailingCounter), and a real percentage plus a live "i of N" counter bound as
+   *  plain numbers (`percent`/`progressCurrent`/`progressTotal`) so only those numbers change on screen rather
+   *  than the whole line being replaced on every single file. Deliberately not the accumulating `lines`
+   *  scrolling list (which reserves a fixed 220px box regardless of content - way too much real estate for
+   *  what's usually a handful of files). Always runs - SHA-256
    *  integrity data is mandatory, not a toggle (there used to be a "File integrity data" option offered
    *  alongside collection name at step 1, since removed): every file backed up gets a recorded hash so a later
    *  recovery, or the standalone "verify integrity of cold storage disc" wizard, can check its bytes weren't
@@ -569,7 +615,9 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         if (response.key === 'compute-sha256-for-backed-up-files' && response.status === 'running') {
           const newLines = response.res as string[];
           hashedCount += newLines.length;
-          loadingDialogRef.componentInstance.message = newLines[newLines.length - 1];
+          loadingDialogRef.componentInstance.detail = stripTrailingCounter(newLines[newLines.length - 1]);
+          loadingDialogRef.componentInstance.progressCurrent = hashedCount;
+          loadingDialogRef.componentInstance.progressTotal = hashableEntries.length;
           loadingDialogRef.componentInstance.percent = Math.round((hashedCount / hashableEntries.length) * 100);
         }
       });
