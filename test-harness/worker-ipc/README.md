@@ -87,7 +87,11 @@ changed paths, not the whole tree again — asserted as an exact set match, whic
 "real incremental diffing" from "copies everything and happens to get the right answer"; (3) a second copy call
 correctly updates just those 3 files, and — checked by comparing every target file's modified-time before/after —
 never re-touches any of the untouched files (re-copying everything would still pass the hash check in step 2, so
-only an mtime comparison actually catches that).
+only an mtime comparison actually catches that); (4) empty directories are handled correctly: one that exists
+empty on both sides (even with a newer modified-time in the source), and one that is empty in the source but has
+files in the target, are both **not** reported by `diff` — a directory that already exists in the backup is backed
+up, whatever its own timestamp or contents — while one that exists only in the source **is** reported, and copying
+it creates it in the target.
 
 One wrinkle worth knowing: `diff` correctly reports `generate-random-tree.js`'s own ownership-marker file
 (`.optical-backup-test-fixture.json`) as "source-only" too — it genuinely is a real file sitting in the source

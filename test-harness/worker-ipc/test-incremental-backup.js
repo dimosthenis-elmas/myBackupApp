@@ -18,12 +18,17 @@
  *      1 new one, and - checked by comparing each target file's mtime before/after - never re-touches any of the
  *      untouched files. Re-copying everything would still pass step 1's hash check; the mtime check is what
  *      actually catches "it just copies the whole tree and ignores the diff".
+ *   4. Empty directories: one that exists (empty) on both sides but with a NEWER mtime in the source is NOT
+ *      reported by `diff` (a directory's own mtime says nothing about whether it is backed up), and neither is
+ *      one that is empty in the source but has files in the target (it exists there, so it is backed up), while
+ *      one that exists only in the source IS reported, and copying it creates it in the target.
  *
  * Scope note: the source tree is generated with --no-edge-cases. generate-random-tree.js's built-in empty
  * directory case would also show up in diff's output (the worker's getAllFiles walks an empty directory as a
  * single trailing-backslash "path", not a file - see getAllFiles/insertBranch in worker.ts) alongside the real
- * file paths, which would only complicate this test's exact-set assertions without adding coverage - the
- * zero-byte/unicode/empty-dir edge cases themselves are already covered by test-harness/ui/test-recover-single-disc.js.
+ * file paths, which would only complicate steps 1-3's exact-set assertions without adding coverage - so empty
+ * directories are exercised separately, by step 4's own dedicated ones. The zero-byte/unicode edge cases are
+ * covered by test-harness/ui/test-recover-single-disc.js.
  *
  * NOTE: needs a real Windows desktop/window session (see call-worker.js's top comment) - run from your own
  * interactive terminal.
@@ -206,6 +211,37 @@ async function main() {
     }
     results.untouchedFilesNotReCopied = untouchedOk;
     console.log(`  ${untouchedOk ? 'OK' : 'FAILED'} - untouched files ${untouchedOk ? 'were left alone' : 'were re-copied'}.`);
+
+    // 6. Empty directories. The tree is fully in sync at this point, so any diff result now is down to these three.
+    //    "empty-dir-in-both" exists empty on both sides, deliberately with a much NEWER mtime in the source: a
+    //    directory's own mtime only records when it was created or had entries added/removed, so it must not make
+    //    a matching empty directory look modified. "empty-dir-with-files-in-target" is empty in the source but
+    //    holds a file in the target - it exists there, so it must not be reported either. "empty-dir-only-in-source"
+    //    is genuinely missing from the target, so it MUST still be reported and then created by the copy.
+    console.log('\nAdding empty directories (one on both sides with a newer source mtime, one non-empty in the target, one source-only)...');
+    const emptyInBothRel = 'empty-dir-in-both';
+    const emptyWithFilesInTargetRel = 'empty-dir-with-files-in-target';
+    const emptyOnlyInSourceRel = 'empty-dir-only-in-source';
+    fs.mkdirSync(path.join(sourceRoot, emptyInBothRel));
+    fs.mkdirSync(path.join(targetRoot, emptyInBothRel));
+    fs.mkdirSync(path.join(sourceRoot, emptyWithFilesInTargetRel));
+    fs.mkdirSync(path.join(targetRoot, emptyWithFilesInTargetRel));
+    fs.writeFileSync(path.join(targetRoot, emptyWithFilesInTargetRel, 'target-only-file.txt'), 'only in the target');
+    fs.mkdirSync(path.join(sourceRoot, emptyOnlyInSourceRel));
+    const older = new Date('2020-01-01T00:00:00Z');
+    const newer = new Date('2025-01-01T00:00:00Z');
+    fs.utimesSync(path.join(targetRoot, emptyInBothRel), older, older);
+    fs.utimesSync(path.join(sourceRoot, emptyInBothRel), newer, newer);
+
+    console.log('Calling diff (empty directories)...');
+    const emptyDirsDiff = await callWorker(win, 'diff', { source: sourceRoot, target: targetRoot });
+    results.emptyDirDiffIsOnlyTheMissingOne = assertSameSet(excludeMarkerFile(emptyDirsDiff.res), [emptyOnlyInSourceRel + path.sep], 'diff (empty directories) == only the source-only empty directory');
+
+    console.log('Calling incremental-copy-files (empty directories)...');
+    await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: excludeMarkerFile(emptyDirsDiff.res), source: sourceRoot, target: targetRoot });
+    const createdInTarget = path.join(targetRoot, emptyOnlyInSourceRel);
+    results.sourceOnlyEmptyDirCreatedInTarget = fs.existsSync(createdInTarget) && fs.statSync(createdInTarget).isDirectory();
+    console.log(`  ${results.sourceOnlyEmptyDirCreatedInTarget ? 'OK' : 'FAILED'} - source-only empty directory ${results.sourceOnlyEmptyDirCreatedInTarget ? 'was created in the target' : 'is missing from the target'}.`);
 
   } finally {
     if (app) { await app.close().catch(() => {}); }

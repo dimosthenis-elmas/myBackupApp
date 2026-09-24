@@ -1751,10 +1751,24 @@ const diff = async function (source: string, target: string, onProgress?: (line:
     let sourcePath = file
     let targetPath = file.replace(source, target)
 
+    // getAllFiles/getAllFilesSet list an empty directory as a single trailing-backslash entry. It counts as backed
+    // up as soon as that directory exists in the target, whatever it contains there (a non-empty target directory
+    // is listed as its own contents, never as this entry, so the entry lookup alone would miss it). It never gets
+    // the mtime/size comparison below either - it has no content to compare, and a directory's own mtime only
+    // records when it was created or had entries added/removed.
+    const isEmptyDirectoryEntry = file[file.length - 1] == '\\';
+
     let b = target_files.has(targetPath)
+    if (!b && isEmptyDirectoryEntry) {
+      try {
+        b = fs.statSync(targetPath).isDirectory();
+      } catch (error) {
+        b = false; // no such directory in the target
+      }
+    }
     if (!b) {
       source_only.push(file); // source only
-    } else {
+    } else if (!isEmptyDirectoryEntry) {
       // One statSync call per side, reused for both the mtime and size comparisons below - this used to be 4
       // statSync calls (2 per path) every time a file exists on both sides, which is the common case for a real
       // incremental backup (most files are already backed up and unchanged).
