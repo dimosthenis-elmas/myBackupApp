@@ -60,6 +60,25 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   in the cold storage metadata JSON (always on, not optional) - protection against a later drive read error or disc
   damage. See "Verify integrity of cold storage disc" below for how these checksums get used.
 
+  **How many files fit on one disc.** Discs are planned by the files' own sizes only, but on a disc every file also
+  takes about 3 KB more - a file record, plus its data rounded up to whole 2 KB sectors - and that comes out of the
+  free share above. So a full disc holds at most about this many files, which means its files must average at least
+  about this size (a disc planned less full has room for more):
+
+  | Disc | Files on one full disc, at most about | Average file size, at least about |
+  |---|---|---|
+  | CD (700 MB) | 16,000 | 40 KB |
+  | DVD (4.7 GB) | 46,000 | 100 KB |
+  | Blu-ray (25 GB) | 81,000 | 300 KB |
+  | Blu-ray (50 GB) | 160,000 | 300 KB |
+  | Blu-ray (100 GB) | 325,000 | 300 KB |
+
+  These are estimates, not measured limits, and the app does not check them. Discs are filled with the largest
+  files first, so the smallest files of a backup all end up together on the last disc(s) - with many small files
+  (source code, e-mail, thumbnails) such a disc can have more files than this, and ImgBurn then reports that it does
+  not fit. A larger disc does not help, since its free share is smaller; pack folders of many small files into an
+  archive (e.g. a .zip) before backing them up instead. The same applies to "Add missing files".
+
 - **Recover data from optical media:** recovers all, or just a selection of files, of a backup stored across your discs. You
   can optionally provide the cold storage metadata JSON file saved earlier (see "Add missing files" below) instead
   of inserting every disc just to see what's on it - the app builds the file list straight from the JSON, then only
