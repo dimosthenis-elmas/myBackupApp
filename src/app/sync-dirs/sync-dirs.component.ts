@@ -13,6 +13,7 @@ import { error } from 'console';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/progress-line';
 import { formatBytes } from '../shared/utils/format-bytes';
+import { isDriveRoot } from '../shared/utils/drive-root';
 
 
 
@@ -160,6 +161,7 @@ export class SyncDirsComponent {
         reject = rej;
       })
 
+    const driveRoots = [this.backup.sourcePath, this.backup.targetPath].filter((p) => p && isDriveRoot(p));
     if(!this.backup.sourcePath || !this.backup.targetPath){
       const confirmDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '650px' });
       confirmDialog.disableClose = true;
@@ -170,7 +172,22 @@ export class SyncDirsComponent {
       confirmDialog.componentInstance.action1Callback = () => {
         confirmDialog.close();
         resolve(0);
-      } 
+      }
+    }else if(driveRoots.length > 0){
+      // The root of a drive holds folders of Windows' own ("System Volume Information", "$Recycle.Bin") that the app
+      // cannot read, and must never copy or delete.
+      const confirmDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '650px' });
+      confirmDialog.disableClose = true;
+      confirmDialog.componentInstance.message = `${driveRoots.map((p) => `"${p}"`).join(' and ')} ` +
+        `${driveRoots.length > 1 ? 'are whole drives' : 'is a whole drive'}. Synchronize directories cannot use the root ` +
+        `of a drive - Windows keeps folders of its own there. Choose a folder on the drive instead.`;
+      confirmDialog.componentInstance.title = "Synchronize directories"
+      confirmDialog.componentInstance.actionsNum = 1;
+      confirmDialog.componentInstance.action1Label = "Ok";
+      confirmDialog.componentInstance.action1Callback = () => {
+        confirmDialog.close();
+        resolve(0);
+      }
     }else{
       resolve(1);
     }

@@ -46,8 +46,8 @@
  * "D|name|parentPath|fullSourcePath" (directories) lines - one function, entirely separate from the partitioning
  * logic already proven elsewhere (worker-ipc/test-partitioning.js), that flattens each disc's SELECTED tree into
  * this format. This script:
- *  1. Generates a source tree just over one CD's effective capacity (700MB * the app's own 0.95
- *     maxOpticalMediumRepletionRatio margin = 665,000,000 bytes) via a small nested tree with edge cases (a
+ *  1. Generates a source tree just over one CD's effective capacity (700MB * the app's 0.93 fill ratio for a CD
+ *     = 651,000,000 bytes) via a small nested tree with edge cases (a
  *     zero-byte file, a unicode/space filename, an empty directory) plus a real 700MB file - big enough on its
  *     own to force the split-confirmation chain above.
  *  2. Clicks through step 1, the "too large" confirmation chain, the resulting "N discs needed" confirmation, the
@@ -89,14 +89,13 @@ const { generateFixtureTree } = require('../lib/fixture-tree-source');
 
 const SPEC_DIR = path.join(__dirname, 'tree-specs', 'test-backup-to-optical-media');
 
-// The app's own "cd" medium choice (optical_media_choices in backup-to-optical-media.component.ts) and its own
-// maxOpticalMediumRepletionRatio safety margin (appData/config.json) - the REAL effective per-disc capacity the
-// app's own bin-packing uses is capacity * ratio, not the raw capacity.
+// The app's own "cd" medium choice and its fill ratio (OPTICAL_MEDIA in src/app/shared/utils/optical-media.ts) -
+// the REAL effective per-disc capacity the app's own bin-packing uses is capacity * ratio, not the raw capacity.
 const CD_CAPACITY_BYTES = 700_000_000;
-const OPTICAL_MEDIUM_REPLETION_RATIO = 0.95;
+const OPTICAL_MEDIUM_REPLETION_RATIO = 0.93;
 
 // Same proven-safe constants as worker-ipc/test-large-file-split.js and ui/test-add-missing-files.js - a 700MB
-// file real-splits into exactly 2 pieces at the app's fixed 500 MiB volume size, and CD's effective ~665MB
+// file real-splits into exactly 2 pieces at the app's fixed 500 MiB volume size, and CD's effective ~651MB
 // capacity sits above one piece but below both combined, forcing them onto two separate discs.
 const LARGE_FILE_BYTES = 700_000_000;
 const EXPECTED_FIRST_PIECE_BYTES = 500 * 1024 * 1024; // 524,288,000 - see LARGE_FILE_SPLIT_VOLUME_SIZE_MIB in worker.ts

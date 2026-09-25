@@ -106,6 +106,7 @@ async function main() {
     const planResponse = await callWorker(win, 'partition-backup-to-optical-media', {
       rootPath: boundarySourceRoot,
       mediaCapacityInBytes: 600_000_000,
+      maxRepletionRatio: 0.95,
       splitLargeFiles: true,
       sessionId,
     }, 60 * 1000);
@@ -143,7 +144,7 @@ async function main() {
   console.log('\n=== Part 2: forcing a >1 piece-count mismatch via a stub 7-Zip ===');
   const throwSourceRoot = path.join(scratchRoot, 'throw-source');
   const throwFilePath = path.join(throwSourceRoot, 'throw-file.bin');
-  // Must exceed the EFFECTIVE capacity (mediaCapacityInBytes * the app's own ratio, 600,000,000 * 0.95 =
+  // Must exceed the EFFECTIVE capacity (mediaCapacityInBytes * the maxRepletionRatio this script passes, 600,000,000 * 0.95 =
   // 570,000,000 here) to be classified as "too large for a single disc" at all and routed into the split path -
   // NOT just the raw 600,000,000 or the 524,288,000 volume size, both of which are under that effective
   // threshold and would silently be treated as an ordinary, unsplit file instead (found for real: an earlier
@@ -186,6 +187,7 @@ async function main() {
     const planResponse2 = await callWorker(win2, 'partition-backup-to-optical-media', {
       rootPath: throwSourceRoot,
       mediaCapacityInBytes: 600_000_000,
+      maxRepletionRatio: 0.95,
       splitLargeFiles: true,
       sessionId: sessionId2,
     }, 60 * 1000);

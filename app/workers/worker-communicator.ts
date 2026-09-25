@@ -290,11 +290,13 @@ export class WorkerCommunicator {
     /** `sessionId` (see SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts) must be the one value generated
      *  once per job and reused consistently across every call this same job makes (this one, createIBB_file,
      *  and createOpticalMediaDiscPartials) - it is what keeps this job's real split partials and .ibb files
-     *  isolated from any other job's, past or concurrent. */
-    static partitionBackupToOpticalMedia(rootPath: string, mediaCapacityInBytes: number, splitLargeFiles: boolean = false, sessionId: string, filesMetadata?: filesMetadata[], skipUnreadable: boolean = false): Promise<OpticalMediaPartitioning<WorkerResponse>> {
+     *  isolated from any other job's, past or concurrent. `maxRepletionRatio` is the chosen medium's (see
+     *  OPTICAL_MEDIA in src/app/shared/utils/optical-media.ts). */
+    static partitionBackupToOpticalMedia(rootPath: string, mediaCapacityInBytes: number, maxRepletionRatio: number, splitLargeFiles: boolean = false, sessionId: string, filesMetadata?: filesMetadata[], skipUnreadable: boolean = false): Promise<OpticalMediaPartitioning<WorkerResponse>> {
         return this.sendAndAwaitResponse<OpticalMediaPartitioning<WorkerResponse>>('partition-backup-to-optical-media', {
             rootPath: rootPath,
             mediaCapacityInBytes: mediaCapacityInBytes,
+            maxRepletionRatio: maxRepletionRatio,
             splitLargeFiles: splitLargeFiles,
             sessionId: sessionId,
             filesMetadata: filesMetadata,
@@ -336,11 +338,11 @@ export class WorkerCommunicator {
         return this.sendAndAwaitResponse('get-temp-data-directory-path', {});
     }
 
-    /** Applies config.json's maxOpticalMediumRepletionRatio to a medium's raw rated capacity - see
-     *  getEffectiveOpticalMediumCapacityInBytes in worker.ts for why this is the capacity every fit check
-     *  (not just up-front planning) should compare against, never a medium's raw capacity directly. */
-    static getEffectiveOpticalMediumCapacity(rawCapacityInBytes: number): Promise<WorkerResponse> {
-        return this.sendAndAwaitResponse('get-effective-optical-medium-capacity', { rawCapacityInBytes: rawCapacityInBytes });
+    /** Applies a medium's maxRepletionRatio (see OPTICAL_MEDIA in src/app/shared/utils/optical-media.ts) to its raw
+     *  rated capacity - see getEffectiveOpticalMediumCapacityInBytes in worker.ts for why this is the capacity every
+     *  fit check (not just up-front planning) should compare against, never a medium's raw capacity directly. */
+    static getEffectiveOpticalMediumCapacity(rawCapacityInBytes: number, maxRepletionRatio: number): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('get-effective-optical-medium-capacity', { rawCapacityInBytes: rawCapacityInBytes, maxRepletionRatio: maxRepletionRatio });
     }
 
     /** Rejects with a plain string message (see readJSONfromDisk's own 'response.res' rejectPayload need - a

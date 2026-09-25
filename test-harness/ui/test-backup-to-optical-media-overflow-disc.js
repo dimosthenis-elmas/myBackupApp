@@ -40,15 +40,15 @@
  * Sizing (CD medium, the smallest real choice - same 700,000,000-byte large file worker-ipc/
  * test-large-file-split.js and ui/test-backup-to-optical-media.js already use)
  * ============================================================================================================
- * CD raw capacity 700,000,000 * a 0.95 maxOpticalMediumRepletionRatio (pinned in appData/config.json for each
- * phase - see OPTICAL_MEDIUM_REPLETION_RATIO) = 665,000,000 effective.
+ * CD raw capacity 700,000,000 * the app's 0.93 fill ratio for a CD (maxRepletionRatio - see OPTICAL_MEDIA in
+ * src/app/shared/utils/optical-media.ts) = 651,000,000 effective.
  * A 700,000,000-byte file's ESTIMATE (pure arithmetic, see estimateLargeFileSplitPartials) is exactly 2 pieces:
  * piece.001 = 524,288,000 (one full volume), piece.002 = 175,712,000 (the remainder). Both are bigger than half
- * of 665,000,000, so partitionBackupToOpticalMedia's bin-packing can never combine them - each is planned ALONE
+ * of 651,000,000, so partitionBackupToOpticalMedia's bin-packing can never combine them - each is planned ALONE
  * on its own disc ("Optical disk 1" = piece.001 gets sorted first, being larger; "Optical disk 2" = piece.002),
  * leaving:
- *   - disc 1 (piece.001) with 665,000,000 - 524,288,000 =  140,712,000 bytes of spare room.
- *   - disc 2 (piece.002) with 665,000,000 - 175,712,000 =  489,288,000 bytes of spare room.
+ *   - disc 1 (piece.001) with 651,000,000 - 524,288,000 =  126,712,000 bytes of spare room.
+ *   - disc 2 (piece.002) with 651,000,000 - 175,712,000 =  475,288,000 bytes of spare room.
  * Whichever disc is sent first is the one whose send triggers the (stubbed) real split, which always produces a
  * real piece.001 and piece.002 matching the estimate exactly, PLUS the surplus piece.003 - so this script's
  * pass-or-fail does not depend on send order (both phases below just send disc 1 then disc 2, the natural
@@ -58,7 +58,7 @@
  *     trigger the split, the OTHER one always has enough room left to pick it up. Expected result: still
  *     exactly 2 discs, no "Disc count updated" dialog ever appears.
  *   - UNABSORBABLE_SURPLUS_BYTES (500,000,000): bigger than BOTH discs' spare room, but still comfortably under
- *     the medium's own 665,000,000 effective capacity (so a brand new, otherwise-empty disc can hold it alone).
+ *     the medium's own 651,000,000 effective capacity (so a brand new, otherwise-empty disc can hold it alone).
  *     Expected result: 3 discs total, with the "Disc count updated" dialog appearing before the 3rd one does.
  *
  * NOTE: needs a real Windows desktop/window session (see worker-ipc/call-worker.js's top comment) - run from
@@ -82,14 +82,12 @@ const EXPECTED_PIECE_1_BYTES = VOLUME_SIZE_BYTES; // 524,288,000
 const EXPECTED_PIECE_2_BYTES = LARGE_FILE_BYTES - VOLUME_SIZE_BYTES; // 175,712,000
 
 const CD_CAPACITY_BYTES = 700_000_000;
-// Written into appData/config.json's maxOpticalMediumRepletionRatio for the duration of each phase (see
-// runPhase), not read from the app: the sizing below only works for one specific effective capacity, and the
-// app's own default ratio (DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO in worker.ts, 0.99) leaves disc 2 enough
-// room to absorb UNABSORBABLE_SURPLUS_BYTES - which turns the "overflow" phase into a second "absorption" one.
-const OPTICAL_MEDIUM_REPLETION_RATIO = 0.95;
-const EFFECTIVE_CAPACITY_BYTES = CD_CAPACITY_BYTES * OPTICAL_MEDIUM_REPLETION_RATIO; // 665,000,000
-const DISC_1_SPARE_BYTES = EFFECTIVE_CAPACITY_BYTES - EXPECTED_PIECE_1_BYTES; // 140,712,000
-const DISC_2_SPARE_BYTES = EFFECTIVE_CAPACITY_BYTES - EXPECTED_PIECE_2_BYTES; // 489,288,000
+// The app's fill ratio for a CD (OPTICAL_MEDIA in src/app/shared/utils/optical-media.ts). The sizing below only works
+// for one specific effective capacity - the two checks right below stop this script if a changed ratio breaks it.
+const OPTICAL_MEDIUM_REPLETION_RATIO = 0.93;
+const EFFECTIVE_CAPACITY_BYTES = CD_CAPACITY_BYTES * OPTICAL_MEDIUM_REPLETION_RATIO; // 651,000,000
+const DISC_1_SPARE_BYTES = EFFECTIVE_CAPACITY_BYTES - EXPECTED_PIECE_1_BYTES; // 126,712,000
+const DISC_2_SPARE_BYTES = EFFECTIVE_CAPACITY_BYTES - EXPECTED_PIECE_2_BYTES; // 475,288,000
 
 const ABSORBABLE_SURPLUS_BYTES = 200_000_000; // > DISC_1_SPARE_BYTES, <= DISC_2_SPARE_BYTES
 const UNABSORBABLE_SURPLUS_BYTES = 500_000_000; // > DISC_2_SPARE_BYTES (the bigger of the two), <= EFFECTIVE_CAPACITY_BYTES
@@ -165,12 +163,6 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
   const createdIbbPaths = [];
   let sessionDir;
   try {
-    // Pinned before the app plans anything - both the disc plan and the capacity the wizard later checks a
-    // surplus piece against are computed from this ratio. See OPTICAL_MEDIUM_REPLETION_RATIO for why this script
-    // sets it instead of relying on the app's default. Restored, with everything else, in the finally block below.
-    console.log(`\nPinning maxOpticalMediumRepletionRatio to ${OPTICAL_MEDIUM_REPLETION_RATIO} for this run...`);
-    originalConfigContent = backupAndRedirectConfigField('maxOpticalMediumRepletionRatio', OPTICAL_MEDIUM_REPLETION_RATIO);
-
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
 
@@ -231,7 +223,7 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
     // only now, right before either is actually needed - see ui/test-backup-to-optical-media.js's own comment
     // on the same "keep the redirected window short" reasoning for ImgBurn.
     console.log('\nRedirecting the real 7-Zip and ImgBurn paths to harmless stubs for the "Send to ImgBurn" clicks below...');
-    backupAndRedirectConfigField('_7zipExecutablePath', stub7zPath); // true original already captured above
+    originalConfigContent = backupAndRedirectConfigField('_7zipExecutablePath', stub7zPath); // restored in the finally block below
     backupAndRedirectConfigField('imgBurnExecutablePath', stubImgBurnPath);
 
     // --- send disc 1, then disc 2 (the natural order - see header comment for why order doesn't matter here) ---

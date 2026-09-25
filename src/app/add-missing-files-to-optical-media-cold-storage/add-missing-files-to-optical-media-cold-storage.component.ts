@@ -37,6 +37,7 @@ import { compileSchema, JsonSchema, SchemaNode } from "json-schema-library";
 import { ColdStorageMetadata } from '../../../app/workers/ipc.interfaces';
 import { SerialQueue } from '../shared/utils/serial-queue';
 import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
+import { OPTICAL_MEDIA } from '../shared/utils/optical-media';
 const mySchema =require('../schemas/filesMetadata.schema.json');
 
 @Component({
@@ -77,13 +78,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     firstCtrl: ['', Validators.required],
   });
 
-    optical_media_choices: {value: string, viewValue: string, capacity: number}[] = [
-    {value: 'cd', viewValue: 'CD (700 MB)', capacity: 0.7e9},
-    {value: 'dvd', viewValue: 'DVD (4.7 GB)', capacity: 4.7e9},
-    {value: 'blu-ray-25', viewValue: 'Blu ray (25 GB)', capacity: 25e9},
-    {value: 'blu-ray-50', viewValue: 'Blu ray (50 GB)', capacity: 50e9},
-    {value: 'blu-ray-100', viewValue: 'Blu ray (100 GB)', capacity: 100e9}
-  ];
+  optical_media_choices = OPTICAL_MEDIA;
 
   useExternalMetadata = false;
   externalMetadataJSONpath!:string;
@@ -166,7 +161,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    *  counterpart in backup-to-optical-media.component.ts for the full rationale (this is the same rare
    *  boundary case, handled the same way, for the "add missing files" flow). */
   private pendingOverflowPartials: filesMetadata[] = [];
-  /** The selected medium's raw capacity, discounted by config.json's maxOpticalMediumRepletionRatio - see
+  /** The selected medium's raw capacity, discounted by its maxRepletionRatio (see OPTICAL_MEDIA) - see
    *  getEffectiveOpticalMediumCapacityInBytes in worker.ts. Fetched once in partition() and used as the one
    *  capacity every later fit check (surplus slivers included) compares against, instead of the medium's raw
    *  selected_optical_medium.capacity. */
@@ -663,14 +658,14 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       // partitionBackupToOpticalMedia now plans using fast size ESTIMATES for any large-file split partials
       // (never invoking 7-Zip here) - the real split, and this.partitions' real sizes, only happen later, lazily,
       // disc by disc, in sendToImgBurn - see its own comment and createOpticalMediaDiscPartials in worker.ts.
-      this.partitions =  (await ipc.partitionBackupToOpticalMedia(this.backup.targetPath, this.selected_optical_medium.capacity, true, this.tempSessionId, selectedPathsWithMetadata)).res;
+      this.partitions =  (await ipc.partitionBackupToOpticalMedia(this.backup.targetPath, this.selected_optical_medium.capacity, this.selected_optical_medium.maxRepletionRatio, true, this.tempSessionId, selectedPathsWithMetadata)).res;
       console.log(this.partitions)
 
       // Same effective (margin-discounted) capacity partitionBackupToOpticalMedia itself planned against - see
       // getEffectiveOpticalMediumCapacityInBytes in worker.ts. sendToImgBurn/maybeAppendOverflowDiscs must judge
       // whether a surplus sliver fits against this exact number, never the medium's raw capacity: that margin is
       // a general burn-safety feature, not something reserved for or spent by handling surplus slivers.
-      this.effectiveMediaCapacityInBytes = (await ipc.getEffectiveOpticalMediumCapacity(this.selected_optical_medium.capacity)).res;
+      this.effectiveMediaCapacityInBytes = (await ipc.getEffectiveOpticalMediumCapacity(this.selected_optical_medium.capacity, this.selected_optical_medium.maxRepletionRatio)).res;
       this.originalNumberOfDisksNeeded = this.partitions.length;
 
       // Scaffold write: existing discs unchanged, plus one empty placeholder per new disc. Each new disc's real

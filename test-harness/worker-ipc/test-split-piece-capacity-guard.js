@@ -36,7 +36,7 @@ const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 // this test needs to trigger the guard.
 const LARGE_FILE_BYTES = 20_000_000; // 20 MB
 
-// Deliberately much smaller than LARGE_FILE_BYTES (and smaller still once * maxOpticalMediumRepletionRatio is
+// Deliberately much smaller than LARGE_FILE_BYTES (and smaller still once * maxRepletionRatio is
 // applied inside partitionBackupToOpticalMedia), so the one resulting split piece can never fit - this is the
 // exact condition that used to loop forever.
 const TINY_MEDIA_CAPACITY_BYTES = 5_000_000; // 5 MB
@@ -67,6 +67,7 @@ async function main() {
     const response = await callWorker(win, 'partition-backup-to-optical-media', {
       rootPath: root,
       mediaCapacityInBytes: TINY_MEDIA_CAPACITY_BYTES,
+      maxRepletionRatio: 0.99,
       splitLargeFiles: true,
       sessionId: 'session-' + Date.now(),
     }, CALL_TIMEOUT_MS);

@@ -316,7 +316,7 @@ node test-harness/ui/test-backup-to-optical-media.js
 Clicks through step 1 (source folder, "CD (700 MB)" medium, collection name, Next), the "too large" confirmation
 chain (see below), the resulting "you will need N discs" confirmation, the JSON save-path dialog, and then - per
 disc - "Send to ImgBurn" and its "Disc label" confirmation. Generates a source tree just over one CD's *effective*
-capacity (700MB * the app's own 0.95 `maxOpticalMediumRepletionRatio` margin) via a small nested tree with edge
+capacity (700MB * the app's 0.93 fill ratio for a CD) via a small nested tree with edge
 cases plus a real 700MB file, big enough on its own to force a real split.
 
 **Covers a real large-file split, via this wizard's OWN unique confirmation-dialog chain.** Unlike

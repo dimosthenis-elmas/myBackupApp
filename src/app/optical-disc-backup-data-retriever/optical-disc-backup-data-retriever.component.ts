@@ -13,6 +13,7 @@ import { ColdStorageMetadata } from '../../../app/workers/ipc.interfaces';
 import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/progress-line';
+import { formatMegabytes } from '../shared/utils/format-bytes';
  
   @Component({
     selector: 'optical-disc-backup-data-retriever',
@@ -68,18 +69,19 @@ import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/p
     coldStorageMetadataForAllOpticalDiscs: ColdStorageMetadata = [];
 
     /** Shown under the files tree: how many files the whole cold storage holds (each piece of a split large file
-     *  counts, as that is what is on the discs) and their total size in bytes. Worked out once per listing - both
-     *  places that fill coldStorageMetadataForAllOpticalDiscs assign a new array - not on every change detection. */
-    get coldStorageTotals(): { files: number, bytes: number } {
+     *  counts, as that is what is on the discs) and their total size, as "n MB (m bytes)" (see formatMegabytes).
+     *  Worked out once per listing - both places that fill coldStorageMetadataForAllOpticalDiscs assign a new array -
+     *  not on every change detection. */
+    get coldStorageTotals(): { files: number, size: string } {
       if (this.coldStorageTotalsFor !== this.coldStorageMetadataForAllOpticalDiscs) {
         const files = this.coldStorageMetadataForAllOpticalDiscs.flat().filter((e) => !e.stats.isDirectory);
-        this.coldStorageTotalsCache = { files: files.length, bytes: files.reduce((sum, e) => sum + Number(e.stats.size), 0) };
+        this.coldStorageTotalsCache = { files: files.length, size: formatMegabytes(files.reduce((sum, e) => sum + Number(e.stats.size), 0)) };
         this.coldStorageTotalsFor = this.coldStorageMetadataForAllOpticalDiscs;
       }
       return this.coldStorageTotalsCache;
     }
     private coldStorageTotalsFor?: ColdStorageMetadata;
-    private coldStorageTotalsCache = { files: 0, bytes: 0 };
+    private coldStorageTotalsCache = { files: 0, size: formatMegabytes(0) };
 
     discIdsForCompleteBackupFilePaths :Array<number> = [];
     filesTreeRef!: FilesTreeComponent;

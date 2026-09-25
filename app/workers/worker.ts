@@ -706,13 +706,9 @@ const REQUIRED_CONFIG_EXECUTABLE_PATHS: { [key: string]: string } = {
   'imgBurnExecutablePath': 'ImgBurn executable (ImgBurn.exe)'
 };
 
-/** The one place in the app that defines the default burn-safety margin (see
- *  getEffectiveOpticalMediumCapacityInBytes below) - both DEFAULT_CONFIG_FIELDS' backfill-on-write value and
- *  getEffectiveOpticalMediumCapacityInBytes' own runtime fallback (used whenever config.json doesn't have, or
- *  has an invalid, maxOpticalMediumRepletionRatio) read from this single constant, so changing the app's
- *  default ratio never requires touching more than this one line - config.json itself no longer needs to carry
- *  this value at all unless someone deliberately wants to override it for their own install. */
-const DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO = 0.99;
+/** The highest share of a disc's rated capacity any disc is ever planned to fill - see
+ *  getEffectiveOpticalMediumCapacityInBytes. */
+const MAX_OPTICAL_MEDIUM_REPLETION_RATIO = 0.99;
 
 /** Baseline values for the non-executable config.json fields the rest of the app assumes are present. Used by
  *  updateConfig below to backfill anything not already in the file, so that writing just the two executable
@@ -721,7 +717,6 @@ const DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO = 0.99;
  *  Deliberately excludes the two REQUIRED_CONFIG_EXECUTABLE_PATHS fields - defaulting those to a guessed
  *  install path would silently defeat the setup dialog's entire point of getting the user to confirm them. */
 const DEFAULT_CONFIG_FIELDS: { [key: string]: any } = {
-  maxOpticalMediumRepletionRatio: DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO,
   cacheDataDirectoryPath: DEFAULT_CACHE_DATA_DIRECTORY_NAME
 };
 
@@ -738,22 +733,20 @@ const readConfig = async function (): Promise<{ [key: string]: any }> {
   }
 }
 
-/** Applies config.json's maxOpticalMediumRepletionRatio to a medium's rated capacity, so a disc is never
- *  planned to be filled all the way to its rated capacity. This is a general burn-safety margin - it exists
- *  because packing right up to a medium's rated capacity is riskier in general (filesystem/UDF overhead,
- *  media-to-media variance in actually-writable capacity, etc.), not because of any one particular feature.
- *  In particular, this margin is NOT specifically reserved for or "spent by" large-file-split-partial surplus
- *  slivers (see estimateLargeFileSplitPartials/createOpticalMediaDiscPartials) - callers reasoning about
- *  whether something fits on a disc, including a surplus sliver, must always compare against this effective
- *  capacity, never the medium's raw rated capacity, exactly like any other content being packed onto a disc.
- *  Falls back to DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO if config.json doesn't have a valid (numeric)
- *  maxOpticalMediumRepletionRatio of its own. Clamped to a hard maximum of 0.99 regardless of what's
- *  configured, so a config value close to or at 1.0 can never remove this margin entirely. */
-const getEffectiveOpticalMediumCapacityInBytes = async function (rawCapacityInBytes: number): Promise<number> {
-  const parsedConfig = await readConfig();
-  const configuredRatio = parsedConfig.maxOpticalMediumRepletionRatio;
-  const ratio = typeof configuredRatio === 'number' ? configuredRatio : DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO;
-  return rawCapacityInBytes * Math.min(ratio, 0.99);
+/** The capacity a disc is planned against: its rated capacity times `maxRepletionRatio`, how full a disc of that
+ *  kind may be planned - the wizards take it from the chosen medium (OPTICAL_MEDIA in
+ *  src/app/shared/utils/optical-media.ts). The margin this leaves is not only for the files' own bytes: every file
+ *  on a disc also takes up file system records and is rounded up to whole sectors, which planning does not count.
+ *  It is NOT specifically reserved for or "spent by" large-file-split-partial surplus slivers (see
+ *  estimateLargeFileSplitPartials/createOpticalMediaDiscPartials) - callers reasoning about whether something fits
+ *  on a disc, including a surplus sliver, must always compare against this effective capacity, never the medium's
+ *  raw rated capacity, exactly like any other content being packed onto a disc. Throws unless `maxRepletionRatio`
+ *  is a number above 0 and at most MAX_OPTICAL_MEDIUM_REPLETION_RATIO. */
+const getEffectiveOpticalMediumCapacityInBytes = async function (rawCapacityInBytes: number, maxRepletionRatio: number): Promise<number> {
+  if (typeof maxRepletionRatio !== 'number' || !(maxRepletionRatio > 0 && maxRepletionRatio <= MAX_OPTICAL_MEDIUM_REPLETION_RATIO)) {
+    throw new Error(`Invalid maxRepletionRatio: ${maxRepletionRatio} (expected a number above 0 and at most ${MAX_OPTICAL_MEDIUM_REPLETION_RATIO}).`);
+  }
+  return rawCapacityInBytes * maxRepletionRatio;
 }
 
 /** Checks the required executable paths in config.json (see REQUIRED_CONFIG_EXECUTABLE_PATHS) and reports
@@ -785,12 +778,11 @@ const validateConfigPaths = async function (): Promise<{
 }
 
 /** Merges the given updates into the existing config.json (creating it if missing) and writes it back.
- *  Every existing field (including ones this app does not otherwise validate, like
- *  maxOpticalMediumRepletionRatio) is preserved as-is. Any of DEFAULT_CONFIG_FIELDS not already present in the
- *  file is backfilled with its baseline value - this matters most when config.json did not exist at all
- *  before this call (e.g. the user deleted it): without this, writing just the two executable paths from the
- *  setup dialog would leave the file missing maxOpticalMediumRepletionRatio/cacheDataDirectoryPath/etc.
- *  entirely, rather than recreating a complete config.json. */
+ *  Every existing field (including ones this app does not otherwise validate) is preserved as-is. Any of
+ *  DEFAULT_CONFIG_FIELDS not already present in the file is backfilled with its baseline value - this matters most
+ *  when config.json did not exist at all before this call (e.g. the user deleted it): without this, writing just
+ *  the two executable paths from the setup dialog would leave the file missing cacheDataDirectoryPath entirely,
+ *  rather than recreating a complete config.json. */
 const updateConfig = async function (updates: { [key: string]: any }): Promise<{ success: boolean, message: string }> {
   try {
     const existing = await readConfig();
@@ -1227,20 +1219,22 @@ const partitionArrayBasedOnFilter = <T,>(
 // true (to predict split-partial paths under this job's own session subfolder) - still required either way, so
 // the same one value the caller generated for this job is always available regardless of which of the two
 // planning calls a wizard's own retry-without-then-with-splitting flow ends up needing it for.
-/** @param onProgress optional - reports this call's progress as plain text lines, same "(i of N)" convention as
+/** @param maxRepletionRatio how full a disc of the chosen kind may be planned - see
+ *  getEffectiveOpticalMediumCapacityInBytes.
+ *  @param onProgress optional - reports this call's progress as plain text lines, same "(i of N)" convention as
  *  diff's own two phases (see parseProgressFromLine/parseScanItemsProgress, shared/utils): a real percentage for
  *  the upfront directory scan (via countAllFilesQuick's probe - "Scanning items (i of N)"), then one for the
  *  bin-packing loop below (a known total by then - "Packing items (i of N)", see parsePackingProgress) once per
  *  disc it fills (not per file - packing potentially hundreds of thousands of files into a couple dozen discs
  *  is already coarse-grained at that level, so there's no need for a separate throttling interval the way the
  *  per-item scan/hash loops elsewhere need one). Left undefined, behaves exactly as before (no probing overhead). */
-const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, splitLargeFiles:boolean=false, sessionId: string, filesMetadata?:filesMetadata[], onProgress?: (line: string) => void, skipUnreadable: boolean = false): Promise<ColdStorageMetadata>{
+const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, maxRepletionRatio: number, splitLargeFiles:boolean=false, sessionId: string, filesMetadata?:filesMetadata[], onProgress?: (line: string) => void, skipUnreadable: boolean = false): Promise<ColdStorageMetadata>{
   assertValidSessionId(sessionId);
   process.env._stop="NoStop";
 
-  // Be on the safe side, fill the disk at most up to a certain percentage (e.g. 95% or something) - see
+  // A disc is filled at most up to maxRepletionRatio of its rated capacity - see
   // getEffectiveOpticalMediumCapacityInBytes's own comment for why this margin exists.
-  mediaCapacityInBytes = await getEffectiveOpticalMediumCapacityInBytes(mediaCapacityInBytes);
+  mediaCapacityInBytes = await getEffectiveOpticalMediumCapacityInBytes(mediaCapacityInBytes, maxRepletionRatio);
   // Routes through ensureTempDataDirectoryIsAppOwned rather than just creating the directory on demand - see
   // its doc comment for why (the startup check normally catches an unowned directory before this is ever
   // reached - this is defense-in-depth for cacheDataDirectoryPath being changed to something pre-existing
@@ -2459,6 +2453,14 @@ const check_commmon_files_for_equality = async function (source: string, target:
 }
 
 
+/** An empty tree of names - the `tree` createTree, deleteFilesAndDirsForDirSync and createIBB_file build from the
+ *  paths they are given, one key per file or folder name. It has no prototype, so every name - "__proto__",
+ *  "hasOwnProperty" and "constructor" included - is an ordinary key of its own. */
+const newNameTree = (): any => Object.create(null);
+
+/** True if `tree` (see newNameTree) already has `name`. */
+const treeHasName = (tree: any, name: string): boolean => Object.prototype.hasOwnProperty.call(tree, name);
+
 /** Copies (doCopy) or previews every path diff reported, one at a time - see insertBranch.
  *  @param nameClash see NameClash (ipc.interfaces.ts). */
 const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boolean, source: string, target: string, nameClash?: NameClash): Promise<void> {
@@ -2466,7 +2468,7 @@ const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boole
   
   if (source[source.length - 1] != '\\') { source += "\\"; }
   if (target[target.length - 1] != '\\') { target += "\\"; }
-  let tree = {}
+  let tree = newNameTree()
 
   let path: string;
   for (let index = 0; index < sourceOnlyPaths.length; index++) {
@@ -2505,7 +2507,7 @@ const deleteFilesAndDirsForDirSync = async function (pathsMarkedForDeletion: Arr
 
   if (source[source.length - 1] != '\\') { source += "\\"; }
   if (target[target.length - 1] != '\\') { target += "\\"; }
-  let tree = {}
+  let tree = newNameTree()
 
   let path: string;
   let tokens: string[] = [];
@@ -2545,8 +2547,9 @@ const deleteFilesAndDirsForDirSync = async function (pathsMarkedForDeletion: Arr
         let tp = target + path_to_be_checked.join("\\") + ("\\");
         let exists_in_master = isRealDirectoryAt(mp);
 
-        // No longer a folder in the target: the copy phase replaced it with a file of the template's (see NameClash).
-        if (isRealDirectoryAt(tp)) {
+        // Not a real folder in the target any more, or only reached through a link: the copy phase replaced it, or a
+        // folder above it, with a file or link of the template's (see NameClash, isRealDirectoryAllTheWay).
+        if (isRealDirectoryAllTheWay(target, path_to_be_checked.join("\\"))) {
           // Replace any trailing '\' characters. This is because the listing does not add '\' to the end of a directory path.
           subTreeContents = subTreeContents.map((d)=>{return d.replace(/\\+$/, "");});
           let dirContents = listEntriesWithoutFollowingLinks(tp);
@@ -2587,8 +2590,8 @@ const deleteFilesAndDirsForDirSync = async function (pathsMarkedForDeletion: Arr
         full_path_to_be_checked_target = target + tokens.join("\\") + "\\" + dir_name + "\\";
         full_path_to_be_checked_master = source + tokens.join("\\") + "\\" + dir_name + "\\";
       }
-      // Not a folder in the target any more: see the same check in the loop above.
-      if(dir_name && isRealDirectoryAt(full_path_to_be_checked_target)){
+      // Not a real folder in the target any more, or only reached through a link: see the same check in the loop above.
+      if(dir_name && isRealDirectoryAllTheWay(target, tokens.concat([dir_name]).join("\\"))){
         let subTree = getSubTree(tree, tokens.concat([dir_name]))
         let dir_exists_in_master = isRealDirectoryAt(full_path_to_be_checked_master);
 
@@ -2677,6 +2680,20 @@ const isRealDirectoryAt = function (absolutePath: string): boolean {
   return lstatOrNull(trimTrailingBackslash(absolutePath))?.isDirectory() === true;
 }
 
+/** True if `relativeDir` ('\'-separated, relative to `root`) is a real directory below `root` and so is every
+ *  directory on the way to it - no link anywhere on the path. An empty `relativeDir` is `root` itself: true. The
+ *  delete step of "Synchronize directories" checks this before deleting anything: its list was made before the copy
+ *  step, which can replace a folder of the target with a link from the source (see NameClash) - a path from the
+ *  list below that folder would then lead through the link, to what it points to, outside the target. */
+const isRealDirectoryAllTheWay = function (root: string, relativeDir: string): boolean {
+  let directory = root;
+  for (const name of relativeDir.split('\\').filter((n) => n !== '')) {
+    directory = node_path_module.join(directory, name);
+    if (!isRealDirectoryAt(directory)) { return false; }
+  }
+  return true;
+}
+
 /** Every entry below `dirPath`, as paths relative to it joined with '\' - like fs.readdirSync(dirPath, { recursive:
  *  true }), except that a link (symbolic link or junction) is listed as one entry and never looked inside, the
  *  same way diff's scans treat it. (Node's recursive readdir does look inside junctions.) */
@@ -2698,6 +2715,11 @@ tree: any, tokens: Array<string>, index: number, commit: boolean, target: string
       let path_suffix = createPath(tokens, index)
       let source_path = source + path_suffix
       let target_path = target + path_suffix
+      if (!isRealDirectoryAllTheWay(target, tokens.slice(0, index).join('\\'))) {
+        // Nothing to delete: the folder it was in is gone, or is now a link (the copy phase replaced it with the
+        // template's link) - deleting through that would delete outside the target.
+        return;
+      }
       if (lstatOrNull(source_path) !== null) {
         // Never delete a target entry that the template directory also has, as the filesystem sees it - the copy
         // phase has already made it match. "Synchronize directories" removes every file it is about to copy from its
@@ -2711,7 +2733,7 @@ tree: any, tokens: Array<string>, index: number, commit: boolean, target: string
       }
       const existingTarget = lstatOrNull(target_path);
       if (existingTarget === null) {
-        // Already gone: the copy phase replaced the folder it was in with a file of the template's (see NameClash).
+        // Already gone since the list was made.
         return;
       }
       tree[tokens[index]] = null;
@@ -2725,9 +2747,9 @@ tree: any, tokens: Array<string>, index: number, commit: boolean, target: string
       }
     }
   } else {
-    if (!tree.hasOwnProperty(tokens[index])) {
+    if (!treeHasName(tree, tokens[index])) {
       if(tokens[index] != ''){
-        tree[tokens[index]] = {}
+        tree[tokens[index]] = newNameTree()
       }      
       let path_suffix = createPath(tokens, index)
       let source_path = source + path_suffix
@@ -2854,7 +2876,7 @@ const copyLink = function (sourcePath: string, targetPath: string): void {
  *  file or link is being copied, or a file where a folder is needed, is dealt with by resolveNameClash. */
 const insertBranch = function (tree: any, tokens: Array<string>, index: number, doCopy: boolean, source: string, target: string, nameClash?: NameClash): void {
   if ((tokens.length - index) == 1) {
-    tree[tokens[index]] = {}
+    tree[tokens[index]] = newNameTree()
     // Create file OR directory
     if (tokens[index] != '') {
       let path_suffix = createPath(tokens, index)
@@ -2891,8 +2913,8 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
       }
     }
   } else {
-    if (!tree.hasOwnProperty(tokens[index])) {
-      tree[tokens[index]] = {}
+    if (!treeHasName(tree, tokens[index])) {
+      tree[tokens[index]] = newNameTree()
       // Create directory (only)
       let path_suffix = createPath(tokens, index)
       let target_path = target + path_suffix
@@ -2963,7 +2985,7 @@ const asNameClash = function (value: any): NameClash | undefined {
 
 const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>, index: number, source: string, target: string, logs: string[], sessionId: string): void {
   if ((tokens.length - index) == 1) {
-    tree[tokens[index]] = {}
+    tree[tokens[index]] = newNameTree()
     // Create file OR directory
     if (tokens[index] != '') {
       let path_suffix = createPath(tokens, index)
@@ -2992,8 +3014,8 @@ const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>
 
     }
   } else {
-    if (!tree.hasOwnProperty(tokens[index])) {
-      tree[tokens[index]] = {}
+    if (!treeHasName(tree, tokens[index])) {
+      tree[tokens[index]] = newNameTree()
       // Create directory (only)
       let path_suffix = createPath(tokens, index)
       let target_path = target + path_suffix
@@ -3087,7 +3109,7 @@ const createIBB_file = async function(disk_id: number, paths: Array<string>, sou
   let target = "\\"
   if (sourcePath[sourcePath.length - 1] != '\\') { sourcePath += "\\"; }
 
-  let tree = {}
+  let tree = newNameTree()
 
   let logs :Array<string> = [];
 
@@ -3299,7 +3321,7 @@ const init = function() : void
       case 'partition-backup-to-optical-media':
         console.log("(worker) in partition-backup-to-optical-media")
         logsBuffer.setChannel('partition-backup-to-optical-media');
-        partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.splitLargeFiles, arg.params.sessionId, arg.params.filesMetadata, (line) => logsBuffer.push(line), arg.params.skipUnreadable === true).then((d)=>{
+        partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.maxRepletionRatio, arg.params.splitLargeFiles, arg.params.sessionId, arg.params.filesMetadata, (line) => logsBuffer.push(line), arg.params.skipUnreadable === true).then((d)=>{
           logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'partition-backup-to-optical-media', res: d, status: "completed" });
@@ -3400,7 +3422,7 @@ const init = function() : void
         break;
       case 'get-effective-optical-medium-capacity':
         console.log("(worker) in get-effective-optical-medium-capacity")
-        getEffectiveOpticalMediumCapacityInBytes(arg.params.rawCapacityInBytes).then((d)=>{
+        getEffectiveOpticalMediumCapacityInBytes(arg.params.rawCapacityInBytes, arg.params.maxRepletionRatio).then((d)=>{
           ipc.sendResponseToMain({ key: 'get-effective-optical-medium-capacity', res: d, status: "completed" });
         }).catch((err)=>{
           ipc.sendResponseToMain({ key: 'get-effective-optical-medium-capacity', res: err, status: "error" });

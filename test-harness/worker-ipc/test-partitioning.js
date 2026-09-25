@@ -37,15 +37,8 @@ async function main() {
   const tempDir = assertRealTempDataDirectoryIsSafeToUse();
   console.log(`OK - using: ${tempDir}\n`);
 
-  // maxOpticalMediumRepletionRatio is optional in config.json - the app itself falls back to
-  // DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO (worker.ts) when it's absent, so this mirrors that same
-  // fallback rather than requiring the field to be explicitly set.
-  const DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO = 0.99;
-  const appDataDir = path.resolve(__dirname, '../../appData');
-  const config = JSON.parse(fs.readFileSync(path.join(appDataDir, 'config.json'), 'utf8'));
-  const repletionRatio = typeof config.maxOpticalMediumRepletionRatio === 'number'
-    ? config.maxOpticalMediumRepletionRatio
-    : DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO;
+  // How full a disc may be planned - the app's ratio for a CD (OPTICAL_MEDIA in src/app/shared/utils/optical-media.ts).
+  const repletionRatio = 0.93;
   const effectiveCapacity = TEST_DISC_CAPACITY_BYTES * repletionRatio;
 
   // 1. Generate a small random tree, with every file safely under the test capacity (so nothing needs splitting).
@@ -74,6 +67,7 @@ async function main() {
     response = await callWorker(win, 'partition-backup-to-optical-media', {
       rootPath: root,
       mediaCapacityInBytes: TEST_DISC_CAPACITY_BYTES,
+      maxRepletionRatio: repletionRatio,
       splitLargeFiles: false,
       sessionId: 'session-' + Date.now(),
     });

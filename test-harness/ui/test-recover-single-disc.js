@@ -132,8 +132,9 @@ async function main() {
     await step('wait for disc detection + read, click "All disks have been processed..." (up to 60s)', () =>
       win.getByRole('button', { name: 'All disks have been processed, continue to the next step' }).click({ timeout: 60_000 }));
 
-    // Under the files tree: the cold storage's number of files and total size in bytes - here, everything on the disc.
-    await step('verify the totals under the files tree (number of files, total size in bytes)', async () => {
+    // Under the files tree: the cold storage's number of files and total size, "n MB (m bytes)" - here, everything on
+    // the disc.
+    await step('verify the totals under the files tree (number of files, total size in MB and bytes)', async () => {
       const label = win.getByText(/^Total number of files:/);
       await label.waitFor({ timeout: 30_000 });
       const shown = (await label.innerText()).trim();
@@ -145,7 +146,8 @@ async function main() {
           if (entry.isDirectory()) { walk(full); } else { files++; bytes += fs.statSync(full).size; }
         }
       })(sourceRoot);
-      const expected = `Total number of files: ${files.toLocaleString('en-US')} — Total size of the cold storage in bytes: ${bytes.toLocaleString('en-US')}`;
+      const megabytes = (bytes / (1024 * 1024)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const expected = `Total number of files: ${files.toLocaleString('en-US')} — Total size of the cold storage: ${megabytes} MB (${bytes.toLocaleString('en-US')} bytes)`;
       totalsLabelCorrect = shown === expected;
       console.log(`\n  on screen: "${shown}"${totalsLabelCorrect ? '' : `\n  expected : "${expected}"`}`);
     });

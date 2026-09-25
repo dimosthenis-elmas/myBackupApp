@@ -23,21 +23,28 @@
     extras: any;
   }
   
+  /** An empty object keyed by file and folder names, as list_to_json_/list_to_json build. It has no prototype, so every
+   *  name - "__proto__", "hasOwnProperty" and "constructor" included - is an ordinary key of its own. */
+  const newNameMap = (): any => Object.create(null);
+
+  /** True if `nameMap` (see newNameMap) already has `name`. */
+  const hasName = (nameMap: any, name: string): boolean => Object.prototype.hasOwnProperty.call(nameMap, name);
+
   /** Converts an array of strings (file paths) to a json object readable by angular's mat-tree.
    * @param files an array of strings (paths to a file or empty_folder). Example ['1.txt', 'folder1\2.txt', 'folder1\3.txt', 'folder1\empty_folder\', 'folder1\empty_folder1\empty_folder2\', '4.txt']
    * @return a json object that can be used in an angular mat-tree. Example {"1.txt":null, folder1:{"2.txt":null, "3.txt":null, empty_folder:{}, empty_folder1:{empty_folder2:{}}}, "4.txt":null}
    */
   const list_to_json_ = function(files: any[]){
-    let root = {};
+    let root = newNameMap();
     files.forEach(function(file){
       let tokens = file.split('\\');
       let head:any = root;
       let lastTokenIndex = tokens.length-1;
       // Inform the "root" object about the directory structure that leads to this "file" (or "empty folder")
       for(let i=0; i<lastTokenIndex; ++i){
-        if(!head.hasOwnProperty(tokens[i])){
+        if(!hasName(head, tokens[i])){
           // Create property for this folder
-          head[tokens[i]] = {};
+          head[tokens[i]] = newNameMap();
         }
         // "cd" to this folder 
         head = head[tokens[i]];
@@ -64,7 +71,7 @@
   // and so it can report real progress via `onProgress` (files.length is a known total up front, unlike
   // buildFileTree's own node count - see FilesTreeComponent.setTreeData for how the two phases are combined).
   const list_to_json = async function(files: any[], extras: any[] = [], onProgress?: (itemsProcessed: number) => void){
-    let root = {};
+    let root = newNameMap();
     for (let index = 0; index < files.length; index++) {
       const file = files[index];
       let tokens = file.split('\\');
@@ -72,7 +79,7 @@
       let lastTokenIndex = tokens.length-1;
       // Inform the "root" object about the directory structure that leads to this "file" (or "empty folder")
       for(let i=0; i<lastTokenIndex; ++i){
-        if(!head.hasOwnProperty(tokens[i])){
+        if(!hasName(head, tokens[i])){
           // Create property for this folder
 
           // Extras is optional ..
@@ -80,7 +87,7 @@
           if(extras.length > 0){
             e = extras[index];
           }
-          head[tokens[i]] = {"children":{}, "extras": e};
+          head[tokens[i]] = {"children": newNameMap(), "extras": e};
         }
         // "cd" to this folder
         head = head[tokens[i]].children;

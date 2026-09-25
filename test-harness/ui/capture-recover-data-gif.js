@@ -199,6 +199,7 @@ async function main() {
     const partitionResponse = await callWorker(win, 'partition-backup-to-optical-media', {
       rootPath: sourceRoot,
       mediaCapacityInBytes: MEDIA_CAPACITY_BYTES,
+      maxRepletionRatio: 0.95,
       splitLargeFiles: true,
       sessionId,
     }, 15 * 60 * 1000);

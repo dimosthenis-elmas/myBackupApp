@@ -57,7 +57,7 @@
  * missing files here (a handful of KB-sized files) all fit in one bin on their own (disc 1). The 700MB file,
  * split into real 500 MiB volumes (LARGE_FILE_SPLIT_VOLUME_SIZE_MIB, fixed regardless of chosen medium), produces
  * exactly 2 pieces (~500MB + ~176MB, matching worker-ipc/test-large-file-split.js's own proven-safe arithmetic for
- * the same 700MB size) - and since CD's effective capacity (~665MB) sits ABOVE one piece but BELOW both combined,
+ * the same 700MB size) - and since CD's effective capacity (~651MB) sits ABOVE one piece but BELOW both combined,
  * bin-packing puts them on two SEPARATE discs (disc 2, disc 3). Total: 3 new discs, deterministically - each with
  * its own uniquely-numbered "Send disk N to ImgBurn" button (unlike backup-to-optical-media.component.ts's
  * identically-labeled ones, so no DOM-indexing pitfall picking the right BUTTON here - see that script's own
@@ -108,7 +108,7 @@ const COLD_STORAGE_COLLECTION_NAME = 'Add-missing-files test';
 
 // Same proven-safe constants as worker-ipc/test-large-file-split.js and test-recover-multi-disc.js - see those
 // scripts' own comments for the full reasoning (in short: a 700MB file real-splits into exactly 2 pieces at the
-// app's fixed 500 MiB volume size, and CD's effective ~665MB capacity sits above one piece but below both
+// app's fixed 500 MiB volume size, and CD's effective ~651MB capacity sits above one piece but below both
 // combined, forcing them onto two separate discs rather than looping forever or fitting together).
 const LARGE_FILE_BYTES = 700_000_000;
 const EXPECTED_FIRST_PIECE_BYTES = 500 * 1024 * 1024; // 524,288,000 - see LARGE_FILE_SPLIT_VOLUME_SIZE_MIB in worker.ts

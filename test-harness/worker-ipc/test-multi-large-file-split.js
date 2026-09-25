@@ -11,7 +11,7 @@
  *
  * Sizing: two files, each exactly 600,000,000 bytes (2 pieces: one full 500 MiB volume + a ~75.7 MB remainder),
  * with mediaCapacityInBytes also 600,000,000 (the same proven-safe constant worker-ipc/test-large-file-split.js
- * already uses - effective capacity after the app's own 0.95 ratio is 570,000,000, comfortably above one full
+ * already uses - effective capacity at the 0.95 maxRepletionRatio this script passes is 570,000,000, comfortably above one full
  * volume but below two). Worked out by hand-tracing the actual first-fit-decreasing packing loop in
  * partitionBackupToOpticalMedia: sorted largest-first, the two FULL pieces (524,288,000 bytes each, tied in
  * size) each fill their own disc alone (524,288,000 + 524,288,000 would exceed the 570,000,000 effective
@@ -93,6 +93,7 @@ async function main() {
     const planResponse = await callWorker(win, 'partition-backup-to-optical-media', {
       rootPath: sourceRoot,
       mediaCapacityInBytes: MEDIA_CAPACITY_BYTES,
+      maxRepletionRatio: 0.95,
       splitLargeFiles: true,
       sessionId,
     }, 60 * 1000);

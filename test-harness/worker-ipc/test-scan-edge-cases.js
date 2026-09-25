@@ -178,7 +178,7 @@ async function main() {
     }
 
     await takeAppErrors(win);
-    const plan = await callWorker(win, 'partition-backup-to-optical-media', { rootPath: tree, mediaCapacityInBytes: 4.7e9, splitLargeFiles: false, sessionId, skipUnreadable: true });
+    const plan = await callWorker(win, 'partition-backup-to-optical-media', { rootPath: tree, mediaCapacityInBytes: 4.7e9, maxRepletionRatio: 0.97, splitLargeFiles: false, sessionId, skipUnreadable: true });
     const plannedPaths = plan.res.flat().map((e) => e.path);
     const plannedFiles = plan.res.flat().filter((e) => !e.stats.isDirectory).map((e) => path.relative(tree, e.path)).sort();
     report(results, 'backupPlanningPlansEachLinkAsItsShortcutAndNothingBehindIt',
@@ -217,16 +217,16 @@ async function main() {
 
     // ---- 2. every too-large file is reported
     console.log('\nFiles too large for a single disc...');
-    const tooLarge = await callExpectingError(win, 'partition-backup-to-optical-media', { rootPath: bigFiles, mediaCapacityInBytes: 2_000_000, splitLargeFiles: false, sessionId });
+    const tooLarge = await callExpectingError(win, 'partition-backup-to-optical-media', { rootPath: bigFiles, mediaCapacityInBytes: 2_000_000, maxRepletionRatio: 0.97, splitLargeFiles: false, sessionId });
     const reportedPaths = tooLarge && Array.isArray(tooLarge.too_large_files) ? tooLarge.too_large_files.map((f) => f.path).sort() : [];
     const expectedTooLarge = [path.join(bigFiles, 'big one.bin'), path.join(bigFiles, 'sub', 'big two.bin')].sort();
     await takeAppErrors(win);
-    const tooLargeAsTheWizardAsks = await callExpectingError(win, 'partition-backup-to-optical-media', { rootPath: bigFiles, mediaCapacityInBytes: 2_000_000, splitLargeFiles: false, sessionId, skipUnreadable: true });
+    const tooLargeAsTheWizardAsks = await callExpectingError(win, 'partition-backup-to-optical-media', { rootPath: bigFiles, mediaCapacityInBytes: 2_000_000, maxRepletionRatio: 0.97, splitLargeFiles: false, sessionId, skipUnreadable: true });
     const warningsWhenStopped = await takeAppErrors(win);
     report(results, 'aPlanThatStopsAtTooLargeFilesShowsNoLeftOutWarning',
       tooLargeAsTheWizardAsks !== null && tooLargeAsTheWizardAsks.err_code === 'FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC' && warningsWhenStopped.length === 0,
       `${warningsWhenStopped.length} warning(s)`);
-    await callWorker(win, 'partition-backup-to-optical-media', { rootPath: bigFiles, mediaCapacityInBytes: 4.7e9, splitLargeFiles: false, sessionId, skipUnreadable: true });
+    await callWorker(win, 'partition-backup-to-optical-media', { rootPath: bigFiles, mediaCapacityInBytes: 4.7e9, maxRepletionRatio: 0.97, splitLargeFiles: false, sessionId, skipUnreadable: true });
     const warningsWhenPlanned = await takeAppErrors(win);
     const leftOutWhenPlanned = warningsWhenPlanned.length === 1 && Array.isArray(warningsWhenPlanned[0].lists) ? warningsWhenPlanned[0].lists[0].items : [];
     report(results, 'aPlanThatGoesAheadNamesTheLinkWhoseShortcutNameIsTaken',
@@ -246,7 +246,7 @@ async function main() {
       fs.writeFileSync(path.join(driveDir, 'd', 'x.txt'), 'x content');
       execFileSync('subst', [`${substLetter}:`, driveDir]);
       const root = `${substLetter}:\\`;
-      const drivePlan = await callWorker(win, 'partition-backup-to-optical-media', { rootPath: root, mediaCapacityInBytes: 4.7e9, splitLargeFiles: false, sessionId });
+      const drivePlan = await callWorker(win, 'partition-backup-to-optical-media', { rootPath: root, mediaCapacityInBytes: 4.7e9, maxRepletionRatio: 0.97, splitLargeFiles: false, sessionId });
       const drivePlanned = drivePlan.res.flat().map((e) => e.path).sort();
       report(results, 'planningADriveRootListsTheWholeDrive',
         JSON.stringify(drivePlanned) === JSON.stringify([`${root}d\\x.txt`, `${root}top.txt`]), JSON.stringify(drivePlanned));

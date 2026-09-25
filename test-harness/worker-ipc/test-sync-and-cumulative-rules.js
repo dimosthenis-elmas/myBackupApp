@@ -42,6 +42,10 @@
  *     differ it reports each difference once, by path and with what differs - a size, an entry only one side has (a
  *     whole folder as one line), a name that differs only in letter case, a file against a folder, a link pointing
  *     elsewhere - and nothing else.
+ *  7. Synchronize directories' delete step never deletes through a link: its list is made before the copy step, which
+ *     can replace a folder of the target with a link from the source (a relative symbolic link then points
+ *     elsewhere from the target) - the delete step is given exactly that state, with a junction to a folder outside
+ *     both, and must leave that folder alone while still deleting the rest of the list.
  *
  * Everything lives in a fresh folder under test-harness/generated-fixtures/. Nothing here touches the app's
  * temp/cache directory, so no temp-dir-guard is needed.
@@ -488,6 +492,34 @@ async function main() {
       report('the check reports nothing else - one line for a whole folder, one for a case-only name',
         check.mismatches.length === expectedLines.length, `${check.mismatches.length} line(s): ${JSON.stringify(check.mismatches)}`);
     }
+
+    // ---- 7
+    console.log('\n7. The delete step never deletes through a link...');
+    {
+      // A relative symbolic link needs administrator rights or Developer Mode to create, so this sets up directly the
+      // state the delete step meets after the copy step: the target's folder "L" is now a link (a junction) to a
+      // folder outside both, and the list still holds what "L" contained, next to ordinary target-only entries.
+      const root = path.join(scratchRoot, 'delete-through-link');
+      const S = path.join(root, 'source'); const T = path.join(root, 'target'); const O = path.join(root, 'outside');
+      write(path.join(S, 'a.txt'), 'a'); write(path.join(T, 'a.txt'), 'a');
+      write(path.join(O, 'victim.txt'), 'keep me'); fs.mkdirSync(path.join(O, 'empty folder'));
+      write(path.join(O, 'sub', 'deep.txt'), 'keep me too');
+      fs.symlinkSync(O, path.join(T, 'L'), 'junction');
+      write(path.join(T, 'gone', 'x.txt'), 'target only'); write(path.join(T, 'old.txt'), 'target only');
+      const outsideBefore = snapshot(O);
+      const deleteList = [path.join('L', 'empty folder') + path.sep, path.join('L', 'sub', 'deep.txt'), path.join('L', 'victim.txt'), path.join('gone', 'x.txt'), 'old.txt'];
+      let error = '';
+      try {
+        await callWorker(win, 'delete-files-and-dirs-for-dir-sync', { pathsMarkedForDeletion: deleteList, commit: true, source: S, target: T });
+      } catch (e) { error = String(e.message).split('\n')[0].slice(0, 200); }
+      const outsideChanges = differences(outsideBefore, snapshot(O));
+      report('sync: nothing is deleted through a link in the target - the folder it points to is unchanged', !error && outsideChanges.length === 0,
+        error || outsideChanges.slice(0, 3).join(' | '));
+      report('sync: the target-only entries on the same list are still deleted, and the link is left in place',
+        !fs.existsSync(path.join(T, 'old.txt')) && !fs.existsSync(path.join(T, 'gone')) && fs.lstatSync(path.join(T, 'L')).isSymbolicLink(),
+        JSON.stringify(fs.readdirSync(T)));
+    }
+
   } finally {
     if (app) { await app.close().catch(() => {}); }
   }

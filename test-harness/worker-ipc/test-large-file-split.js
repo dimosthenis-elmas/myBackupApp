@@ -61,8 +61,8 @@ const EXPECTED_VOLUME_SIZE_BYTES = 500 * 1024 * 1024; // 524,288,000 - see LARGE
 // 700 MB (not MiB) - comfortably over one full volume, so the real split produces exactly 2 real pieces (one
 // full 500 MiB volume + a remainder), the minimum needed to genuinely prove multi-piece splitting.
 const LARGE_FILE_BYTES = 700_000_000;
-// IMPORTANT - MUST stay strictly above EXPECTED_VOLUME_SIZE_BYTES even after the app's own 0.95
-// maxOpticalMediumRepletionRatio margin (see appData/config.json), i.e. MEDIA_CAPACITY_BYTES * 0.95 must exceed
+// IMPORTANT - MUST stay strictly above EXPECTED_VOLUME_SIZE_BYTES even after the 0.95 maxRepletionRatio this
+// script plans with (MAX_REPLETION_RATIO), i.e. MEDIA_CAPACITY_BYTES * 0.95 must exceed
 // EXPECTED_VOLUME_SIZE_BYTES. Found the hard way (2026-08-27): partitionBackupToOpticalMedia's second
 // partitioning pass - the one that assigns each real SPLIT PIECE to a "disc" - has no guard for "this one piece
 // alone is bigger than the disc capacity" (unlike the equivalent, earlier pass for ordinary files, which
@@ -76,6 +76,7 @@ const LARGE_FILE_BYTES = 700_000_000;
 // * 0.95 = 570,000,000, which is > EXPECTED_VOLUME_SIZE_BYTES (524,288,000 - each piece fits) and < 700,000,000
 // (the whole file still doesn't).
 const MEDIA_CAPACITY_BYTES = 600_000_000;
+const MAX_REPLETION_RATIO = 0.95; // see MEDIA_CAPACITY_BYTES
 
 function sha256File(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
@@ -155,6 +156,7 @@ async function main() {
       callWorker(win, 'partition-backup-to-optical-media', {
         rootPath: sourceRoot,
         mediaCapacityInBytes: MEDIA_CAPACITY_BYTES,
+        maxRepletionRatio: MAX_REPLETION_RATIO,
         splitLargeFiles: true,
         sessionId,
       }, 60 * 1000), // planning is now pure arithmetic - should be near-instant even for a 700 MB file

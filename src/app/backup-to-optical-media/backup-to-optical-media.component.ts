@@ -13,6 +13,7 @@ import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfa
 import { filesMetadata } from '../../types/interface';
 import { SerialQueue } from '../shared/utils/serial-queue';
 import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
+import { OPTICAL_MEDIA, OpticalMedium } from '../shared/utils/optical-media';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
 
@@ -158,21 +159,15 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    *  disc(s). This CAN happen even so: a sliver produced by the last original disc sent has no later disc left
    *  to try. */
   private pendingOverflowPartials: filesMetadata[] = [];
-  /** The selected medium's raw capacity, discounted by config.json's maxOpticalMediumRepletionRatio - see
+  /** The selected medium's raw capacity, discounted by its maxRepletionRatio (see OPTICAL_MEDIA) - see
    *  getEffectiveOpticalMediumCapacityInBytes in worker.ts. Fetched once in goToStep2 and used as the one
    *  capacity every later fit check (surplus slivers included) compares against, instead of the medium's raw
    *  selected_optical_medium.capacity. */
   private effectiveMediaCapacityInBytes!: number;
 
-  optical_media_choices: {value: string, viewValue: string, capacity: number}[] = [
-    {value: 'cd', viewValue: 'CD (700 MB)', capacity: 0.7e9},
-    {value: 'dvd', viewValue: 'DVD (4.7 GB)', capacity: 4.7e9},
-    {value: 'blu-ray-25', viewValue: 'Blu ray (25 GB)', capacity: 25e9},
-    {value: 'blu-ray-50', viewValue: 'Blu ray (50 GB)', capacity: 50e9},
-    {value: 'blu-ray-100', viewValue: 'Blu ray (100 GB)', capacity: 100e9}
-  ];
+  optical_media_choices = OPTICAL_MEDIA;
 
-  selected_optical_medium!: {value: string, viewValue: string, capacity: number};
+  selected_optical_medium!: OpticalMedium;
 
   constructor(public router: Router, private route: ActivatedRoute, public dialog: MatDialog, public backup: BackupService, private ngZone: NgZone, private changeDetectorRef: ChangeDetectorRef) { }
 
@@ -216,7 +211,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     // getEffectiveOpticalMediumCapacityInBytes in worker.ts. sendToImgBurn/maybeAppendOverflowDiscs must judge
     // whether a surplus sliver fits against this exact number, never the medium's raw capacity: that margin is
     // a general burn-safety feature, not something reserved for or spent by handling surplus slivers.
-    this.effectiveMediaCapacityInBytes = (await ipc.getEffectiveOpticalMediumCapacity(this.selected_optical_medium.capacity)).res;
+    this.effectiveMediaCapacityInBytes = (await ipc.getEffectiveOpticalMediumCapacity(this.selected_optical_medium.capacity, this.selected_optical_medium.maxRepletionRatio)).res;
     this.step='step_2'
   }
 
@@ -299,7 +294,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         });
         // filesMetadata undefined (the worker scans sourcePath itself), skipUnreadable true: an entry in the backup
         // source that cannot be read is left out and reported, rather than making the whole planning fail.
-        let promise = ipc.partitionBackupToOpticalMedia(this.backup.sourcePath, this.selected_optical_medium.capacity, this.splitLargeFiles, this.tempSessionId, undefined, true);
+        let promise = ipc.partitionBackupToOpticalMedia(this.backup.sourcePath, this.selected_optical_medium.capacity, this.selected_optical_medium.maxRepletionRatio, this.splitLargeFiles, this.tempSessionId, undefined, true);
 
         promise.then((response)=>{
           this.isPartitioning = false;

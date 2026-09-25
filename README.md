@@ -51,17 +51,20 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   was only renamed in capital letters (the target gets the master's spelling). Because it can delete files
   from the target, use it with care. When it finishes, it checks that both directories hold exactly the same files -
   by name and size in bytes - and tells you how many files there are and their total size, or lists every file that
-  differs.
+  differs. It does not work on a whole drive (e.g. `D:\`): choose a folder on the drive instead - Windows keeps
+  folders of its own at the root of a drive.
 
 - **Backup to optical media:** splits your files across as many discs as needed and sends them to ImgBurn to burn.
-  Large files that don't fit on one disc are split automatically. Every file also gets a SHA-256 checksum recorded
+  Each disc is planned to be at most 93% full for a CD, 97% for a DVD and 99% for a Blu-ray, leaving room for what
+  the disc's own file system takes. Large files that don't fit on one disc are split automatically. Every file also gets a SHA-256 checksum recorded
   in the cold storage metadata JSON (always on, not optional) - protection against a later drive read error or disc
   damage. See "Verify integrity of cold storage disc" below for how these checksums get used.
 
 - **Recover data from optical media:** recovers all, or just a selection of files, of a backup stored across your discs. You
   can optionally provide the cold storage metadata JSON file saved earlier (see "Add missing files" below) instead
   of inserting every disc just to see what's on it - the app builds the file list straight from the JSON, then only
-  asks you to insert the specific disc(s) that hold what you selected. Important: label your discs in the same
+  asks you to insert the specific disc(s) that hold what you selected. Above the list it shows how many files the
+  cold storage holds and their total size, in MB and in bytes. Important: label your discs in the same
   order they appear in the JSON file (the disc you call "disc 1" must be the first one listed).
 
   If any recovered files are parts of a large file that was split across discs, the app offers to reassemble the
@@ -126,7 +129,7 @@ the page width, which can make the in-app dialog text hard to read at a glance):
 </p>
 <p align="center">
 <a href="docs/screenshots/recover-data/02-file-tree.png"><img src="docs/screenshots/recover-data/02-file-tree.png" width="800"></a><br>
-<sub><b>Recover data from optical media</b> - the combined files tree, built straight from a JSON metadata file, no disc reads needed.</sub>
+<sub><b>Recover data from optical media</b> - the combined files tree, built straight from a JSON metadata file, no disc reads needed, with the number of files and the total size of the cold storage.</sub>
 </p>
 <p align="center">
 <a href="docs/screenshots/incremental-backup/02-diff-select-all.png"><img src="docs/screenshots/incremental-backup/02-diff-select-all.png" width="800"></a><br>

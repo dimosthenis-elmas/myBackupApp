@@ -297,5 +297,9 @@ one that changed too, and an empty folder - and when the capitals are the only d
 rename to do (it is not "already in sync"). (6) The check Synchronize directories runs after a sync (`compare-folders`): after every sync above it
 finds both folders identical and counts the same files and bytes as the script's own walk; on a pair built to
 differ it reports each difference once - a size, an entry only one side has (a whole folder as one line), a name
-that differs only in letter case, a file against a folder, a link pointing elsewhere - and nothing else. Everything
+that differs only in letter case, a file against a folder, a link pointing elsewhere - and nothing else. (7) Synchronize
+directories' delete step never deletes through a link: its list is made before the copy step, which can replace a
+folder of the target with the source's link (a relative symbolic link then points elsewhere from the target) - the
+delete step is given that state directly, with a junction to a folder outside both, and must leave that folder
+unchanged while still deleting the list's other, target-only entries. Everything
 lives under `generated-fixtures/`; the app's temp/cache folder is not touched.

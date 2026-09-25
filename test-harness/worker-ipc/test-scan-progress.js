@@ -188,6 +188,7 @@ async function main() {
     const partition = await callWorkerWithProgress(win, 'partition-backup-to-optical-media', {
       rootPath: source,
       mediaCapacityInBytes: TEST_DISC_CAPACITY_BYTES,
+      maxRepletionRatio: 0.99,
       splitLargeFiles: false,
       sessionId: 'session-' + Date.now(),
     });
@@ -215,6 +216,7 @@ async function main() {
       handedList = await callWorkerWithProgress(win, 'partition-backup-to-optical-media', {
         rootPath: path.join(scratch, 'does-not-exist'),
         mediaCapacityInBytes: TEST_DISC_CAPACITY_BYTES,
+        maxRepletionRatio: 0.99,
         splitLargeFiles: false,
         sessionId: 'session-' + Date.now(),
         filesMetadata: scanWithStats.response.res,
