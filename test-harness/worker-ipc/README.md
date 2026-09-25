@@ -304,5 +304,7 @@ that differs only in letter case, a file against a folder, a link pointing elsew
 directories' delete step never deletes through a link: its list is made before the copy step, which can replace a
 folder of the target with the source's link (a relative symbolic link then points elsewhere from the target) - the
 delete step is given that state directly, with a junction to a folder outside both, and must leave that folder
-unchanged while still deleting the list's other, target-only entries. Everything
-lives under `generated-fixtures/`; the app's temp/cache folder is not touched.
+unchanged while still deleting the list's other, target-only entries. (8) A copy that fails part way leaves the
+target's earlier copy as it was: PowerShell holds 1 MB of a newer source file locked, so reading it fails mid-copy;
+in both features the run must fail, the earlier copy must be unchanged, and no temporary file may be left behind
+(Windows only). Everything lives under `generated-fixtures/`; the app's temp/cache folder is not touched.

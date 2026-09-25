@@ -44,7 +44,11 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
 - **Incremental backup** (perhaps a more fitting name would be "Cumulative backup"): copies files that are new or
   changed into your backup location. It never deletes anything that was removed from the source. If a name is a
   file in your source but a folder in the backup (or the other way round), the backup's old one is kept, renamed
-  "... (old folder)" or "... (old file)", and the new one is backed up under the name.
+  "... (old folder)" or "... (old file)", and the new one is backed up under the name. A changed file never costs
+  the backup its previous copy: the new version is copied next to it first, under a temporary name
+  (`~my-backup-copy-....tmp`), and only takes the old one's place once complete - so a copy that fails part way (the
+  backup drive is full, the source can't be read, the drive is unplugged) leaves the old copy as it was. Until then
+  that file needs room on the drive twice.
 
 - **Synchronize dirs:** makes a "target" directory an exact copy of a "master" directory, adding and deleting files
   as needed - including where a name is a file on one side and a folder on the other, and where a file or folder
@@ -52,7 +56,8 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   from the target, use it with care. When it finishes, it checks that both directories hold exactly the same files -
   by name and size in bytes - and tells you how many files there are and their total size, or lists every file that
   differs. It does not work on a whole drive (e.g. `D:\`): choose a folder on the drive instead - Windows keeps
-  folders of its own at the root of a drive.
+  folders of its own at the root of a drive. Changed files are replaced the same safe way as in the Incremental
+  backup: a copy that fails part way leaves the target's old copy as it was.
 
 - **Backup to optical media:** splits your files across as many discs as needed and sends them to ImgBurn to burn.
   Each disc is planned to be at most 93% full for a CD, 97% for a DVD and 99% for a Blu-ray, leaving room for what

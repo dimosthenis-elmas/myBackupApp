@@ -46,6 +46,8 @@
  *     can replace a folder of the target with a link from the source (a relative symbolic link then points
  *     elsewhere from the target) - the delete step is given exactly that state, with a junction to a folder outside
  *     both, and must leave that folder alone while still deleting the rest of the list.
+ *  8. A copy that fails part way - another program holds part of the source file locked - leaves the target's earlier
+ *     copy exactly as it was, and no temporary file behind, in both features (Windows only: the lock is PowerShell's).
  *
  * Everything lives in a fresh folder under test-harness/generated-fixtures/. Nothing here touches the app's
  * temp/cache directory, so no temp-dir-guard is needed.
@@ -60,7 +62,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const { launchApp, callWorker } = require('./call-worker');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { isCaseInsensitiveFilesystem } = require('../lib/filesystem-case');
@@ -84,6 +86,21 @@ function write(filePath, content, mtimeSeconds) {
 function removeTree(dir) {
   if (IS_WINDOWS) { try { execFileSync('attrib', ['-h', '-r', '-s', path.join(dir, '*'), '/s', '/d'], { stdio: 'pipe' }); } catch { /* nothing to clear */ } }
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+/** Has another program (PowerShell) hold `length` bytes of `filePath` from `offset` locked - reading them fails - until
+ *  the returned process is killed. Resolves once the lock is in place. The path goes through an environment variable,
+ *  so spaces and non-Latin letters in it need no quoting. */
+function lockByteRange(filePath, offset, length) {
+  return new Promise((resolve, reject) => {
+    const script = `$fs = [IO.File]::Open($env:LOCK_PATH, 'Open', 'Read', 'ReadWrite'); $fs.Lock(${offset}, ${length}); ` +
+      `Write-Output locked; Start-Sleep -Seconds 300`;
+    const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+      { windowsHide: true, env: { ...process.env, LOCK_PATH: filePath } });
+    ps.stdout.on('data', (d) => { if (String(d).includes('locked')) { resolve(ps); } });
+    ps.on('error', reject);
+    ps.on('exit', (code) => reject(new Error(`the PowerShell holding the lock exited early (code ${code})`)));
+  });
 }
 
 // ---- the two features, called the way their wizards call the worker
@@ -518,6 +535,28 @@ async function main() {
       report('sync: the target-only entries on the same list are still deleted, and the link is left in place',
         !fs.existsSync(path.join(T, 'old.txt')) && !fs.existsSync(path.join(T, 'gone')) && fs.lstatSync(path.join(T, 'L')).isSymbolicLink(),
         JSON.stringify(fs.readdirSync(T)));
+    }
+
+    // ---- 8
+    if (IS_WINDOWS) {
+      console.log('\n8. A copy that fails part way leaves the earlier copy as it was...');
+      for (const mode of ['cumulative', 'sync']) {
+        const root = path.join(scratchRoot, `copy-fails-${mode}`);
+        const S = path.join(root, 'source'); const T = path.join(root, 'target');
+        const sourceFile = path.join(S, 'big.bin'); const targetFile = path.join(T, 'big.bin');
+        write(sourceFile, Buffer.alloc(3 * 1024 * 1024, 7), BASE_SECONDS + 600); // newer and bigger: it is copied
+        write(targetFile, 'the earlier copy', BASE_SECONDS);
+        // Another program holds 1 MB of the source locked, so reading it fails part way through the copy.
+        const locker = await lockByteRange(sourceFile, 1024 * 1024, 1024 * 1024);
+        let error = '';
+        try { await run(win, mode, S, T); } catch (e) { error = String(e.message).split('\n')[0].slice(0, 200); }
+        finally { locker.kill(); await new Promise((r) => locker.once('exit', r)); }
+        const earlierCopy = fs.existsSync(targetFile) ? fs.readFileSync(targetFile, 'utf8') : '(gone)';
+        const otherEntries = fs.readdirSync(T).filter((n) => n !== 'big.bin');
+        report(`${mode}: a copy that fails part way leaves the earlier copy as it was, and nothing else behind`,
+          error !== '' && earlierCopy === 'the earlier copy' && otherEntries.length === 0,
+          `${error ? 'the run failed, as it should' : 'the run did NOT fail'}; target holds "${earlierCopy.slice(0, 30)}"; other entries: ${JSON.stringify(otherEntries)}`);
+      }
     }
 
   } finally {

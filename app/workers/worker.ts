@@ -2854,16 +2854,72 @@ const createPath = function (tokens: Array<string>, index: number): string {
   return path
 }
 
-/** fs.copyFileSync, except that an existing target file the copy is refused for - on Windows one marked read-only
- *  (a copy of a read-only file is itself read-only) or hidden while the source is not; on Linux one without write
- *  permission - is deleted and the copy made again. */
-const copyFileReplacingProtectedTarget = function (sourcePath: string, targetPath: string): void {
+/** A path in the folder of `targetPath` that nothing is at, for making an entry there before it takes `targetPath`'s
+ *  place - see copyEntryReplacingTarget. Short and independent of the target's own name, so it never makes a name
+ *  too long; recognizable if a crash ever leaves one behind. */
+const unusedTemporaryPathNextTo = function (targetPath: string): string {
+  for (;;) {
+    const candidate = node_path_module.join(node_path_module.dirname(targetPath), `~my-backup-copy-${crypto.randomBytes(4).toString('hex')}.tmp`);
+    if (lstatOrNull(candidate) === null) { return candidate; }
+  }
+}
+
+/** Renames `fromPath` to `toPath`, replacing the file there - also one marked read-only, which Windows refuses to
+ *  replace until that mark is cleared. */
+const renameReplacingReadOnlyFile = function (fromPath: string, toPath: string): void {
   try {
-    fs.copyFileSync(sourcePath, targetPath);
+    fs.renameSync(fromPath, toPath);
   } catch (error: any) {
-    if ((error?.code !== 'EPERM' && error?.code !== 'EACCES') || !isFileAt(targetPath)) { throw error; }
-    fs.unlinkSync(targetPath);
-    fs.copyFileSync(sourcePath, targetPath);
+    if ((error?.code !== 'EPERM' && error?.code !== 'EACCES') || !isFileAt(toPath)) { throw error; }
+    fs.chmodSync(toPath, 0o666); // on Windows: clears the read-only mark
+    fs.renameSync(fromPath, toPath);
+  }
+}
+
+/** Makes `targetPath` what the source has at `sourcePath` - a copy of the file, or, if `sourceIsLink`, a link pointing
+ *  where that link points (copyLink) - without ever leaving the target with neither the old nor the new version: the
+ *  new entry is made under a temporary name in the same folder first, and only once it is complete does it take the
+ *  old entry's place. A copy that fails part way (the drive is full, the source cannot be read, the drive is
+ *  unplugged) leaves the old entry exactly as it was, and the temporary file is removed. An old file keeps its name,
+ *  letter case included - as a copy onto it did - and is replaced even if it is read-only or hidden; an old link is
+ *  removed as the link itself, never followed, once the new entry is complete. Needs room for the new copy next to
+ *  the old one until it is complete. */
+const copyEntryReplacingTarget = function (sourcePath: string, targetPath: string, sourceIsLink: boolean): void {
+  const existing = lstatOrNull(targetPath);
+  let finalPath = targetPath;
+  if (existing && existing.isFile()) {
+    // The name as it is on disk: on a filesystem that ignores letter case, `targetPath` may spell it differently.
+    try { finalPath = node_path_module.join(node_path_module.dirname(targetPath), node_path_module.basename(fs.realpathSync.native(targetPath))); } catch (error) { /* keep targetPath */ }
+  }
+  const temporaryPath = unusedTemporaryPathNextTo(targetPath);
+  const removeTemporary = () => { try { fs.rmSync(temporaryPath, { force: true }); } catch (error) { /* reported below */ } };
+  try {
+    if (sourceIsLink) { copyLink(sourcePath, temporaryPath, targetPath); } else { fs.copyFileSync(sourcePath, temporaryPath); }
+  } catch (error) {
+    removeTemporary();
+    throw error;
+  }
+  if (existing && (existing.isSymbolicLink() || sourceIsLink)) {
+    // A link cannot take a file's place by a rename, nor a file a link-to-a-folder's: the old entry is removed first -
+    // the new one is complete by now.
+    try {
+      fs.unlinkSync(finalPath);
+    } catch (error) {
+      removeTemporary();
+      throw error;
+    }
+    try {
+      fs.renameSync(temporaryPath, finalPath);
+    } catch (error: any) {
+      throw new Error(`"${finalPath}" could not be replaced: the new copy is complete but stays at "${temporaryPath}" (${error?.message || error}).`);
+    }
+    return;
+  }
+  try {
+    renameReplacingReadOnlyFile(temporaryPath, finalPath);
+  } catch (error) {
+    removeTemporary();
+    throw error;
   }
 }
 
@@ -2872,8 +2928,9 @@ const copyFileReplacingProtectedTarget = function (sourcePath: string, targetPat
  *  junction, which Windows lets anyone create; any other link has to be a symbolic link, which Windows lets only
  *  administrators create unless Developer Mode is on. On Linux every link is a symbolic link. A link that points to
  *  nothing (what it pointed to was deleted) does not say whether that was a folder; given by its full path, it is
- *  made a junction - that is what such a link on Windows almost always is. */
-const copyLink = function (sourcePath: string, targetPath: string): void {
+ *  made a junction - that is what such a link on Windows almost always is. `nameInMessage` is the path an error names
+ *  (the link's final place, when it is made under a temporary name first - see copyEntryReplacingTarget). */
+const copyLink = function (sourcePath: string, targetPath: string, nameInMessage: string = targetPath): void {
   const pointsTo = fs.readlinkSync(sourcePath);
   let pointsToFolder: boolean | null = null;
   try {
@@ -2886,17 +2943,18 @@ const copyLink = function (sourcePath: string, targetPath: string): void {
     fs.symlinkSync(pointsTo, targetPath, type);
   } catch (error: any) {
     if (error?.code === 'EPERM' && process.platform === 'win32') {
-      throw new Error(`Could not create the link "${targetPath}" (a copy of the link "${sourcePath}"): Windows lets only administrators create this kind of link, unless Developer Mode is turned on.`);
+      throw new Error(`Could not create the link "${nameInMessage}" (a copy of the link "${sourcePath}"): Windows lets only administrators create this kind of link, unless Developer Mode is turned on.`);
     }
     throw error;
   }
 }
 
 /** Copies (doCopy) or previews one path from diff: creates the folders on its way that the target lacks, then copies
- *  the file - or, if the source has a link there, the link itself (copyLink). Never writes through a link in the
- *  target: a link where a folder is needed, or where a file or link is being copied, is removed first (only the
- *  link - what it points to is left alone), so everything created stays inside the target. A real folder where a
- *  file or link is being copied, or a file where a folder is needed, is dealt with by resolveNameClash. */
+ *  the file - or, if the source has a link there, the link itself - never leaving the target with neither version
+ *  (copyEntryReplacingTarget). Never writes through a link in the target: a link where a folder is needed is removed
+ *  first, and one where a file or link is being copied is replaced as the link itself (what it points to is left
+ *  alone), so everything created stays inside the target. A real folder where a file or link is being copied, or a
+ *  file where a folder is needed, is dealt with by resolveNameClash. */
 const insertBranch = function (tree: any, tokens: Array<string>, index: number, doCopy: boolean, source: string, target: string, nameClash?: NameClash): void {
   if ((tokens.length - index) == 1) {
     tree[tokens[index]] = newNameTree()
@@ -2914,14 +2972,7 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
         existingTarget = null;
       }
       if (doCopy) {
-        if (existingTarget && (existingTarget.isSymbolicLink() || (sourceIsLink && existingTarget.isFile()))) {
-          fs.unlinkSync(target_path);
-        }
-        if (sourceIsLink) {
-          copyLink(source_path, target_path);
-        } else {
-          copyFileReplacingProtectedTarget(source_path, target_path);
-        }
+        copyEntryReplacingTarget(source_path, target_path, sourceIsLink);
         if(existingTarget){
           logsBuffer.push(`updated existing ${kind} :` + target_path);
         }else{

@@ -71,11 +71,12 @@ from this file (and test it if it needs one - see "Working on these" below).
 - **What happens:** a file opened without sharing (an open Outlook `.pst`, browser profile databases) gives EBUSY on
   copy and on open-for-read (confirmed). Synchronize directories' byte comparison opens every unchanged file on both
   sides, so the comparison fails and nothing can be synced, even when that file did not change. The copy step of both
-  Cumulative backup and Sync stops at the first such file, leaving the rest uncopied. Sync's delete step stops the
+  Cumulative backup and Sync stops at the first such file, leaving the rest uncopied (the file it stopped at keeps
+  its old copy - see copyEntryReplacingTarget). Sync's delete step stops the
   same way at the first target file it cannot delete (`unlinkSync` in `insertBranchForDirSyncDeletions`), leaving the
   sync half done. A disc with such a file cannot be sent (hashing fails).
 - **Code:** `haveSameContent` (called from `diff` for `any-difference-or-content`), `createTree`/`insertBranch`,
-  `copyFileReplacingProtectedTarget`, `insertBranchForDirSyncDeletions`, `sha256OfFile` - all in
+  `copyEntryReplacingTarget`, `insertBranchForDirSyncDeletions`, `sha256OfFile` - all in
   `app/workers/worker.ts`.
 - **Fix:** in the copy step, catch per file, carry on, and list the files that failed at the end (Sync must then
   not report success). In the comparison, count a file that cannot be read as different, so the copy step reports it.
@@ -177,21 +178,7 @@ from this file (and test it if it needs one - see "Working on these" below).
   small files; then a planning check in `test-partitioning.js` that a disc of many tiny files is planned with room for
   them.
 
-### 13. Updating a file can destroy the backup's previous copy (Cumulative backup and Sync)
-
-- **What happens:** `insertBranch` copies with `copyFileReplacingProtectedTarget`, which writes straight onto the
-  existing target file (and for a read-only or hidden target deletes it first). The copy truncates the old file as it
-  starts, so if it then fails part way - the backup drive is full, the source cannot be read, the drive is unplugged -
-  the target has neither the old nor the new version. For Cumulative backup that old copy may be the only other copy;
-  if the failure came from a failing source drive, both are lost.
-- **Code:** `copyFileReplacingProtectedTarget` and `insertBranch` in `app/workers/worker.ts`.
-- **Fix:** copy to a temporary name in the same folder, then rename it over the old file (the read-only/hidden
-  handling then applies to that rename); delete the temporary file if the copy fails.
-- **Test idea:** in `test-sync-and-cumulative-rules.js`, make the copy fail part way by locking a byte range of the
-  source with PowerShell (`$fs = [IO.File]::Open(path, 'Open', 'Read', 'ReadWrite'); $fs.Lock(1MB, 1MB)`) while the
-  target holds an older copy; after the failed run the older copy must still be there, unchanged.
-
-### 14. Cumulative backup to the root of an NTFS drive warns that the backup drive's own folders are not backed up
+### 13. Cumulative backup to the root of an NTFS drive warns that the backup drive's own folders are not backed up
 
 - **What happens:** `diff` collects the entries it cannot read from BOTH scans into one `skipped` list and reports it
   as "Some items were left out ... they are NOT backed up". A drive root always holds "System Volume Information",
@@ -208,7 +195,7 @@ from this file (and test it if it needs one - see "Working on these" below).
 - **Test idea:** extend section 3 of `test-harness/ui/test-wizard-error-dialogs.js` (a folder denied listing with
   icacls) with that folder in the backup folder instead of the source: no "NOT backed up" warning may name it.
 
-### 15. A failed Cumulative copy shows two error dialogs
+### 14. A failed Cumulative copy shows two error dialogs
 
 - **What happens:** `ngAfterViewInit` in `src/app/incremental-copying/incremental-copying.component.ts` attaches
   `.catch(onError)` and a separate `.then(...)` to the same `copyingPromise`. When the copy fails (disk full, a locked
@@ -220,6 +207,13 @@ from this file (and test it if it needs one - see "Working on these" below).
 
 ## Limitations (by design)
 
+- **Cumulative backup and Sync replace a changed file by copying the new version next to the old one first**, under
+  a temporary name (`~my-backup-copy-<8 hex digits>.tmp`), then renaming it over the old file (`copyEntryReplacingTarget`
+  in `app/workers/worker.ts`; a read-only old file has its mark cleared, the old file's letter case is kept). A copy
+  that fails part way leaves the old copy as it was - tested in `test-sync-and-cumulative-rules.js` section 8. The
+  cost: that file needs room on the target drive twice until the copy is complete; and if the app is killed mid-copy,
+  the temporary file stays behind (Sync deletes it on its next run, Cumulative backup never deletes anything). Recovery
+  from discs copies through the same function.
 - **Synchronize directories refuses the root of a drive** (`D:\`, source or target) - `checkPathsSelectionIsOk` in
   `src/app/sync-dirs/sync-dirs.component.ts`. A drive root holds Windows' own folders ("System Volume Information",
   other users' `$Recycle.Bin`) that cannot be listed, and Sync deliberately does not skip unreadable entries. A volume
