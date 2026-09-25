@@ -191,19 +191,22 @@ total against a small overhead margin instead of an exact byte count. And `merge
 file next to the part files it was given, mirroring the large file's original relative subdirectory - not the
 temp directory's own root.
 
-### `test-large-file-split-boundary.js` — the two rare reconciliation paths `test-large-file-split.js` can't hit
+### `test-large-file-split-boundary.js` — the rare piece-count paths `test-large-file-split.js` can't hit
 ```
 node test-harness/worker-ipc/test-large-file-split-boundary.js
 ```
 `test-large-file-split.js`'s 700 MB file isn't near the boundary where a real 7-Zip split can produce a piece
-count the plan didn't predict, so this script targets that boundary directly, in two parts:
+count the plan didn't predict, so this script targets that boundary directly, in three parts:
 1. A file sized to exactly 50 bytes short of an even 2-volume split - known to real-split into 3 pieces, not 2 -
    confirming `createOpticalMediaDiscPartials` returns that surplus piece rather than dropping it.
 2. A file whose estimate predicts 2 pieces, split instead by a stub batch script (the app's own configured
    7-Zip path is temporarily redirected to it) that deliberately produces 5 - proving the "more than one piece
    off -> throw" guard actually fires, since no real 7-Zip run can be coaxed into misbehaving that way on demand.
+3. A file planned at 2 pieces that then grows past a 500 MiB boundary (a file is only split when its disc is
+   sent, possibly hours after planning): the request is refused with "has changed since the discs were planned"
+   and nothing is split - the stub, still in place from part 2, would otherwise have written pieces.
 
-Both source files are written sparse/zero-filled - piece COUNT and SIZE are what's under test, not reassembled
+All source files are written sparse/zero-filled - piece COUNT and SIZE are what's under test, not reassembled
 content, so there's no need to generate real random data at this scale.
 
 ### `test-multi-large-file-split.js` — two large files sharing one disc's plan

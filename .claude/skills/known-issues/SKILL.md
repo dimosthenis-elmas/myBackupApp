@@ -52,9 +52,9 @@ from this file (and test it if it needs one - see "Working on these" below).
   in the temp folder (`appData\tempFilesCanBeDeleted\session-...`), and the wizard trims the source folder off every
   planned path first, then the temp folder - which no longer matches. A piece's path stays
   `<app folder>\appData\tempFilesCanBeDeleted\session-...\Videos\big.mkv.part.001`, and
-  `createOpticalMediaDiscPartials` asks 7-Zip to split a file that does not exist, so every disc with pieces fails to
-  send (only the generic "Something unexpected went wrong" dialog - see issue 11). Confirmed with the exact string
-  operations.
+  `createOpticalMediaDiscPartials` looks for a large file under that wrong path, so every disc with pieces fails to
+  send, with "... is not a file this backup's disc plan splits into pieces ... plan the discs again" - which does not
+  help, since a new plan has the same paths. Confirmed with the exact string operations.
 - **Code:** `WriteToOpticalMediaProceed` in `backup-to-optical-media.component.ts` (the two `x.path.replace(...)`
   trims); the same order in `add-missing-files-to-optical-media-cold-storage.component.ts`
   (`a.path.replace(this.backup.targetPath, "").replace(tempDataDirectoryPath, "")`).
@@ -135,11 +135,8 @@ from this file (and test it if it needs one - see "Working on these" below).
 
 ### 11. Smaller ones
 
-- **Generic error when a disc's files cannot be prepared:** `sendToImgBurn` does not catch
-  `createOpticalMediaDiscPartials` (7-Zip failing, a file deleted since planning), so the user only gets "Something
-  unexpected went wrong in the app". Catch it like the hashing step below it.
 - **No fit check for a disc's re-measured size:** `sendToImgBurn` only checks slivers against the capacity; files that
-  grew since planning are burned even if the disc no longer fits. Planning also counts only file bytes - see issue 13
+  grew since planning are burned even if the disc no longer fits. Planning also counts only file bytes - see issue 12
   for when the per-medium ratios in `OPTICAL_MEDIA` do not leave enough room for sectors and file system records.
 - **Backing up an empty folder to optical media:** the plan is one disc holding only the source folder itself, whose
   path trims to "", so its tree is empty and "Send to ImgBurn" says "Disc 1 has no files selected - this should never
@@ -157,29 +154,7 @@ from this file (and test it if it needs one - see "Working on these" below).
 - **Sync's second comparison shows no progress:** `sendAndAwaitResponse` calls `removeAllListeners` when a request
   finishes, which also removes the wizard's progress listener, so the circle stays full during the second `diff`.
 
-### 12. A split file that grows after planning silently loses its last piece
-
-- **What happens:** a large file is split only when the first disc holding one of its pieces is sent - possibly hours
-  or days after planning. `createOpticalMediaDiscPartials` then checks the real piece count against
-  `estimateLargeFileSplitPartials` of the file's size NOW, not against the plan. If the file grew past a 500 MiB
-  boundary in between, the plan assigned N pieces, 7-Zip makes N+1, and the fresh estimate also says N+1 - so the check
-  passes. Piece N+1 is requested by no disc, so it is on no disc and not in the metadata JSON (in the one-extra-piece
-  boundary case, 7-Zip makes N+2: piece N+2 is handled as the sliver and N+1 is the one lost). The Verify wizard still
-  passes - every recorded file matches its hash - and only recovery finds out, when the 7-Zip test of the pieces fails
-  and the file cannot be reassembled. A file that shrank past a boundary is not silent: the disc asking for the piece
-  that no longer exists fails (see issue 11, generic error).
-- **Affects:** Backup to optical media and Add missing files (both send discs through
-  `create-optical-media-disc-partials`).
-- **Code:** `createOpticalMediaDiscPartials` in `app/workers/worker.ts` (the `expectedPartialCount` check after the
-  split).
-- **Fix:** give the request what the plan assumed for each large file (its planned size or piece count) and refuse -
-  "this file changed since planning, plan again" - when the file's size no longer matches, instead of comparing with a
-  fresh estimate.
-- **Test idea:** worker-ipc, with a stub 7-Zip (like `test-large-file-split-boundary.js` Part 2): plan a file, grow
-  it past a 500 MiB boundary with `fs.truncateSync` (sparse, no real data), then request the planned pieces - the
-  request must fail.
-
-### 13. Discs holding many small files do not fit (estimate, not measured)
+### 12. Discs holding many small files do not fit (estimate, not measured)
 
 - **What happens:** planning counts only file bytes and keeps a fixed share of each disc free (`maxRepletionRatio` in
   `OPTICAL_MEDIA`). The ImgBurn project builds ISO9660 + Joliet + UDF (`FileSystem=3` in `appData/IBB_TEMPLATE.ibb`),
@@ -200,7 +175,7 @@ from this file (and test it if it needs one - see "Working on these" below).
   small files; then a planning check in `test-partitioning.js` that a disc of many tiny files is planned with room for
   them.
 
-### 14. Updating a file can destroy the backup's previous copy (Cumulative backup and Sync)
+### 13. Updating a file can destroy the backup's previous copy (Cumulative backup and Sync)
 
 - **What happens:** `insertBranch` copies with `copyFileReplacingProtectedTarget`, which writes straight onto the
   existing target file (and for a read-only or hidden target deletes it first). The copy truncates the old file as it
@@ -214,7 +189,7 @@ from this file (and test it if it needs one - see "Working on these" below).
   source with PowerShell (`$fs = [IO.File]::Open(path, 'Open', 'Read', 'ReadWrite'); $fs.Lock(1MB, 1MB)`) while the
   target holds an older copy; after the failed run the older copy must still be there, unchanged.
 
-### 15. Cumulative backup to the root of an NTFS drive warns that the backup drive's own folders are not backed up
+### 14. Cumulative backup to the root of an NTFS drive warns that the backup drive's own folders are not backed up
 
 - **What happens:** `diff` collects the entries it cannot read from BOTH scans into one `skipped` list and reports it
   as "Some items were left out ... they are NOT backed up". A drive root always holds "System Volume Information",
@@ -231,7 +206,7 @@ from this file (and test it if it needs one - see "Working on these" below).
 - **Test idea:** extend section 3 of `test-harness/ui/test-wizard-error-dialogs.js` (a folder denied listing with
   icacls) with that folder in the backup folder instead of the source: no "NOT backed up" warning may name it.
 
-### 16. A failed Cumulative copy shows two error dialogs
+### 15. A failed Cumulative copy shows two error dialogs
 
 - **What happens:** `ngAfterViewInit` in `src/app/incremental-copying/incremental-copying.component.ts` attaches
   `.catch(onError)` and a separate `.then(...)` to the same `copyingPromise`. When the copy fails (disk full, a locked
@@ -252,6 +227,12 @@ from this file (and test it if it needs one - see "Working on these" below).
 - **Symbolic links other than junctions** can only be recreated by Cumulative backup and Sync with administrator
   rights or Developer Mode on; otherwise the copy stops with a clear message. A link that points to nothing, given by
   a full path, is recreated as a junction.
+- **A large file is split when its disc is sent, not when the discs are planned** - possibly hours later in the same
+  session. If its size has changed enough since planning to need a different number of 500 MiB pieces, sending the
+  first disc with one of its pieces is refused ("... has changed since the discs were planned ... plan the discs
+  again", `createOpticalMediaDiscPartials` against `plannedPieceCountsBySession`, both in `app/workers/worker.ts`) and
+  nothing is split - otherwise the pieces the plan does not have would be on no disc. Tested in
+  `test-large-file-split-boundary.js` Part 3.
 - **Links on discs** are burned as Windows shortcuts (`<name>.lnk`, created with PowerShell and `IShellLinkW`);
   recovery restores the shortcut file, not a real link. A link whose shortcut name is already taken by a real file is
   left out and listed in the "Some items were left out" warning.

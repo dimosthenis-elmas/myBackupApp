@@ -56,7 +56,10 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
 
 - **Backup to optical media:** splits your files across as many discs as needed and sends them to ImgBurn to burn.
   Each disc is planned to be at most 93% full for a CD, 97% for a DVD and 99% for a Blu-ray, leaving room for what
-  the disc's own file system takes. Large files that don't fit on one disc are split automatically. Every file also gets a SHA-256 checksum recorded
+  the disc's own file system takes. Large files that don't fit on one disc are split automatically, into 500 MB
+  pieces, when the first disc holding one of their pieces is sent to ImgBurn; if such a file has changed size so much
+  since the discs were planned that it needs a different number of pieces, that disc is refused with a message and
+  you plan the discs again - so no piece is ever left off the discs. Every file also gets a SHA-256 checksum recorded
   in the cold storage metadata JSON (always on, not optional) - protection against a later drive read error or disc
   damage. See "Verify integrity of cold storage disc" below for how these checksums get used.
 

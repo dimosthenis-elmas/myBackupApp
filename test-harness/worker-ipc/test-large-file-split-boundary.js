@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * Exercises the two rare reconciliation paths in createOpticalMediaDiscPartials (worker.ts) that
+ * Exercises the rare piece-count paths in createOpticalMediaDiscPartials (worker.ts) that
  * worker-ipc/test-large-file-split.js's own file size never happens to hit, because it isn't near the boundary
  * that triggers them:
  *
@@ -20,6 +20,10 @@
  *     demand, so this half instead temporarily redirects the app's own configured 7-Zip path to a stub batch
  *     script that deliberately produces 5 dummy pieces for a file whose estimate predicts only 2 - proving the
  *     throw actually fires, not just that the code reads as if it should.
+ *
+ *  3. A file that grew past a piece boundary between planning and its split (a file is only split when its disc
+ *     is sent): the request is refused before anything is split, since the piece the plan does not have would
+ *     otherwise be on no disc.
  *
  * Content doesn't matter for either check (piece COUNT and SIZE, not reassembled data, are what's under test),
  * so both source files are written as sparse/zero-filled, avoiding the need to generate or stream real random
@@ -176,6 +180,8 @@ async function main() {
   let app2, win2;
   const sessionId2 = 'session-' + Date.now();
   const sessionTempDir2 = path.join(tempDir, sessionId2);
+  const sessionId3 = 'session-' + (Date.now() + 1);
+  const sessionTempDir3 = path.join(tempDir, sessionId3);
   try {
     originalConfigContent = backupAndRedirectConfigField('_7zipExecutablePath', stub7zPath);
 
@@ -211,10 +217,48 @@ async function main() {
     results.throwsOnGenuineMismatch = threwAsExpected;
     console.log(`  materialize call rejected as expected: ${threwAsExpected}`);
     if (threwAsExpected) { console.log(`    error: ${errorMessage}`); }
+
+    // ==========================================================================================================
+    // Part 3 (same app, same stub 7-Zip): a file that grows past a piece boundary after planning. A file is only
+    // split when its disc is sent, possibly hours after planning. The plan gave this one 2 pieces; it now needs 3,
+    // and splitting it anyway would leave the third piece on no disc - so the request must be refused before
+    // anything is split. The stub would write 5 pieces if it ran, so no piece may exist afterwards.
+    // ==========================================================================================================
+    console.log('\n=== Part 3: a file that grew past a piece boundary since planning ===');
+    const growSourceRoot = path.join(scratchRoot, 'grow-source');
+    const growFilePath = path.join(growSourceRoot, 'grow-file.bin');
+    writeExactSizeFile(growFilePath, 700_000_000); // 2 pieces, like Part 2's file
+    const planResponse3 = await callWorker(win2, 'partition-backup-to-optical-media', {
+      rootPath: growSourceRoot,
+      mediaCapacityInBytes: 600_000_000,
+      maxRepletionRatio: 0.95,
+      splitLargeFiles: true,
+      sessionId: sessionId3,
+    }, 60 * 1000);
+    const bareRelativePaths3 = planResponse3.res.flat().filter((e) => /\.part\.\d+$/i.test(e.path))
+      .map((e) => path.relative(sessionTempDir3, e.path));
+    fs.truncateSync(growFilePath, 2 * VOLUME_SIZE_BYTES + 1_000_000); // now needs 3 pieces
+    let growErrorMessage = '';
+    try {
+      await callWorker(win2, 'create-optical-media-disc-partials', {
+        dirPath: growSourceRoot,
+        paths: bareRelativePaths3,
+        sessionId: sessionId3,
+      }, 60 * 1000);
+    } catch (err) {
+      growErrorMessage = (err && err.message) || String(err);
+    }
+    results.refusesFileThatGrewSincePlanning = growErrorMessage.includes('has changed since the discs were planned');
+    console.log(`  refused with "has changed since the discs were planned": ${results.refusesFileThatGrewSincePlanning}`);
+    if (growErrorMessage) { console.log(`    error: ${growErrorMessage}`); }
+    results.nothingSplitForFileThatGrew = !fs.existsSync(sessionTempDir3)
+      || fs.readdirSync(sessionTempDir3, { recursive: true }).every((f) => !/grow-file\.bin\.part/i.test(f));
+    console.log(`  no piece of the grown file was created: ${results.nothingSplitForFileThatGrew}`);
   } finally {
     if (app2) { await app2.close().catch(() => {}); }
     if (originalConfigContent !== undefined) { restoreConfig(originalConfigContent); }
     try { cleanupRealPieces(sessionTempDir2, 'throw-file.bin'); } catch { /* best effort */ }
+    try { cleanupRealPieces(sessionTempDir3, 'grow-file.bin'); } catch { /* best effort */ }
   }
 
   // ============================================================================================================

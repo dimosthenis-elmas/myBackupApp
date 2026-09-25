@@ -383,6 +383,14 @@ const estimateLargeFileSplitPartials = function (fileSizeBytes: number): Array<{
   return partials;
 }
 
+/** For each job (its session id - see SESSION_FOLDER_NAME_PATTERN): how many pieces the job's disc plan gave each
+ *  large file it splits, keyed by the file's path relative to the folder being backed up ("Videos\big.mkv"). Set by
+ *  partitionBackupToOpticalMedia, read by createOpticalMediaDiscPartials just before it splits a file. A file is only
+ *  split when the first disc holding one of its pieces is sent, possibly hours after planning; if its size changed
+ *  enough in between to need a different number of pieces, the pieces the plan does not have would be on no disc, so
+ *  such a file is refused instead of split. A job never outlives the app (there is no resume), so neither does this. */
+const plannedPieceCountsBySession = new Map<string, Map<string, number>>();
+
 const CONFIG_PATH = () => node_path_module.join(__dirname, `../../appData/config.json`);
 
 /** The app's appData/ directory, resolved to an absolute path. Relative cacheDataDirectoryPath values are
@@ -1288,6 +1296,8 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
   let Gb = Math.pow(1024, 3); // Windows style Gb
 
   let partitioning: ColdStorageMetadata = []
+  // See plannedPieceCountsBySession.
+  const plannedPieceCounts = new Map<string, number>();
   let err_too_large_file_found: boolean = false
   let too_large_files_paths: {"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}[] = []
 
@@ -1394,6 +1404,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
       const pathToLargeFileSplitsInTempDirectory = node_path_module.join(tempDataDirectoryPath, sessionId, relativeDirOfLargeFile);
 
       const predictedPartials = estimateLargeFileSplitPartials(itm.stats.size);
+      plannedPieceCounts.set(pathToLargeFileRelativeToOpticalMediumRoot, predictedPartials.length);
       predictedPartials.forEach((partial, index) => {
         largeFilePathsAndStats_.push({
           path: node_path_module.join(pathToLargeFileSplitsInTempDirectory, `${fileName}.part.${zeroPad(index + 1, 3)}`),
@@ -1477,6 +1488,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
        err_code: 'FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC'
       };
   }else{
+    if (process.env._stop != 'stop') { plannedPieceCountsBySession.set(sessionId, plannedPieceCounts); }
     return partitioning;
   }
 }
@@ -1503,10 +1515,11 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
  *  incidentally also create partials belonging to OTHER, not-yet-sent discs that happen to share the same
  *  source file - that is expected, not a bug.
  *
- *  The one time a file is actually, really split by this function (never on a later call that finds its partials
- *  already present - see alreadyProcessedOriginalFiles below), the real partial count is compared against a
- *  freshly recomputed estimateLargeFileSplitPartials(realFileSize) for that same file (see that function's own
- *  comment for why this can, rarely, disagree with what planning predicted):
+ *  Before a file is actually split (never on a later call that finds its partials already present - see
+ *  alreadyProcessedOriginalFiles below), it must still need the number of pieces this job's plan gave it
+ *  (plannedPieceCountsBySession); a file the plan does not split, or whose size has changed enough since planning to
+ *  need a different number, throws and nothing is split. After the split, the real partial count is compared against
+ *  that planned count (see estimateLargeFileSplitPartials's own comment for why this can, rarely, disagree):
  *   - Equal: nothing further to do.
  *   - Real count is exactly one more than estimated: the one extra, unplanned partial ("sliver") is appended to
  *     the returned results too, even though it wasn't requested - reported exactly once, by the one call that
@@ -1586,11 +1599,22 @@ const createOpticalMediaDiscPartials = async function (dirPath: string, paths: A
     if (!alreadyProcessedOriginalFiles.has(originalAbsolutePath)) {
       alreadyProcessedOriginalFiles.add(originalAbsolutePath);
 
-      if (!fs.existsSync(partialDir)) { fs.mkdirSync(partialDir, { recursive: true }); }
       const re = new RegExp(`^${originalFileName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}.part`);
-      let partFileNames: string[] = fs.readdirSync(partialDir).filter((v: string) => re.test(v));
+      let partFileNames: string[] = fs.existsSync(partialDir) ? fs.readdirSync(partialDir).filter((v: string) => re.test(v)) : [];
 
       if (partFileNames.length === 0) {
+        // The plan gave this file its pieces for the size it had then (see plannedPieceCountsBySession).
+        const plannedPieceCount = plannedPieceCountsBySession.get(sessionId)?.get(originalRelPath);
+        if (plannedPieceCount === undefined) {
+          throw new Error(`"${originalAbsolutePath}" is not a file this backup's disc plan splits into pieces. Nothing was split - plan the discs again.`);
+        }
+        const pieceCountNow = estimateLargeFileSplitPartials(fs.statSync(originalAbsolutePath).size).length;
+        if (pieceCountNow !== plannedPieceCount) {
+          throw new Error(`"${originalAbsolutePath}" has changed since the discs were planned: it now needs ${pieceCountNow} ` +
+            `pieces, but the plan has ${plannedPieceCount}. Nothing was split - plan the discs again, so they are planned ` +
+            `with the file's new size.`);
+        }
+        fs.mkdirSync(partialDir, { recursive: true });
         const util = require('util');
         const exec = util.promisify(require('child_process').exec);
         // Same invocation shape partitionBackupToOpticalMedia used to run inline - see
@@ -1598,8 +1622,7 @@ const createOpticalMediaDiscPartials = async function (dirPath: string, paths: A
         await exec(`"${_7zipExecutablePath}" -v${LARGE_FILE_SPLIT_VOLUME_SIZE_MIB}m -mx0 a "${partialDir}\\${originalFileName}.part" "${originalAbsolutePath}"`);
         partFileNames = fs.readdirSync(partialDir).filter((v: string) => re.test(v));
 
-        const expectedPartialCount = estimateLargeFileSplitPartials(fs.statSync(originalAbsolutePath).size).length;
-        if (partFileNames.length === expectedPartialCount + 1) {
+        if (partFileNames.length === plannedPieceCount + 1) {
           // The known, rare boundary case (see estimateLargeFileSplitPartials) - one real partial the plan never
           // assigned to any disc: a "sliver". Surface it so the caller can attach it to the disc it just
           // created for.
@@ -1608,10 +1631,10 @@ const createOpticalMediaDiscPartials = async function (dirPath: string, paths: A
           const surplusAbsolutePath = node_path_module.join(partialDir, surplusName);
           const s = fs.statSync(surplusAbsolutePath);
           surplusPartials.push({ path: surplusRelPath, stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
-        } else if (partFileNames.length !== expectedPartialCount) {
+        } else if (partFileNames.length !== plannedPieceCount) {
           throw new Error(
             `Splitting "${originalAbsolutePath}" produced ${partFileNames.length} real partial(s) but the disc plan ` +
-            `expected ${expectedPartialCount} - the capacity plan is out of date for this file. Please redo the ` +
+            `expected ${plannedPieceCount} - the capacity plan is out of date for this file. Please redo the ` +
             `planning step before burning.`
           );
         }

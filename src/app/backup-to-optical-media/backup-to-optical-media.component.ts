@@ -710,6 +710,16 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       let realStats: filesMetadata[];
       try {
         realStats = (await ipc.createOpticalMediaDiscPartials(this.backup.sourcePath, selectedRelativePaths, this.tempSessionId)).res;
+      } catch (error) {
+        // E.g. 7-Zip failed, a file was deleted since planning, or a large file changed size since planning (the
+        // worker then refuses to split it) - the disc is not sent, and the message says why.
+        const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        errorDialog.componentInstance.title = "Error";
+        errorDialog.componentInstance.message = `Could not prepare the files of disc ${i + 1}: ${error}`;
+        errorDialog.componentInstance.actionsNum = 1;
+        errorDialog.componentInstance.action1Label = "Ok";
+        errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
+        return;
       } finally {
         splitDialogRef.close();
       }
@@ -752,7 +762,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       // metadata JSON entry, and the .ibb file all already see the hash this way, rather than needing a second
       // pass to attach it later.
       //
-      // Explicitly caught (unlike createOpticalMediaDiscPartials just above, which still isn't) - a failure
+      // Explicitly caught, like createOpticalMediaDiscPartials just above - a failure
       // here (e.g. a file vanished/got locked in the moment between being created and being hashed) must
       // not silently abort this whole method with nothing shown: without this, the finally block still resets
       // sendingDiscs[i] and re-enables the button, but the user would otherwise see the send simply do nothing.
