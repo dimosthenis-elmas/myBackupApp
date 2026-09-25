@@ -5,8 +5,8 @@ description: Open issues and known limitations of this app (my-backup, Electron 
 
 # Known issues and limitations
 
-What is still open, and what the app deliberately does not support. When one of the open issues gets fixed, add a
-test for it (see "Working on these" below) and remove it from this file.
+What is still open, and what the app deliberately does not support. When one of the open issues gets fixed, remove it
+from this file (and test it if it needs one - see "Working on these" below).
 
 ## Open issues
 
@@ -46,8 +46,207 @@ test for it (see "Working on these" below) and remove it from this file.
   Before, that loop ran forever in the background.
 - **Why no test:** the loop has no visible effect, so no UI test can see it. A regression would not be caught.
 
+### 4. Splitting large files fails when the app's temp folder is inside the folder being backed up
+
+- **What happens:** e.g. the app folder is on the Desktop and the Desktop is backed up. The planned split pieces live
+  in the temp folder (`appData\tempFilesCanBeDeleted\session-...`), and the wizard trims the source folder off every
+  planned path first, then the temp folder - which no longer matches. A piece's path stays
+  `<app folder>\appData\tempFilesCanBeDeleted\session-...\Videos\big.mkv.part.001`, and
+  `createOpticalMediaDiscPartials` asks 7-Zip to split a file that does not exist, so every disc with pieces fails to
+  send (only the generic "Something unexpected went wrong" dialog - see issue 11). Confirmed with the exact string
+  operations.
+- **Code:** `WriteToOpticalMediaProceed` in `backup-to-optical-media.component.ts` (the two `x.path.replace(...)`
+  trims); the same order in `add-missing-files-to-optical-media-cold-storage.component.ts`
+  (`a.path.replace(this.backup.targetPath, "").replace(tempDataDirectoryPath, "")`).
+- **Fix:** trim the temp folder first when a path starts with it, otherwise the source folder - or refuse a source
+  folder that contains the temp folder. The app's own files (logs.txt keeps growing after it is hashed) are then in
+  the backup too.
+- **Test idea:** point `cacheDataDirectoryPath` at a folder inside the source (lib/ibb-tools.js
+  `backupAndRedirectConfigField`), plan with splitting, send a disc with pieces (stub 7-Zip), check the .ibb paths.
+
+### 5. A file another program holds open stops the whole run
+
+- **What happens:** a file opened without sharing (an open Outlook `.pst`, browser profile databases) gives EBUSY on
+  copy and on open-for-read (confirmed). Synchronize directories' byte comparison opens every unchanged file on both
+  sides, so the comparison fails and nothing can be synced, even when that file did not change. The copy step of both
+  Cumulative backup and Sync stops at the first such file, leaving the rest uncopied. Sync's delete step stops the
+  same way at the first target file it cannot delete (`unlinkSync` in `insertBranchForDirSyncDeletions`), leaving the
+  sync half done. A disc with such a file cannot be sent (hashing fails).
+- **Code:** `haveSameContent` (called from `diff` for `any-difference-or-content`), `createTree`/`insertBranch`,
+  `copyFileReplacingProtectedTarget`, `insertBranchForDirSyncDeletions`, `sha256OfFile` - all in
+  `app/workers/worker.ts`.
+- **Fix:** in the copy step, catch per file, carry on, and list the files that failed at the end (Sync must then
+  not report success). In the comparison, count a file that cannot be read as different, so the copy step reports it.
+- **Test idea:** in `test-sync-and-cumulative-rules.js`, lock a source file with PowerShell
+  (`[IO.File]::Open(path, 'Open', 'ReadWrite', 'None')`) for the length of a run.
+
+### 6. Hidden and system files may be left off a disc (unverified)
+
+- **What happens:** `appData/IBB_TEMPLATE.ibb` has `IncludeHiddenFiles=0` and `IncludeSystemFiles=0`. If ImgBurn
+  applies them to the `F|` entries the app lists one by one, hidden/system files (`desktop.ini`, `Thumbs.db`,
+  anything the user hid) are not burned, while the metadata JSON records them with hashes. No test covers it.
+- **Worse than the missing files:** recovery from the JSON identifies an inserted disc by a hash of ALL its paths
+  (`recoverAllFilesFromAllDiscs` in `optical-disc-backup-data-retriever.component.ts`) and compares it with the hash
+  of the JSON's list for that disc. One file missing from the disc (a single `desktop.ini`) makes the whole disc
+  unrecognizable - "This disc does not seem to contain any of the files you requested" - so none of its files can be
+  recovered that way.
+- **Fix:** set both to 1 in the template.
+- **Test idea:** one real ImgBurn build (not the stub) of a folder with a hidden file and a system file, then check
+  the image.
+
+### 7. Cancel is ignored while "Planning discs" does its first count
+
+- **What happens:** `getAllFilePathsWithStats` sets `process.env._stop = 'NoStop'` at the start of every call. A
+  Cancel that lands during the `countAllFilesQuick` probe before it stops the probe, then the scan resets it and the
+  whole plan runs; the "you will need N discs" dialog appears after the user pressed Cancel. The
+  `get-file-paths-with-stats` request (Add missing files, recovery) has the same order.
+- **Fix:** reset the flag once, in the request handler before the probe, not inside `getAllFilePathsWithStats`.
+- **Test idea:** worker-ipc: start a plan of a large generated tree, send `stop` right away (`sendToWorker`), expect
+  status "stopped".
+
+### 8. Retrying after a failed split trusts the pieces already there
+
+- **What happens:** `createOpticalMediaDiscPartials` only splits a large file when no `<name>.part*` file exists yet
+  (`partFileNames.length === 0`); the piece count is only checked right after a fresh split. If 7-Zip fails part way
+  (e.g. the temp drive fills up - the temp folder needs the whole file's size free) and leaves pieces behind, every
+  retry either fails on a missing piece or burns a cut-short last piece, hashed as it is. Whether 7-Zip leaves pieces
+  behind on failure is not verified.
+- **Fix:** when pieces exist, check their count against the estimate (and that none is missing); otherwise delete
+  them and split again.
+- **Test idea:** a stub 7-Zip (like `test-large-file-split-boundary.js` Part 2) that writes one piece and exits 1,
+  then the real one; the retry must re-split.
+
+### 9. Synchronize directories: Cancel during the first comparison does not stop the second
+
+- **What happens:** the stop reaches the worker before the second `diff` request, which resets the stop flag, so
+  the second full scan and `match-letter-case` run in the background after the dialog closed; anything started next
+  waits behind them. Nothing is changed on disk.
+- **Code:** `syncDirs()` in `src/app/sync-dirs/sync-dirs.component.ts`.
+- **Fix:** check `userCancelledOperation` before starting the second `diff` and `match-letter-case`.
+
+### 10. Cumulative backup to an exFAT drive probably copies most files again on every run (unverified)
+
+- **What happens:** exFAT stores modified times to 10 ms; Cumulative's default comparison copies whenever the source
+  is newer by even 1 ms. The README only excludes FAT/FAT32, and exFAT is the default for large USB drives.
+- **Fix (if confirmed):** a small modified-time allowance in the default comparison, like Sync's
+  `MIRROR_MTIME_TOLERANCE_MS`.
+- **Test idea:** a Cumulative run onto an exFAT stick or VHD (needs admin to create), then a second run: it must copy
+  nothing.
+
+### 11. Smaller ones
+
+- **Generic error when a disc's files cannot be prepared:** `sendToImgBurn` does not catch
+  `createOpticalMediaDiscPartials` (7-Zip failing, a file deleted since planning), so the user only gets "Something
+  unexpected went wrong in the app". Catch it like the hashing step below it.
+- **No fit check for a disc's re-measured size:** `sendToImgBurn` only checks slivers against the capacity; files that
+  grew since planning are burned even if the disc no longer fits. Planning also counts only file bytes - see issue 13
+  for when the per-medium ratios in `OPTICAL_MEDIA` do not leave enough room for sectors and file system records.
+- **Backing up an empty folder to optical media:** the plan is one disc holding only the source folder itself, whose
+  path trims to "", so its tree is empty and "Send to ImgBurn" says "Disc 1 has no files selected - this should never
+  happen" (`sendToImgBurn`). Tell the user there is nothing to back up instead, at planning.
+- **A failed first write of the metadata JSON leaves a loading dialog up:** in `proceedToStep2AfterChoosingSavePath`
+  (`backup-to-optical-media.component.ts`), `ipc.writeJSONtoDisk` (e.g. a read-only save location) is not caught, so
+  the "Building files tree" dialog stays open with no message. Catch it and show the error.
+- **Split pieces get discs of their own:** `partitionBackupToOpticalMedia` packs ordinary files first and the pieces
+  afterwards, so the last ordinary disc's free space is never used for pieces (1 GB of files + one 6 GB file = 3 DVDs
+  where 2 would do). Fix: one first-fit-decreasing pass over both.
+- **Metadata JSON rewritten in place:** `writeJSONtoDisk` truncates, then writes; a crash in between loses the record
+  of every disc. Write `<path>.tmp`, then rename.
+- **cmd.exe expands `%NAME%` in paths:** the 7-Zip split/test/extract and the ImgBurn launch go through `exec`, so a
+  path containing `%NAME%` (NAME an environment variable, e.g. `%USERNAME%`) changes. Use `execFile`.
+- **Sync's second comparison shows no progress:** `sendAndAwaitResponse` calls `removeAllListeners` when a request
+  finishes, which also removes the wizard's progress listener, so the circle stays full during the second `diff`.
+
+### 12. A split file that grows after planning silently loses its last piece
+
+- **What happens:** a large file is split only when the first disc holding one of its pieces is sent - possibly hours
+  or days after planning. `createOpticalMediaDiscPartials` then checks the real piece count against
+  `estimateLargeFileSplitPartials` of the file's size NOW, not against the plan. If the file grew past a 500 MiB
+  boundary in between, the plan assigned N pieces, 7-Zip makes N+1, and the fresh estimate also says N+1 - so the check
+  passes. Piece N+1 is requested by no disc, so it is on no disc and not in the metadata JSON (in the one-extra-piece
+  boundary case, 7-Zip makes N+2: piece N+2 is handled as the sliver and N+1 is the one lost). The Verify wizard still
+  passes - every recorded file matches its hash - and only recovery finds out, when the 7-Zip test of the pieces fails
+  and the file cannot be reassembled. A file that shrank past a boundary is not silent: the disc asking for the piece
+  that no longer exists fails (see issue 11, generic error).
+- **Affects:** Backup to optical media and Add missing files (both send discs through
+  `create-optical-media-disc-partials`).
+- **Code:** `createOpticalMediaDiscPartials` in `app/workers/worker.ts` (the `expectedPartialCount` check after the
+  split).
+- **Fix:** give the request what the plan assumed for each large file (its planned size or piece count) and refuse -
+  "this file changed since planning, plan again" - when the file's size no longer matches, instead of comparing with a
+  fresh estimate.
+- **Test idea:** worker-ipc, with a stub 7-Zip (like `test-large-file-split-boundary.js` Part 2): plan a file, grow
+  it past a 500 MiB boundary with `fs.truncateSync` (sparse, no real data), then request the planned pieces - the
+  request must fail.
+
+### 13. Discs holding many small files do not fit (estimate, not measured)
+
+- **What happens:** planning counts only file bytes and keeps a fixed share of each disc free (`maxRepletionRatio` in
+  `OPTICAL_MEDIA`). The ImgBurn project builds ISO9660 + Joliet + UDF (`FileSystem=3` in `appData/IBB_TEMPLATE.ibb`),
+  where every file also takes a 2 KB UDF file entry, its data rounded up to whole 2 KB sectors, and three directory
+  records - about 3 KB per file. The free share covers about 46,000 files on a full DVD (141 MB), 81,000 on a full
+  BD-25 (250 MB) and 16,000 on a full CD (49 MB); a full disc whose files average under about 100 KB (DVD), 300 KB
+  (Blu-ray) or 40 KB (CD) does not fit. Planning sorts largest-first, so the smallest files of the whole source end up
+  together on the last disc(s): any source with more than one disc's worth of small files (source code, mail,
+  thumbnails) gets such discs. ImgBurn then refuses the disc; the app cannot re-plan one disc, and the only way out in
+  the app - deselecting files - leaves them out of the backup silently (on no disc, not in the JSON).
+- **Code:** `partitionBackupToOpticalMedia` in `app/workers/worker.ts` (both packing loops add `stats.size` only);
+  `OPTICAL_MEDIA` in `src/app/shared/utils/optical-media.ts`.
+- **Documented:** the README ("Backup to optical media") lists these per-disc file counts as a limit - update or
+  remove that table with the fix.
+- **Fix:** plan each file as its size rounded up to 2 KB plus a per-file allowance (about 3 KB; a folder, one or two
+  blocks), and keep the ratio only for the rest.
+- **Test idea:** confirm the per-file cost first with one real ImgBurn build (not the stub) of a folder with many
+  small files; then a planning check in `test-partitioning.js` that a disc of many tiny files is planned with room for
+  them.
+
+### 14. Updating a file can destroy the backup's previous copy (Cumulative backup and Sync)
+
+- **What happens:** `insertBranch` copies with `copyFileReplacingProtectedTarget`, which writes straight onto the
+  existing target file (and for a read-only or hidden target deletes it first). The copy truncates the old file as it
+  starts, so if it then fails part way - the backup drive is full, the source cannot be read, the drive is unplugged -
+  the target has neither the old nor the new version. For Cumulative backup that old copy may be the only other copy;
+  if the failure came from a failing source drive, both are lost.
+- **Code:** `copyFileReplacingProtectedTarget` and `insertBranch` in `app/workers/worker.ts`.
+- **Fix:** copy to a temporary name in the same folder, then rename it over the old file (the read-only/hidden
+  handling then applies to that rename); delete the temporary file if the copy fails.
+- **Test idea:** in `test-sync-and-cumulative-rules.js`, make the copy fail part way by locking a byte range of the
+  source with PowerShell (`$fs = [IO.File]::Open(path, 'Open', 'Read', 'ReadWrite'); $fs.Lock(1MB, 1MB)`) while the
+  target holds an older copy; after the failed run the older copy must still be there, unchanged.
+
+### 15. Cumulative backup to the root of an NTFS drive warns that the backup drive's own folders are not backed up
+
+- **What happens:** `diff` collects the entries it cannot read from BOTH scans into one `skipped` list and reports it
+  as "Some items were left out ... they are NOT backed up". A drive root always holds "System Volume Information",
+  which can be stat'ed but not listed (EPERM - confirmed). So a Cumulative backup to the root of an external NTFS drive
+  - a common setup - shows that warning on every run, naming a folder on the backup drive, not in the source. An
+  unreadable folder anywhere in the backup folder is reported the same misleading way.
+- **Also:** a drive root as the SOURCE (Cumulative backup and Backup to optical media allow it) backs up
+  `$Recycle.Bin` - the user's own deleted files - since that folder is readable. Whether to leave it out is a product
+  decision.
+- **Code:** `diff` in `app/workers/worker.ts` (the same `skipped` passed to `getAllFiles` and `getAllFilesSet`),
+  `reportSkippedScanEntries`.
+- **Fix:** report only the source's skipped entries as "not backed up"; leave the target's out of that warning (or
+  word it as "could not be checked in the backup").
+- **Test idea:** extend section 3 of `test-harness/ui/test-wizard-error-dialogs.js` (a folder denied listing with
+  icacls) with that folder in the backup folder instead of the source: no "NOT backed up" warning may name it.
+
+### 16. A failed Cumulative copy shows two error dialogs
+
+- **What happens:** `ngAfterViewInit` in `src/app/incremental-copying/incremental-copying.component.ts` attaches
+  `.catch(onError)` and a separate `.then(...)` to the same `copyingPromise`. When the copy fails (disk full, a locked
+  file - issue 5 - a link that needs administrator rights), the promise returned by `.then` rejects with no handler,
+  so GlobalErrorHandler adds "Something unexpected went wrong in the app" on top of the "Error" dialog.
+- **Fix:** one chain - `.then(...).catch(...)`.
+- **Test idea:** in `test-wizard-error-dialogs.js`, make a Cumulative copy fail (delete a source file after the
+  comparison, before copying) and check exactly one dialog appears.
+
 ## Limitations (by design)
 
+- **Synchronize directories refuses the root of a drive** (`D:\`, source or target) - `checkPathsSelectionIsOk` in
+  `src/app/sync-dirs/sync-dirs.component.ts`. A drive root holds Windows' own folders ("System Volume Information",
+  other users' `$Recycle.Bin`) that cannot be listed, and Sync deliberately does not skip unreadable entries. A volume
+  mounted into a folder is not recognized as a drive root.
 - **FAT file systems (FAT, FAT32) are not supported** - stated in the README. Sync still allows 2 seconds of
   difference in modified times (`MIRROR_MTIME_TOLERANCE_MS`).
 - **Symbolic links other than junctions** can only be recreated by Cumulative backup and Sync with administrator
@@ -68,5 +267,10 @@ test for it (see "Working on these" below) and remove it from this file.
 - Run the affected test-harness scripts in the real app: `env -u ELECTRON_RUN_AS_NODE node test-harness/<...>.js`
   (from Git Bash in an agent shell). A plain-Node stand-in has missed real failures: the app runs Electron's own Node
   from a folder whose name has Greek letters, and both matter.
-- Every fix gets a test under `test-harness/` that is listed in `test-harness/run-all-tests.bat` (keep that file's
-  line endings CRLF) and in `docs/TESTING.md`.
+- Test a fix when a regression would really bite (data deleted or written outside the chosen folders, a wrong
+  backup, a crash in a common path), and check the test fails without the fix. Very simple fixes need no test of
+  their own; keep tests lean, preferring a section in an existing script. A new test script goes in
+  `test-harness/run-all-tests.bat` (keep that file's line endings CRLF) and in `docs/TESTING.md`.
+- The capture scripts (`ui/capture-readme-screenshots.js`, `ui/capture-recover-data-gif.js`) and the ISO-based tests
+  refuse to run while any optical drive has a disc in it - eject it first. They overwrite `docs/screenshots/` and
+  `docs/media/`.
