@@ -359,7 +359,9 @@ confirmation (both wizard steppers are non-linear, and nothing about `confirmDis
 was confirmed first) is a real, explicit part of this feature's design that confirming in send-order would never
 actually exercise. For each disc it checks that confirming deletes ONLY that disc's own real split-piece files
 (tracked per-disc, never the flattened all-discs list) - a different, not-yet-confirmed disc sharing the same
-source file must keep its own pending pieces untouched.
+source file must keep its own pending pieces untouched. The first of the two discs with the large file's pieces to
+be confirmed shows an "Also burn disc ..." notice (they are recorded in the metadata JSON together), which the script
+dismisses; once every disc is confirmed, every disc must be recorded in the JSON.
 
 ## `test-backup-to-optical-media-overflow-disc.js`
 
@@ -382,6 +384,11 @@ enough to force either scenario deterministically) and for the full sizing math 
 send order doesn't matter here). Verifies the saved cold storage metadata JSON's exact per-disc entries, cross-
 checks the real `.ibb` files' own entry counts, and confirms every disc burned leaves no leftover split-piece
 files behind.
+
+It also checks when discs are recorded in that JSON: every disc of a phase holds a piece of the one large file, so
+none is recorded when sent; confirming each disc but the last shows an "Also burn disc ..." notice (naming the discs
+still to burn, and saying the already-burned ones will be re-planned if the app is closed now) and records nothing;
+confirming the last one records them all at once, with no notice.
 
 ## `test-add-missing-files.js`
 
@@ -435,7 +442,9 @@ both the `.ibb` and the JSON.
 **Also covers "Confirm disc burned" - in reverse order, on purpose**, the same way and for the same reason as
 `test-backup-to-optical-media.js` above: confirms the new discs starting from the LAST one rather than
 sequentially, and checks that confirming a disc deletes ONLY that disc's own real split-piece files, never a
-different, not-yet-confirmed disc's.
+different, not-yet-confirmed disc's. The two discs with the large file's pieces are recorded in the JSON together, so
+confirming the first of them shows an "Also burn disc ..." notice, which the script dismisses; the JSON is checked
+once every disc is confirmed.
 
 `add-missing-files-to-optical-media-cold-storage.component.ts`'s `ngAfterViewInit()` unconditionally opens an
 "Info" dialog (explaining that large-file split pieces are materialized lazily, per disc, only when that disc is
@@ -456,16 +465,16 @@ mandatory (there is no toggle to opt out of it), so this is a single-phase check
 tree with no large file - the split/partitioning machinery is already proven by `test-backup-to-optical-media.js`;
 this script's only job is the hashing itself.
 
-**What it actually checks:** reads the real saved metadata JSON, independently re-hashes every real source file,
-and confirms it matches what got written (`stats.sha256`) - not just that SOME string is present - and confirms
-no directory entry has one at all (hashing a directory makes no sense).
+**What it actually checks:** confirms the disc burned (a disc is recorded in the metadata JSON only then), reads
+the real saved metadata JSON, independently re-hashes every real source file, and confirms it matches what got
+written (`stats.sha256`) - not just that SOME string is present - and confirms no directory entry has one at all
+(hashing a directory makes no sense).
 
-**A real cleanup gap found and fixed in this script itself:** the job never clicks "Confirm disc burned"
-(nothing to confirm - a small tree has no real split pieces to clean up), so its own real `.ibb` file and
-temp-dir session subfolder would otherwise be left sitting in the app's REAL temp/cache directory forever -
-breaking the NEXT script's (or your own next real use of the app's) `assertRealTempDataDirectoryIsSafeToUse`
-check. Cleaned up explicitly at the end, best-effort (logged, not thrown, so a cleanup failure never masks the
-test's actual pass/fail result).
+Confirming a disc deletes only its split pieces and shortcuts (none here), never its `.ibb` file, so the job's
+real `.ibb` file and temp-dir session subfolder would otherwise be left sitting in the app's REAL temp/cache
+directory forever - breaking the NEXT script's (or your own next real use of the app's)
+`assertRealTempDataDirectoryIsSafeToUse` check. Cleaned up explicitly at the end, best-effort (logged, not thrown,
+so a cleanup failure never masks the test's actual pass/fail result).
 
 ## `test-recover-integrity-detects-corruption.js`
 

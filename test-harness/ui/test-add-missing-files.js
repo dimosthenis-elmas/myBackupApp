@@ -95,7 +95,7 @@ const { launchApp, callWorker } = require('../worker-ipc/call-worker');
 const { assertRealTempDataDirectoryIsSafeToUse, resolveRealTempDataDirectory, waitForSessionSubdirectory } = require('../worker-ipc/temp-dir-guard');
 const { printTree } = require('../lib/print-tree');
 const { normalizeForMetadata, OPTICAL_DRIVE_LETTER_CONVENTION } = require('../lib/cold-storage-metadata');
-const { writeStubImgBurnBat, backupAndRedirectImgBurnPath, restoreConfig, waitForFile, parseIbbBackupList, parseIbbVolumeLabel } = require('../lib/ibb-tools');
+const { writeStubImgBurnBat, backupAndRedirectImgBurnPath, restoreConfig, waitForFile, parseIbbBackupList, parseIbbVolumeLabel, confirmedAfterDismissingLinkedDiscsNotice } = require('../lib/ibb-tools');
 const { MARKER_FILE_NAME } = require('../lib/safety');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
@@ -589,8 +589,12 @@ async function main() {
       await step(`click "Confirm disc burned" for new disc ${i + 1}`, () =>
         win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 15_000 }));
 
-      await step(`wait for new disc ${i + 1} to show as confirmed`, () =>
-        win.getByRole('button', { name: 'Disc confirmed', exact: false }).waitFor({ timeout: 15_000 }));
+      // A disc that shares a split file with a disc not confirmed yet is not recorded in the metadata JSON yet, and
+      // says so in an "Also burn disc ..." notice as it is confirmed - dismissed here, before looking for the "Disc
+      // confirmed" button (the open notice hides the page from getByRole). ui/test-backup-to-optical-media-overflow-disc.js
+      // checks that notice and the recording in detail.
+      await step(`wait for new disc ${i + 1} to show as confirmed (dismissing an "Also burn disc ..." notice if one opens)`, () =>
+        confirmedAfterDismissingLinkedDiscsNotice(win));
 
       if (discSplitPiecePaths.length > 0) {
         // confirmDiscBurned awaits the real delete IPC call before its own button text updates, so by the time
@@ -632,6 +636,10 @@ async function main() {
   //    including the split pieces, now that their real names are known from the .ibb parsing above.
   console.log('\nVerifying the updated cold storage metadata JSON...');
   const expectedTotalDiscs = 1 + EXPECTED_NEW_DISC_COUNT;
+  // New discs are recorded when confirmed - the last one by the confirm just above - so give that write a moment.
+  const everyNewDiscRecorded = () => JSON.parse(fs.readFileSync(updatedMetadataJsonPath, 'utf8')).slice(1).every((entries) => Array.isArray(entries) && entries.length > 0);
+  const recordDeadline = Date.now() + 30_000;
+  while (!everyNewDiscRecorded() && Date.now() < recordDeadline) { await new Promise((r) => setTimeout(r, 500)); }
   const updatedMetadata = JSON.parse(fs.readFileSync(updatedMetadataJsonPath, 'utf8'));
   console.log(`  Existing metadata JSON (before, ${existingMetadataJsonPath}): ${existingMetadata.length} disc(s), ${existingMetadata[0].length} entries on disc 1.`);
   console.log(`  Updated metadata JSON (after, ${updatedMetadataJsonPath}): ${Array.isArray(updatedMetadata) ? updatedMetadata.length : '?'} disc(s), ` +

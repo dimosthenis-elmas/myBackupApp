@@ -14,6 +14,11 @@
  *     room to spare) picks it up instead, so no new, mostly-empty disc ever gets created. This is what makes
  *     scenario 1 an actual last resort rather than the default outcome.
  *
+ * Both phases also check when discs are recorded in the cold storage metadata JSON: every disc of a phase holds a
+ * piece of the one large file, so none is recorded when sent, confirming all but the last shows an "Also burn disc
+ * ..." notice (the already-burned discs will be re-planned if the app is closed now) and records nothing, and
+ * confirming the last one records them all at once.
+ *
  * ============================================================================================================
  * Why this uses a STUB 7-Zip instead of a real, byte-precise "boundary" file size
  * ============================================================================================================
@@ -284,9 +289,62 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
 
     printTree(sessionDir, 'App temp session dir (after) - real .ibb files and stub-generated split pieces');
 
+    // --- a disc is recorded in the metadata JSON only once it is confirmed burned: nothing yet ---
+    const readSavedMetadata = () => JSON.parse(fs.readFileSync(metadataJsonPath, 'utf8'));
+    const recordedDiscNumbers = () => readSavedMetadata().map((entries, d) => (Array.isArray(entries) && entries.length > 0 ? d + 1 : 0)).filter(Boolean);
+    results.nothingRecordedBeforeConfirming = recordedDiscNumbers().length === 0;
+    console.log(`\n  discs recorded in the metadata JSON before any is confirmed: [${recordedDiscNumbers().join(', ')}] (expected none) - ${results.nothingRecordedBeforeConfirming ? 'OK' : 'WRONG'}`);
+
+    // --- verify the real .ibb files' own file-entry counts (the discs' contents, independent of the JSON) ---
+    console.log('\nChecking the real .ibb file(s)\' own file-entry counts...');
+    const ibbFileCounts = createdIbbPaths.map((p) => parseIbbBackupList(p).filter((e) => e.type === 'F').length);
+    const expectedFileCounts = expectOverflow ? [1, 1, 1] : [1, 2];
+    results.ibbFileCountsMatchExpected = JSON.stringify(ibbFileCounts) === JSON.stringify(expectedFileCounts);
+    console.log(`  .ibb file-entry counts per disc: [${ibbFileCounts.join(', ')}] (expected [${expectedFileCounts.join(', ')}]) - ${results.ibbFileCountsMatchExpected ? 'OK' : 'WRONG'}`);
+    for (const ibbPath of createdIbbPaths) { if (fs.existsSync(ibbPath)) { fs.rmSync(ibbPath, { force: true }); } }
+
+    // --- confirm every disc was burned, in order. All discs of this job hold pieces of the one large file, so they
+    // are recorded in the JSON together, only when the last of them is confirmed; confirming an earlier one shows a
+    // notice naming the discs still to burn, and records nothing. Then verify the temp dir ends up with no leftover
+    // split-piece files at all. ---
+    console.log('\nConfirming every disc was burned...');
+    const finalTabCount = await win.getByRole('tab').count();
+    const expectedNoticeTitles = expectOverflow ? ['Also burn discs 2 and 3', 'Also burn disc 3'] : ['Also burn disc 2'];
+    for (let i = 0; i < finalTabCount; i++) {
+      await step(`open the "Optical disk ${i + 1}" step (for confirm)`, () => win.getByRole('tab', { name: `Optical disk ${i + 1}`, exact: false }).click({ timeout: 30_000 }));
+      await step(`click "Confirm disc burned" for disc ${i + 1}`, () => win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 30_000 }));
+      // The notice (when one is expected) opens as the disc is confirmed, and while it is open the page behind it is
+      // hidden from getByRole - so it is handled before looking for the "Disc confirmed" button.
+      const noticeTitle = expectedNoticeTitles[i];
+      if (noticeTitle) {
+        await step(`wait for the "${noticeTitle}" notice`, () => win.getByText(noticeTitle, { exact: true }).waitFor({ timeout: 30_000 }));
+        const noticeText = (await win.getByRole('dialog').innerText()).replace(/\s+/g, ' ');
+        results[`disc${i + 1}NoticeSaysItWillBeReplanned`] = noticeText.includes(`the app will re-plan ${i === 0 ? 'disc 1' : 'discs 1 and 2'}, which you have already burned`)
+          && noticeText.includes('in order not to burn the same disc twice');
+        console.log(`  notice text: "${noticeText.trim()}"`);
+        results[`disc${i + 1}ConfirmedButNotRecordedYet`] = recordedDiscNumbers().length === 0;
+        console.log(`  discs recorded after confirming disc ${i + 1}: [${recordedDiscNumbers().join(', ')}] (expected none yet) - ${results[`disc${i + 1}ConfirmedButNotRecordedYet`] ? 'OK' : 'WRONG'}`);
+        await step('click "Ok" on the notice', () => win.getByRole('dialog').getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 30_000 }));
+      }
+      await step(`wait for disc ${i + 1} to show as confirmed`, () => win.getByRole('button', { name: 'Disc confirmed', exact: false }).waitFor({ timeout: 30_000 }));
+    }
+    process.stdout.write('  [ ] wait for every disc to be recorded in the metadata JSON ... ');
+    const recordDeadline = Date.now() + 30_000;
+    while (recordedDiscNumbers().length < finalTabCount && Date.now() < recordDeadline) { await new Promise((r) => setTimeout(r, 500)); }
+    console.log('done');
+    results.allDiscsRecordedAfterLastConfirm = recordedDiscNumbers().length === finalTabCount;
+    results.noNoticeForTheLastDisc = (await win.getByText("Don't close the app", { exact: false }).count()) === 0;
+    console.log(`  discs recorded after confirming the last one: [${recordedDiscNumbers().join(', ')}] (expected all ${finalTabCount}), no notice shown for it: ${results.noNoticeForTheLastDisc}`);
+    await new Promise((r) => setTimeout(r, 1000)); // let the last confirm's real delete finish
+    const largeFilesTempDir = path.join(sessionDir, 'large-files');
+    const leftoverPieces = fs.existsSync(largeFilesTempDir) ? fs.readdirSync(largeFilesTempDir).filter((f) => /\.part\.\d+$/i.test(f)) : [];
+    results.noLeftoverPiecesAfterConfirming = leftoverPieces.length === 0;
+    console.log(`  leftover split-piece files after confirming every disc: ${leftoverPieces.length} (expected 0) - ${results.noLeftoverPiecesAfterConfirming ? 'OK' : 'WRONG'}`);
+    if (leftoverPieces.length > 0) { console.log(`    STILL PRESENT: ${leftoverPieces.join(', ')}`); }
+
     // --- verify the saved cold storage metadata JSON: exact entry count, and each entry's own sizes ---
     console.log('\nVerifying the saved cold storage metadata JSON...');
-    const savedMetadata = JSON.parse(fs.readFileSync(metadataJsonPath, 'utf8'));
+    const savedMetadata = readSavedMetadata();
     results.metadataHasExpectedDiscCount = savedMetadata.length === finalDiscCount;
     console.log(`  metadata JSON has ${savedMetadata.length} disc entries (expected ${finalDiscCount}) - ${results.metadataHasExpectedDiscCount ? 'OK' : 'WRONG'}`);
 
@@ -307,31 +365,6 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
       results.disc2AbsorbedTheSurplus = JSON.stringify(disc2Sizes) === JSON.stringify(expectedDisc2Sizes);
       console.log(`  disc 2 entry sizes: [${disc2Sizes.join(', ')}] (expected [${expectedDisc2Sizes.join(', ')}] - its own piece PLUS the absorbed surplus) - ${results.disc2AbsorbedTheSurplus ? 'OK' : 'WRONG'}`);
     }
-
-    // --- verify the real .ibb files agree with the metadata JSON on entry counts (independent cross-check) ---
-    console.log('\nCross-checking the real .ibb file(s)\' own file-entry counts against the metadata JSON...');
-    const ibbFileCounts = createdIbbPaths.map((p) => parseIbbBackupList(p).filter((e) => e.type === 'F').length);
-    const expectedFileCounts = expectOverflow ? [1, 1, 1] : [1, 2];
-    results.ibbFileCountsMatchExpected = JSON.stringify(ibbFileCounts) === JSON.stringify(expectedFileCounts);
-    console.log(`  .ibb file-entry counts per disc: [${ibbFileCounts.join(', ')}] (expected [${expectedFileCounts.join(', ')}]) - ${results.ibbFileCountsMatchExpected ? 'OK' : 'WRONG'}`);
-    for (const ibbPath of createdIbbPaths) { if (fs.existsSync(ibbPath)) { fs.rmSync(ibbPath, { force: true }); } }
-
-    // --- confirm every disc was burned (forward order - any-order confirmation is already proven by
-    // ui/test-backup-to-optical-media.js; this just needs a clean end state), then verify the temp dir ends up
-    // with no leftover split-piece files at all. ---
-    console.log('\nConfirming every disc was burned...');
-    const finalTabCount = await win.getByRole('tab').count();
-    for (let i = 0; i < finalTabCount; i++) {
-      await step(`open the "Optical disk ${i + 1}" step (for confirm)`, () => win.getByRole('tab', { name: `Optical disk ${i + 1}`, exact: false }).click({ timeout: 30_000 }));
-      await step(`click "Confirm disc burned" for disc ${i + 1}`, () => win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 30_000 }));
-      await step(`wait for disc ${i + 1} to show as confirmed`, () => win.getByRole('button', { name: 'Disc confirmed', exact: false }).waitFor({ timeout: 30_000 }));
-    }
-    await new Promise((r) => setTimeout(r, 1000)); // let the last confirm's real delete finish
-    const largeFilesTempDir = path.join(sessionDir, 'large-files');
-    const leftoverPieces = fs.existsSync(largeFilesTempDir) ? fs.readdirSync(largeFilesTempDir).filter((f) => /\.part\.\d+$/i.test(f)) : [];
-    results.noLeftoverPiecesAfterConfirming = leftoverPieces.length === 0;
-    console.log(`  leftover split-piece files after confirming every disc: ${leftoverPieces.length} (expected 0) - ${results.noLeftoverPiecesAfterConfirming ? 'OK' : 'WRONG'}`);
-    if (leftoverPieces.length > 0) { console.log(`    STILL PRESENT: ${leftoverPieces.join(', ')}`); }
 
     // confirmDiscBurned deliberately never removes the now-empty "large-files" directory (or the session
     // directory itself) - see its own comment in worker.ts - a harmless leftover, cleaned up whenever

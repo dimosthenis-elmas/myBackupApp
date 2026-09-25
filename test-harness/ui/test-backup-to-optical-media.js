@@ -83,7 +83,7 @@ const path = require('path');
 const { launchApp } = require('../worker-ipc/call-worker');
 const { assertRealTempDataDirectoryIsSafeToUse, resolveRealTempDataDirectory, waitForSessionSubdirectory } = require('../worker-ipc/temp-dir-guard');
 const { printTree } = require('../lib/print-tree');
-const { writeStubImgBurnBat, backupAndRedirectImgBurnPath, restoreConfig, waitForFile, parseIbbBackupList } = require('../lib/ibb-tools');
+const { writeStubImgBurnBat, backupAndRedirectImgBurnPath, restoreConfig, waitForFile, parseIbbBackupList, confirmedAfterDismissingLinkedDiscsNotice } = require('../lib/ibb-tools');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
 
@@ -463,8 +463,12 @@ async function main() {
       await step(`click "Confirm disc burned" for disc ${i + 1}`, () =>
         win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 15_000 }));
 
-      await step(`wait for disc ${i + 1} to show as confirmed`, () =>
-        win.getByRole('button', { name: 'Disc confirmed', exact: false }).waitFor({ timeout: 15_000 }));
+      // A disc that shares a split file with a disc not confirmed yet is not recorded in the metadata JSON yet, and
+      // says so in an "Also burn disc ..." notice as it is confirmed - dismissed here, before looking for the "Disc
+      // confirmed" button (the open notice hides the page from getByRole). test-backup-to-optical-media-overflow-disc.js
+      // checks that notice and the recording in detail.
+      await step(`wait for disc ${i + 1} to show as confirmed (dismissing an "Also burn disc ..." notice if one opens)`, () =>
+        confirmedAfterDismissingLinkedDiscsNotice(win));
 
       if (discSplitPiecePaths.length > 0) {
         // confirmDiscBurned awaits the real delete IPC call before its own button text updates, so by the time
@@ -481,6 +485,15 @@ async function main() {
       }
     }
     const confirmCheckPassed = confirmDeletionResults.every(Boolean);
+
+    // Every disc is confirmed now, so every disc is recorded in the metadata JSON - the two discs holding the large
+    // file's pieces together, once the second of them was confirmed.
+    process.stdout.write('  [ ] wait for every disc to be recorded in the metadata JSON ... ');
+    const recordedDiscCount = () => JSON.parse(fs.readFileSync(metadataJsonPath, 'utf8')).filter((entries) => Array.isArray(entries) && entries.length > 0).length;
+    const recordDeadline = Date.now() + 30_000;
+    while (recordedDiscCount() < actualDiscCount && Date.now() < recordDeadline) { await new Promise((r) => setTimeout(r, 500)); }
+    const allDiscsRecorded = recordedDiscCount() === actualDiscCount;
+    console.log(`${allDiscsRecorded ? 'done' : 'WRONG'} (${recordedDiscCount()} of ${actualDiscCount} discs recorded)`);
 
     // Fallback cleanup only - by this point confirmCheckPassed being true already means every real split-piece
     // file is gone, so this is normally a no-op (fs.existsSync guards make it safe either way). Also removes the
@@ -499,7 +512,7 @@ async function main() {
       fs.rmdirSync(sessionDir);
     }
 
-    const verifyPassed = normalCheckPassed && splitCheckPassed && confirmCheckPassed;
+    const verifyPassed = normalCheckPassed && splitCheckPassed && confirmCheckPassed && allDiscsRecorded;
 
     if (verifyPassed) {
       fs.rmSync(scratchRoot, { recursive: true, force: true });

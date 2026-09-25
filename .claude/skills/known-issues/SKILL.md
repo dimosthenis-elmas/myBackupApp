@@ -26,10 +26,11 @@ from this file (and test it if it needs one - see "Working on these" below).
 
 - **What happens:** a large file's real split can produce one more piece than planned (a "sliver"). Slivers wait in
   `pendingOverflowPartials` until a disc has room. In `sendToImgBurn`, the list is emptied and the slivers that fit
-  are moved onto the disc being sent. If a later step of that send fails (hashing, writing the metadata JSON,
-  `create-IBB-file`), the disc is not marked sent and the slivers are not put back. On the retry,
+  are moved onto the disc being sent. If a later step of that send fails (hashing, `create-IBB-file`), the disc is
+  not marked sent and the slivers are not put back. On the retry,
   `createOpticalMediaDiscPartials` does not report them again (it only reports a sliver when it performs the split
-  itself), so that piece ends up on no disc and the file cannot be reassembled when recovering.
+  itself), so that piece ends up on no disc and the file cannot be reassembled when recovering. The rule that discs
+  sharing a split file are recorded together does not catch it: the lost piece is no longer waiting, and on no disc.
 - **Rare:** needs a split that produced one piece more than estimated, and a failure after that piece was accepted.
 - **Code:** `src/app/backup-to-optical-media/backup-to-optical-media.component.ts` (`sendToImgBurn`,
   `maybeAppendOverflowDiscs`) and the same logic in
@@ -37,7 +38,8 @@ from this file (and test it if it needs one - see "Working on these" below).
 - **Fix:** only take slivers off `pendingOverflowPartials` once the send has succeeded - put them back on every
   failure path.
 - **Test idea:** extend `test-harness/ui/test-backup-to-optical-media-overflow-disc.js` - force a failure after a
-  sliver is accepted (e.g. make the metadata JSON unwritable), then retry and check the sliver still reaches a disc.
+  sliver is accepted (e.g. make the hashing fail by locking one of that disc's files with PowerShell,
+  `[IO.File]::Open(path, 'Open', 'ReadWrite', 'None')`), then retry and check the sliver still reaches a disc.
 
 ### 3. The recovery wizard's "already recovered this disc" fix has no test
 
@@ -233,6 +235,15 @@ from this file (and test it if it needs one - see "Working on these" below).
   again", `createOpticalMediaDiscPartials` against `plannedPieceCountsBySession`, both in `app/workers/worker.ts`) and
   nothing is split - otherwise the pieces the plan does not have would be on no disc. Tested in
   `test-large-file-split-boundary.js` Part 3.
+- **A disc is recorded in the cold storage metadata JSON when it is confirmed burned, not when it is sent** - both
+  disc wizards (`recordConfirmedDiscs`). Discs holding pieces of the same large file - planned pieces or a sliver,
+  following every split file on a disc, through other discs too (`linkedDiscGroup` in
+  `src/app/shared/utils/linked-discs.ts`) - are recorded together, only once all of them are confirmed and no piece of
+  their files is still waiting for a disc. Confirming one of them before that shows an "Also burn disc ..." notice:
+  if the app is closed now, the discs already burned are not in the JSON and will be re-planned ("Add missing files"
+  puts their files on new discs), so the user should note them down. Reason: a split file can only be put back
+  together from all of its pieces, and "Add missing files" counts a file as backed up as soon as the JSON has any one
+  of its pieces (`replacePartialFileSplits`). Tested in `ui/test-backup-to-optical-media-overflow-disc.js`.
 - **Links on discs** are burned as Windows shortcuts (`<name>.lnk`, created with PowerShell and `IShellLinkW`);
   recovery restores the shortcut file, not a real link. A link whose shortcut name is already taken by a real file is
   left out and listed in the "Some items were left out" warning.

@@ -108,10 +108,12 @@ async function runSimpleBackupWizard(win, { sourceRoot, metadataJsonPath, collec
   await step('click "Ok" on the "Disc label" confirmation', () =>
     win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
 
+  // A disc is recorded in the metadata JSON once it is confirmed burned.
+  await step('click "Confirm disc burned" for the one disc', () =>
+    win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 30_000 }));
+
   process.stdout.write('  [ ] wait for the metadata JSON to be written with this disc\'s real entries ... ');
-  // Written incrementally, inside sendToImgBurn's own metadataUpdateQueue - by the time createIBB_file's chain
-  // (awaited by "Ok" above having settled) resolves, the write has already happened, but a short poll is safer
-  // than assuming zero filesystem latency.
+  // Written by the confirm above (recordConfirmedDiscs) - a short poll rather than assuming zero filesystem latency.
   const deadline = Date.now() + 30_000;
   let metadataJSON;
   for (;;) {
@@ -173,9 +175,9 @@ async function main() {
     if (app) { await app.close().catch(() => {}); }
     if (originalConfigContent !== undefined) { restoreConfig(originalConfigContent); }
 
-    // This job never clicks "Confirm disc burned" (nothing to confirm - no real split pieces exist for a tree
-    // this small), so its real .ibb file - and the session-<id> subfolder createIBB_file made for it - would
-    // otherwise be left sitting in the app's REAL temp/cache directory forever, which would make the NEXT script
+    // Confirming the disc deletes only its split pieces and shortcuts (none here), never its .ibb file - so its
+    // real .ibb file, and the session-<id> subfolder createIBB_file made for it, would otherwise be left sitting in
+    // the app's REAL temp/cache directory forever, which would make the NEXT script
     // (or your own next real use of the app) fail assertRealTempDataDirectoryIsSafeToUse's "is it empty?" check.
     // Cleaned up here explicitly, the same way test-backup-to-optical-media.js cleans up its own real .ibb
     // files/session folder at the end - best-effort (a cleanup failure is logged, not thrown, so it never masks

@@ -13,6 +13,7 @@ import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfa
 import { filesMetadata } from '../../types/interface';
 import { SerialQueue } from '../shared/utils/serial-queue';
 import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
+import { linkedDiscGroup, discsLabel, linkedDiscsNoticeMessage } from '../shared/utils/linked-discs';
 import { OPTICAL_MEDIA, OpticalMedium } from '../shared/utils/optical-media';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
@@ -114,10 +115,15 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   /** Full path (folder + file name), chosen by the user via a save dialog, where the cold storage metadata
    * JSON is written/updated for this session. See chooseSaveFile(). */
   private coldStorageMetadataJSONPath!: string;
-  /** Serializes sendToImgBurn's read-modify-write of the shared cold storage metadata JSON across discs - see
-   *  SerialQueue's own doc comment for why this is needed (the stepper is non-linear and every disc's "Send to
-   *  ImgBurn" button is always enabled). */
+  /** Serializes recordConfirmedDiscs' read-modify-write of the shared cold storage metadata JSON - see SerialQueue's
+   *  own doc comment for why this is needed (the stepper is non-linear, so discs can be confirmed in quick
+   *  succession, in any order). */
   private metadataUpdateQueue = new SerialQueue();
+  /** Disc i's entry for the cold storage metadata JSON - its files with their real sizes and hashes - made when it is
+   *  sent to ImgBurn, and written to the JSON only once it is confirmed burned (see recordConfirmedDiscs). */
+  private discMetadataEntries: Array<Array<{ path: string; stats: any }> | undefined> = [];
+  /** Whether disc i's entry has been written to the cold storage metadata JSON - see recordConfirmedDiscs. */
+  private recordedDiscs: boolean[] = [];
   /** Whether disc i has been sent to ImgBurn at least once yet - gates both "Confirm disc burned" (can't
    *  confirm a disc that was never sent) and re-sending. */
   public sentDiscs: boolean[] = [];
@@ -206,6 +212,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     this.sendingDiscs = Array(this.totalNumberOfDisksNeeded).fill(false);
     this.confirmedDiscs = Array(this.totalNumberOfDisksNeeded).fill(false);
     this.sentDiscPartPaths = Array(this.totalNumberOfDisksNeeded).fill(null).map(() => []);
+    this.discMetadataEntries = Array(this.totalNumberOfDisksNeeded).fill(undefined);
+    this.recordedDiscs = Array(this.totalNumberOfDisksNeeded).fill(false);
     this.allFilesSelected = Array(this.totalNumberOfDisksNeeded).fill(true);
     // Same effective (margin-discounted) capacity partitionBackupToOpticalMedia itself planned against - see
     // getEffectiveOpticalMediumCapacityInBytes in worker.ts. sendToImgBurn/maybeAppendOverflowDiscs must judge
@@ -802,31 +810,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
 
       const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
       loadingDialogRef.componentInstance.message = "Preparing ImgBurn project";
-      // Enqueue this disc's read-modify-write (see metadataUpdateQueue's own doc comment) and await its turn
-      // specifically - not just whatever else is queued - so a later disc's call, enqueued after this one, can
-      // never run its own read until this write has actually finished.
-      //
-      // A failure here stops and surfaces a real error instead of silently proceeding to createIBB_file: this
-      // JSON is the permanent record recovery depends on, so burning a disc whose data never actually made it
-      // into that record would be a real, silent loss - worse than the merely-annoying stuck spinner this also
-      // prevents. Mirrors add-missing-files-to-optical-media-cold-storage.component.ts's identical handling of
-      // this same read-modify-write.
-      try {
-        await this.metadataUpdateQueue.enqueue(async () => {
-          const updatedMetadataJSON: Array<Array<{ path: string; stats: any; }>> = (await ipc.readJSONfromDisk(this.coldStorageMetadataJSONPath)).res;
-          updatedMetadataJSON[i] = selectedFiles;
-          await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPath, JSON.stringify(updatedMetadataJSON, null, 2));
-        });
-      } catch (error) {
-        loadingDialogRef.close();
-        const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
-        errorDialog.componentInstance.title = "Error";
-        errorDialog.componentInstance.message = `Failed to update the cold storage metadata JSON for this disc - it was NOT sent to ImgBurn, so nothing was burned without being recorded in the JSON. Error: ${error}`;
-        errorDialog.componentInstance.actionsNum = 1;
-        errorDialog.componentInstance.action1Label = "Ok";
-        errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
-        return;
-      }
+      // Recorded in the metadata JSON only once the disc is confirmed burned - see recordConfirmedDiscs.
+      this.discMetadataEntries[i] = selectedFiles;
 
       // What this disc needed created in the temp folder - split partials, and links' shortcuts (linkTarget) - deleted
       // again once the disc is confirmed burned (confirmDiscBurned).
@@ -922,6 +907,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       this.sendingDiscs.push(false);
       this.confirmedDiscs.push(false);
       this.sentDiscPartPaths.push([]);
+      this.discMetadataEntries.push(undefined);
+      this.recordedDiscs.push(false);
       this.allFilesSelected.push(true);
     }
     this.totalNumberOfDisksNeeded = newTotal;
@@ -945,8 +932,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   }
 
   /** Marks disc i as confirmed-burned: deletes its real created split partials (if any) from the temp
-   *  directory, then marks it confirmed (the template grays out and disables its controls once confirmedDiscs[i]
-   *  is true - see the template). Discs can be sent/confirmed in any order, independent of each other - there is
+   *  directory, marks it confirmed (the template grays out and disables its controls once confirmedDiscs[i]
+   *  is true - see the template), then records it in the cold storage metadata JSON (see recordConfirmedDiscs). Discs can be sent/confirmed in any order, independent of each other - there is
    *  no sequencing requirement, matching the already non-linear stepper "Send to ImgBurn" itself allows. */
   async confirmDiscBurned(i: number): Promise<void> {
     if (!this.sentDiscs[i] || this.confirmedDiscs[i]) { return; }
@@ -972,6 +959,52 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       }
     }
     this.confirmedDiscs[i] = true;
+    await this.recordConfirmedDiscs(i);
+  }
+
+  /** Writes disc i's entry to the cold storage metadata JSON, together with the entries of every disc that holds a
+   *  piece of the same split large file (linkedDiscGroup) - but only once all of those discs are confirmed burned and
+   *  no piece of their files is still waiting for a disc. A split file can only be put back together from all of its
+   *  pieces, and "Add missing files" counts a file as backed up as soon as the JSON has any one of its pieces - so
+   *  recording only some of those discs would lose the file for good if the rest were never burned. Until then, tells
+   *  the user which discs still have to be burned, and that the ones already burned are not recorded yet. */
+  private async recordConfirmedDiscs(i: number): Promise<void> {
+    const discPaths = this.backup.opticalMediaPartitioning.map((planned, d) => planned.map(x => x.path).concat(this.sentDiscPartPaths[d] || []));
+    const group = linkedDiscGroup(i, discPaths, this.pendingOverflowPartials.map(p => p.path), this.tempSessionId);
+    const stillToBurn = group.discs.filter(d => !this.confirmedDiscs[d]);
+    if (stillToBurn.length > 0 || group.waitingFiles.length > 0) {
+      const burnedNotRecorded = group.discs.filter(d => this.confirmedDiscs[d] && !this.recordedDiscs[d]);
+      const noticeDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
+      noticeDialog.componentInstance.title = stillToBurn.length > 0 ? `Also burn ${discsLabel(stillToBurn.map(d => d + 1))}` : 'Keep the app open';
+      noticeDialog.componentInstance.message = linkedDiscsNoticeMessage(burnedNotRecorded.map(d => d + 1), stillToBurn.map(d => d + 1),
+        group.discs.map(d => d + 1), group.waitingFiles.length);
+      noticeDialog.componentInstance.lists = [{ label: `Split across these discs (${group.splitFiles.length}):`, items: group.splitFiles }];
+      noticeDialog.componentInstance.actionsNum = 1;
+      noticeDialog.componentInstance.action1Label = "Ok";
+      noticeDialog.componentInstance.action1Callback = () => { noticeDialog.close(); };
+      return;
+    }
+    const toRecord = group.discs.filter(d => !this.recordedDiscs[d]);
+    try {
+      await this.metadataUpdateQueue.enqueue(async () => {
+        const metadataJSON: Array<Array<{ path: string; stats: any; }>> = (await ipc.readJSONfromDisk(this.coldStorageMetadataJSONPath)).res;
+        for (const d of toRecord) { metadataJSON[d] = this.discMetadataEntries[d] || []; }
+        // A disc appended for a sliver can be recorded before the one in front of it: no gaps (null) in the array.
+        for (let d = 0; d < metadataJSON.length; d++) { if (!Array.isArray(metadataJSON[d])) { metadataJSON[d] = []; } }
+        await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPath, JSON.stringify(metadataJSON, null, 2));
+      });
+      toRecord.forEach(d => { this.recordedDiscs[d] = true; });
+    } catch (error) {
+      const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+      errorDialog.componentInstance.title = "Error";
+      errorDialog.componentInstance.message = `Could not record ${discsLabel(toRecord.map(d => d + 1))} in the cold storage ` +
+        `metadata JSON, although confirmed burned: ${error}`;
+      errorDialog.componentInstance.actionsNum = 2;
+      errorDialog.componentInstance.action1Label = "Cancel";
+      errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
+      errorDialog.componentInstance.action2Label = "Try again";
+      errorDialog.componentInstance.action2Callback = () => { errorDialog.close(); this.recordConfirmedDiscs(i); };
+    }
   }
 
   goToHomePage(){

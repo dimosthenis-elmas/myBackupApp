@@ -111,6 +111,13 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   JSON file, via a normal save dialog. Keep this file safe - it's what lets you use "Recover data from optical
   media" and "Add missing files" again without physically inserting every disc.
 
+  A disc is recorded in that JSON when you click "Confirm disc burned", not when you send it to ImgBurn. Discs that
+  hold pieces of the same large file are recorded together, once all of them are confirmed - a split file can only
+  be put back together from all of its pieces. Until then, confirming one of them tells you which discs you still
+  have to burn. If you close the app before that, the discs you already burned for those files are not in the JSON,
+  and the app will plan their files again ("Add missing files" puts them on new discs) - so note them down, in order
+  not to burn the same disc twice.
+
 - **Verify integrity of cold storage disc:** a read-only wizard that checks a disc's SHA-256 checksums without
   recovering or copying anything - useful for periodically spot-checking discs you already have. Point it at the
   cold storage metadata JSON, then insert your discs one at a time in any order - it identifies each disc
