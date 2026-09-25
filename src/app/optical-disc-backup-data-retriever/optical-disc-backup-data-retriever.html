@@ -44,6 +44,7 @@
             </div> 
             <div class="flex-centered" *ngIf="!filesTreeNotLoaded">
                 <h2>Below you see the entire backup, gathering the files from all the optical disks.</h2>
+                <h3>Total number of files: {{ coldStorageTotals.files | number }} &mdash; Total size of the cold storage in bytes: {{ coldStorageTotals.bytes | number }}</h3>
                 <h2>Select the files you want to recover and press 'recover selected data'.</h2>
             </div>
             <div class="flex-centered" *ngIf="filesTreeNotLoaded">

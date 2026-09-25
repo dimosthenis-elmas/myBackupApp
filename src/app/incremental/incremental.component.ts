@@ -128,7 +128,9 @@ export class IncrementalComponent implements OnInit, OnDestroy {
         target: this.backup.targetPath
       } 
     });*/
-    logsPromise = ipc.incrementalPreview(selectedFiles, this.backup.sourcePath, this.backup.targetPath);
+    // 'keep-both': a name that is a file on one side and a folder on the other never costs the backup anything - see
+    // NameClash (ipc.interfaces.ts).
+    logsPromise = ipc.incrementalPreview(selectedFiles, this.backup.sourcePath, this.backup.targetPath, 'keep-both');
 
     logsPromise.catch((err)=>{
         this.onError(err);
@@ -217,7 +219,10 @@ export class IncrementalComponent implements OnInit, OnDestroy {
       });
     });
 
-    let diffPromise = ipc.diff(this.backup.sourcePath, this.backup.targetPath)
+    // skipUnreadable: an entry that cannot be read (e.g. a folder Windows denies listing) is left out and reported
+    // to the user, instead of making the whole comparison fail. Only safe here because this flow never deletes
+    // anything. (A link is not unreadable: it is one entry, copied as a link.)
+    let diffPromise = ipc.diff(this.backup.sourcePath, this.backup.targetPath, 'source-newer-or-different-size', true)
     /*
     //This block is useful for testing only. Use this to avoid having to wait for diff to complete when testing with large directories.
     let diffPromise = new Promise<WorkerResponse>((resolve) => {

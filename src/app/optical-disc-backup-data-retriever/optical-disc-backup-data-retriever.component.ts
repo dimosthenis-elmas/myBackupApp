@@ -66,6 +66,21 @@ import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/p
 
     completeBackupFilePaths :Array<string> = [];
     coldStorageMetadataForAllOpticalDiscs: ColdStorageMetadata = [];
+
+    /** Shown under the files tree: how many files the whole cold storage holds (each piece of a split large file
+     *  counts, as that is what is on the discs) and their total size in bytes. Worked out once per listing - both
+     *  places that fill coldStorageMetadataForAllOpticalDiscs assign a new array - not on every change detection. */
+    get coldStorageTotals(): { files: number, bytes: number } {
+      if (this.coldStorageTotalsFor !== this.coldStorageMetadataForAllOpticalDiscs) {
+        const files = this.coldStorageMetadataForAllOpticalDiscs.flat().filter((e) => !e.stats.isDirectory);
+        this.coldStorageTotalsCache = { files: files.length, bytes: files.reduce((sum, e) => sum + Number(e.stats.size), 0) };
+        this.coldStorageTotalsFor = this.coldStorageMetadataForAllOpticalDiscs;
+      }
+      return this.coldStorageTotalsCache;
+    }
+    private coldStorageTotalsFor?: ColdStorageMetadata;
+    private coldStorageTotalsCache = { files: 0, bytes: 0 };
+
     discIdsForCompleteBackupFilePaths :Array<number> = [];
     filesTreeRef!: FilesTreeComponent;
     myScrollContainerRef!: ElementRef;
@@ -431,7 +446,16 @@ import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/p
           this.opticalDiskIds.push(currentDiskId);
           //Add the paths to the complete backup.
           this.completeBackupFilePaths = this.completeBackupFilePaths.concat(filePaths);
-          this.coldStorageMetadataForAllOpticalDiscs = this.coldStorageMetadataForAllOpticalDiscs.concat([filePathsWithStats]);
+          // Kept drive-letter-normalized, like filePaths above and like every path in a cold storage metadata
+          // JSON: this list is what add-missing-files-to-optical-media-cold-storage.component.ts writes back out
+          // as the updated JSON (and derives new discs' labels/ID hashes from), and a disc's ID is a hash of its
+          // OPTICAL_DRIVE_LETTER_CONVENTION-prefixed paths - with the drive letter this disc happened to mount
+          // as left in, those IDs would only match when the drive really is "D:".
+          const normalizedFilePathsWithStats = filePathsWithStats.map(f => ({
+            ...f,
+            path: f.path.replace(/^(\w+\:\\)/, OPTICAL_DRIVE_LETTER_CONVENTION)
+          }));
+          this.coldStorageMetadataForAllOpticalDiscs = this.coldStorageMetadataForAllOpticalDiscs.concat([normalizedFilePathsWithStats]);
         
           this.discIdsForCompleteBackupFilePaths = this.discIdsForCompleteBackupFilePaths.concat(Array(filePaths.length).fill(currentDiskId))
 
@@ -664,9 +688,9 @@ import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/p
           )} as these were defined previously.`;
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Retry";
-        infoDialog.componentInstance.action1Callback = () => { 
+        infoDialog.componentInstance.action1Callback = () => {
           infoDialog.close();
-          this.dialogClosed=false;
+          this.dialogClosed=true;
           this.recoverAllFilesFromAllDiscs();
         }
         await this.waitForDialog();
@@ -731,21 +755,35 @@ import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/p
 
       // Send request to worker to copy the selected files to target.
       this.showLogs=true;
-      try {
-        this.copyingPromise = ipc.incrementalCopyFiles(selectedPathsPresentInTheInsertedDisk, this.mountedVolumeLetter, this.backup.targetPath);
-      } catch (error) {
-        const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
-        infoDialog.disableClose = true;
-        infoDialog.componentInstance.title = `Error`;
-        infoDialog.componentInstance.message = `An error occurred, Please try again. ${error}`;
-        infoDialog.componentInstance.actionsNum = 1;
-        infoDialog.componentInstance.action1Label = "Retry";
-        infoDialog.componentInstance.action1Callback = async () => {
-          infoDialog.close();
-          this.recoverAllFilesFromAllDiscs();
-        }
-        return;
-      }
+      this.copyingPromise = ipc.incrementalCopyFiles(selectedPathsPresentInTheInsertedDisk, this.mountedVolumeLetter, this.backup.targetPath);
+      // The copy's failure arrives as a rejection of this promise, not as a throw from the call above (so a
+      // surrounding try/catch would never see it). Without a handler it was an unhandled rejection: a generic
+      // "something unexpected went wrong" dialog, and a wizard left showing a progress bar that never finishes
+      // with no way forward. The worker's success/stop messages (see the listener registered above) never arrive
+      // for a failed copy, so this is also where the log list gets its end.
+      this.copyingPromise.catch((error) => {
+        this.ngZone.run(() => {
+          this.backup.previewLogsStream.complete();
+          const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
+          errorDialog.disableClose = true;
+          errorDialog.componentInstance.title = `Error while recovering from this disc`;
+          errorDialog.componentInstance.message =
+            `Not all of the selected files could be copied from this disc: ${error}. Files that were already ` +
+            `copied are kept. A dirty or scratched disc is a common cause, and so is a full or unavailable ` +
+            `destination folder. You can try this disc again, or cancel the recovery.`;
+          errorDialog.componentInstance.actionsNum = 2;
+          errorDialog.componentInstance.action1Label = "Cancel recovery";
+          errorDialog.componentInstance.action1Callback = () => {
+            errorDialog.close();
+            this.goToMainMenu();
+          }
+          errorDialog.componentInstance.action2Label = "Try this disc again";
+          errorDialog.componentInstance.action2Callback = () => {
+            errorDialog.close();
+            this.recoverAllFilesFromAllDiscs();
+          }
+        });
+      });
 
     }
 
@@ -816,20 +854,21 @@ import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/p
      *  deleteRecoveredFailedFiles in worker.ts, run on the worker side so they cannot be bypassed by anything
      *  going wrong here in the renderer. */
     private async deleteFailedIntegrityFiles(failedAbsolutePaths: string[]): Promise<void> {
-      let result: { cleared: boolean, message: string, deletedItems: string[] };
+      let result: { cleared: boolean, message: string, deletedItems: string[], notClearedItems: string[] };
       try {
         result = (await ipc.deleteRecoveredFailedFiles(failedAbsolutePaths, this.backup.targetPath)).res;
       } catch (error) {
-        result = { cleared: false, message: `The deletion could not be completed: ${error}`, deletedItems: [] };
+        result = { cleared: false, message: `The deletion could not be completed: ${error}`, deletedItems: [], notClearedItems: [] };
       }
       await new Promise<void>((resolve) => {
-        const resultDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '600px' });
+        const resultDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
         resultDialog.disableClose = true;
         resultDialog.componentInstance.title = result.cleared ? "Failed files deleted" : "Some failed files could not be deleted";
         resultDialog.componentInstance.message = result.message;
-        if (result.deletedItems.length) {
-          resultDialog.componentInstance.lists = [{ label: `Deleted (${result.deletedItems.length}):`, items: result.deletedItems }];
-        }
+        resultDialog.componentInstance.lists = [
+          result.notClearedItems?.length ? { label: `NOT deleted (${result.notClearedItems.length}):`, items: result.notClearedItems } : undefined,
+          result.deletedItems.length ? { label: `Deleted (${result.deletedItems.length}):`, items: result.deletedItems } : undefined,
+        ].filter((s): s is { label: string, items: string[] } => !!s);
         resultDialog.componentInstance.actionsNum = 1;
         resultDialog.componentInstance.action1Label = "Ok";
         resultDialog.componentInstance.action1Callback = () => { resultDialog.close(); resolve(); };
@@ -998,22 +1037,36 @@ import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/p
       return Array.from(groups.values()).filter(g => g.partFilePaths.length > 1);
     }
 
-    /** Shows ONE confirmation dialog covering every detected partial-file group at once, listing each large
-     *  file by name, and asks whether to reassemble all of them. Resolves to true/false depending on the
-     *  user's choice. Does not touch the filesystem. */
+    /** The folder a group's parts were recovered into, ending in a backslash - which is also where
+     *  mergeFileParts (worker.ts) writes the reassembled file. */
+    private partFilesFolder(group: { partFilePaths: string[] }): string {
+      const firstPart = group.partFilePaths[0];
+      return firstPart.substring(0, firstPart.lastIndexOf('\\') + 1);
+    }
+
+    /** The full path the reassembled file of `group` gets (see partFilesFolder). */
+    private reassembledFilePath(group: { originalFileName: string; partFilePaths: string[] }): string {
+      return this.partFilesFolder(group) + group.originalFileName;
+    }
+
+    /** Shows ONE confirmation dialog covering every detected partial-file group at once, listing the full path
+     *  each large file would be reassembled to (a scrollable list - there can be many), and asks whether to
+     *  reassemble all of them. Resolves to true/false depending on the user's choice. Does not touch the
+     *  filesystem. */
     private askUserToMergeAllPartialFileGroups(groups: Array<{ originalFileName: string; partFilePaths: string[] }>): Promise<boolean> {
       return new Promise<boolean>((resolve) => {
-        const names = groups.map(g => `"${g.originalFileName}"`).join(', ');
-        const confirmDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
+        const confirmDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '700px'});
         confirmDialog.disableClose = true;
         confirmDialog.componentInstance.title = "Partial files detected";
         confirmDialog.componentInstance.message = groups.length === 1
-          ? `It seems like you selected a set of partial files (.part001 etc.) for ${names}. These files are ` +
-            `parts of a large single file which did not fit to a single optical disc. Do you want to ` +
-            `reassemble the original file from the partials?`
-          : `It seems like you selected sets of partial files (.part001 etc.) for the following large files: ` +
-            `${names}. These files are parts of large files which did not fit to a single optical disc. Do ` +
-            `you want to reassemble all of them from their partials?`;
+          ? `It seems like you selected a set of partial files (.part.001 etc.) of a large file which did not fit ` +
+            `on a single optical disc. Do you want to reassemble the original file from its parts?`
+          : `It seems like you selected sets of partial files (.part.001 etc.) of ${groups.length} large files which ` +
+            `did not fit on a single optical disc. Do you want to reassemble all of them from their parts?`;
+        confirmDialog.componentInstance.lists = [{
+          label: `To be reassembled (${groups.length}):`,
+          items: groups.map(g => `${this.reassembledFilePath(g)}  (${g.partFilePaths.length} parts)`)
+        }];
         confirmDialog.componentInstance.actionsNum = 2;
         confirmDialog.componentInstance.action1Label = groups.length === 1 ? "Yes, reassemble" : "Yes, reassemble all";
         confirmDialog.componentInstance.action2Label = "No, leave them as they are";
@@ -1049,23 +1102,27 @@ import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/p
       return { group, merged, message };
     }
 
-    /** Shows ONE dialog summarizing the outcome of every attempted reassembly, instead of a dialog per file.
-     *  Each entry is a short, self-contained "N) file: outcome" sentence rather than relying on line breaks for
-     *  structure, since the dialog does not preserve them. */
+    /** Shows ONE dialog summarizing the outcome of every attempted reassembly, instead of a dialog per file: the
+     *  full path of every reassembled file, and of every one that failed (with the reason), each as a scrollable
+     *  list - there can be many. */
     private showMergeSummary(results: Array<{ group: { originalFileName: string; partFilePaths: string[] }, merged: boolean, message: string }>): Promise<void> {
       return new Promise<void>((resolve) => {
         const allSucceeded = results.every(r => r.merged);
-        const lines = results.map((r, idx) =>
-          `${idx + 1}) "${r.group.originalFileName}": ${r.merged ? 'reassembled successfully.' : 'FAILED - ' + r.message}`
-        );
+        const reassembled = results.filter(r => r.merged).map(r => this.reassembledFilePath(r.group));
+        // One line per file - the reason's own line breaks (a 7-Zip error can span several) are flattened.
+        const failed = results.filter(r => !r.merged).map(r => `${this.reassembledFilePath(r.group)}  -  ${r.message.replace(/\s+/g, ' ').trim()}`);
 
-        const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '600px'});
+        const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '700px'});
         infoDialog.disableClose = true;
         infoDialog.componentInstance.title = allSucceeded ? "Reassembly successful" : "Reassembly finished with some failures";
-        infoDialog.componentInstance.message = `Reassembly results: ${lines.join('  ')} ` +
-          (allSucceeded
-            ? 'The partial files that were successfully reassembled have been deleted.'
-            : 'Any partial files that could not be reassembled were left untouched. The recovery process will continue.');
+        infoDialog.componentInstance.message = allSucceeded
+          ? `Every file was reassembled, and the partial files it was reassembled from have been deleted.`
+          : `Not every file could be reassembled. The partial files of the ones that failed were left untouched; ` +
+            `the partial files of the ones that were reassembled have been deleted. The recovery process will continue.`;
+        infoDialog.componentInstance.lists = [
+          failed.length ? { label: `FAILED (${failed.length}):`, items: failed } : undefined,
+          reassembled.length ? { label: `Reassembled (${reassembled.length}):`, items: reassembled } : undefined,
+        ].filter((s): s is { label: string, items: string[] } => !!s);
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Ok";
         infoDialog.componentInstance.action1Callback = () => {
@@ -1077,27 +1134,32 @@ import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/p
 
     /** ONE follow-up informational dialog explaining that the .part.NNN files are 7-Zip archive volumes (not
      *  raw file fragments, so they cannot just be concatenated together), with a copy-pasteable command per
-     *  file to reassemble it by hand using 7-Zip directly. Covers every group passed in at once, rather than
-     *  showing one dialog per file. Shown whenever the app either did not attempt, or was unable to complete,
-     *  the automatic merge for one or more groups. */
+     *  file to reassemble it by hand using 7-Zip directly, as a scrollable list (there can be many) with full
+     *  paths. Covers every group passed in at once, rather than showing one dialog per file. Shown whenever the
+     *  app either did not attempt, or was unable to complete, the automatic merge for one or more groups. */
     private showManualReassemblyInstructions(groups: Array<{ originalFileName: string; partFilePaths: string[] }>): Promise<void> {
       return new Promise<void>((resolve) => {
-        const commands = groups.map((g, idx) => {
-          const sortedParts = g.partFilePaths.slice().sort();
-          return `${idx + 1}) "${g.originalFileName}":  7z x "${sortedParts[0]}"`;
-        }).join('  ');
+        const commands = groups.map((g) => {
+          const firstPart = g.partFilePaths.slice().sort()[0];
+          // -o: without it 7-Zip extracts into whatever folder the command is run from, not next to the parts.
+          // Quoted without its trailing backslash (a '\"' could be read as an escaped quote) - except a drive root,
+          // which needs that backslash and has no spaces, so it goes unquoted.
+          const folder = this.partFilesFolder(g);
+          const outputSwitch = /^[A-Za-z]:\\$/.test(folder) ? `-o${folder}` : `-o"${folder.replace(/\\$/, '')}"`;
+          return `7z x ${outputSwitch} "${firstPart}"`;
+        });
 
-        const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '600px'});
+        const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '700px'});
         infoDialog.disableClose = true;
         infoDialog.componentInstance.title = "How to reassemble manually";
         infoDialog.componentInstance.message =
-          `The .part.NNN files below were created using 7-Zip's volume-splitting feature (the same ` +
+          `The .part.NNN files were created using 7-Zip's volume-splitting feature (the same ` +
           `"7z -v500m -mx0 a ..." command used when the backup was originally split). They are 7-Zip archive ` +
           `volumes, not raw file fragments, so simply concatenating them together will not work - you need ` +
-          `7-Zip itself. To reassemble each file yourself, run the corresponding command below (using the ` +
-          `7-Zip executable configured in appData\\config.json) - 7-Zip will automatically find the other ` +
-          `part files (.002, .003, ...) alongside it and reconstruct the original file in the same folder. ` +
-          `${commands}`;
+          `7-Zip itself. To reassemble each file yourself, run its command below (using the 7-Zip executable ` +
+          `configured in appData\\config.json) - 7-Zip finds the other part files (.002, .003, ...) next to the ` +
+          `first one and writes the original file into the same folder.`;
+        infoDialog.componentInstance.lists = [{ label: `Commands, one per file (${commands.length}):`, items: commands }];
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Ok";
         infoDialog.componentInstance.action1Callback = () => {

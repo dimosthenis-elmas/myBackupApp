@@ -299,16 +299,19 @@ export class AppComponent implements OnInit {
         loadingDialogRef.componentInstance.message = "Clearing temporary files";
         try {
           const response = await ipc.clearTempDataDirectory();
-          const result: { cleared: boolean; message: string; deletedItems: string[] } = response.res;
+          const result: { cleared: boolean; message: string; deletedItems: string[]; notClearedItems: string[] } = response.res;
           loadingDialogRef.close();
           if (!result.cleared) {
             // `cleared` is also false for a PARTIAL clear (some entries deleted, others skipped or failed - see
             // clearTempDataDirectory's own doc comment) - result.message already distinguishes that case from a
             // total failure (e.g. "Cleared 3 of 4 item(s)..." vs "Refusing to clear: ..."), so the title stays
             // deliberately generic rather than assuming nothing was cleared.
-            const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
+            const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
             errorDialog.componentInstance.title = "Temp directory not fully cleared";
             errorDialog.componentInstance.message = result.message;
+            if (result.notClearedItems?.length) {
+              errorDialog.componentInstance.lists = [{ label: `Not cleared (${result.notClearedItems.length}):`, items: result.notClearedItems }];
+            }
             errorDialog.componentInstance.actionsNum = 1;
             errorDialog.componentInstance.action1Label = "Ok";
             errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); }

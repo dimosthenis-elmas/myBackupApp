@@ -20,6 +20,9 @@ export interface filesMetadata {
     // of the app (SHA-256 integrity data is mandatory, not a toggle) - optional here only for backward
     // compatibility with older cold storage JSONs written before this feature existed, where it's absent.
     "sha256"?: string;
+    // Only on a link (symbolic link or junction) backed up to a disc: it is burned as a Windows shortcut
+    // "<link name>.lnk" (this entry's path), and this is where the link - and so the shortcut - points.
+    "linkTarget"?: string;
   };
 }
 

@@ -153,7 +153,7 @@ async function main() {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [jsonPath] });
     }, metadataJsonPath);
 
-    const WATCH_PAUSE_MS = 5000;
+    const WATCH_PAUSE_MS = 1000;
     const step = async (label, fn) => {
       process.stdout.write(`  [ ] ${label} ... `);
       try {

@@ -238,7 +238,7 @@ async function main() {
     // Pause after every successful step, deliberately - long enough for a human watching the window to actually
     // see what just happened before the next click fires. Purely for watchability; the app itself doesn't need
     // this.
-    const WATCH_PAUSE_MS = 5000;
+    const WATCH_PAUSE_MS = 1000;
 
     const step = async (label, fn) => {
       process.stdout.write(`  [ ] ${label} ... `);
@@ -334,11 +334,19 @@ async function main() {
     // --- Phase C: the large file's two pieces (one from each disc) were both selected and just got copied - the
     //     wizard now offers to reassemble them, a code path never exercised by any other test here. ---
 
-    await step('wait for disc 1\'s files to be recovered, click "Yes, reassemble" on "Partial files detected" (up to 60s)', () =>
-      win.getByRole('button', { name: 'Yes, reassemble', exact: true }).click({ timeout: 60_000 }));
+    // Both merge dialogs list the reassembled file by its full path (scrollable lists - there can be many files).
+    const expectedReassembledPath = path.join(outputRoot, largeFileRelDirOs, largeFileName);
+    await step('wait for disc 1\'s files to be recovered - "Partial files detected" lists the file to reassemble by its full path (up to 60s)', () =>
+      win.getByRole('dialog').filter({ hasText: 'Partial files detected' }).getByText(expectedReassembledPath).first().waitFor({ timeout: 60_000 }));
 
-    await step('wait for the merge to finish, click "Ok" on "Reassembly successful" (up to 60s)', () =>
-      win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 60_000 }));
+    await step('click "Yes, reassemble"', () =>
+      win.getByRole('button', { name: 'Yes, reassemble', exact: true }).click({ timeout: 15_000 }));
+
+    await step('wait for the merge to finish - "Reassembly successful" lists the reassembled file by its full path (up to 60s)', () =>
+      win.getByRole('dialog').filter({ hasText: 'Reassembly successful' }).getByText(expectedReassembledPath).first().waitFor({ timeout: 60_000 }));
+
+    await step('click "Ok" on "Reassembly successful"', () =>
+      win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
 
     await step('click "Ok" on "Data recovery successful"', () =>
       win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));

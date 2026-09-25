@@ -66,8 +66,8 @@ function checkAddsBeforeDeletes(lines) {
   // "will copy file", "will update existing file", "will delete file", "will delete directory") and the real
   // commit wording (doCopy/commit=true - "copied file", "updated existing file", "deleted file", "deleted
   // directory") - the verb stem is the same either way, only the tense/prefix differs.
-  const addPattern = /cop(?:y|ied) file|updat(?:e|ed) existing file|creat(?:e|ed) directory/i;
-  const deletePattern = /delet(?:e|ed) (?:file|directory)/i;
+  const addPattern = /cop(?:y|ied) (?:file|link)|updat(?:e|ed) existing (?:file|link)|creat(?:e|ed) directory/i;
+  const deletePattern = /delet(?:e|ed) (?:file|link|directory)/i;
   const addLines = [];
   const deleteLines = [];
   let lastAddIndex = -1;
@@ -155,7 +155,7 @@ async function main() {
     // Pause after every successful step, deliberately - long enough for a human watching the window to actually
     // see what just happened before the next click fires. Purely for watchability; the app itself doesn't need
     // this.
-    const WATCH_PAUSE_MS = 5000;
+    const WATCH_PAUSE_MS = 1000;
 
     const step = async (label, fn) => {
       process.stdout.write(`  [ ] ${label} ... `);
@@ -224,8 +224,34 @@ async function main() {
     await step('click "Yes, continue" on the sync confirmation', () =>
       win.getByRole('button', { name: 'Yes, continue', exact: true }).click({ timeout: 15_000 }));
 
-    await step('wait for the sync to finish, click "Ok" on "Directory synchronization completed successfully" (up to 60s)', () =>
-      win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 60_000 }));
+    // After the sync the wizard checks that both folders hold the same files (by name and size) and says how many,
+    // and how big they are in total.
+    let successText = '';
+    const successDialog = win.getByRole('dialog').filter({ hasText: 'Directory synchronization completed successfully' });
+    await step('wait for the sync and the check after it to finish - "Directory synchronization completed successfully" (up to 60s)', async () => {
+      await successDialog.waitFor({ timeout: 60_000 });
+      successText = await successDialog.innerText();
+    });
+
+    await step('verify it has a success title and states the number of files and their total size in bytes', async () => {
+      let fileCount = 0;
+      let totalBytes = 0;
+      (function walk(dir) {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) { walk(full); } else { fileCount++; totalBytes += fs.lstatSync(full).size; }
+        }
+      })(sourceRoot);
+      results.successReportsFileCountAndTotalSize = successText.includes('Directory synchronization successful')
+        && successText.includes(`${fileCount} file(s)`) && successText.includes(`${totalBytes.toLocaleString('en-US')} bytes`);
+      console.log(`  expected ${fileCount} file(s), ${totalBytes.toLocaleString('en-US')} bytes - dialog says: "${successText.replace(/\s+/g, ' ').trim()}"`);
+    });
+
+    await step('click "Ok"', () => successDialog.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
+
+    await step('verify the Cancel button is gone now that the sync has finished', async () => {
+      results.cancelButtonGoneWhenFinished = (await win.locator('sync-dirs').getByRole('button', { name: 'Cancel', exact: true }).count()) === 0;
+    });
 
     // The commit phase's own log list is rendered inline on the sync-dirs screen itself (not inside a dialog -
     // see showCommitedOperationsLogs in sync-dirs.component.html), and stays on screen after the "completed

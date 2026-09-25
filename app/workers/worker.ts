@@ -5,7 +5,7 @@ const crypto = require("crypto")
 import { WorkerCommunicator as ipc } from './worker-communicator'
 import { LogsBuffer } from './logsbuffer'
 import { filesMetadata } from '../../src/types/interface';
-import { ColdStorageMetadata, WorkerResponse, OpticalMediaPartitioning } from './ipc.interfaces';
+import { ColdStorageMetadata, WorkerResponse, OpticalMediaPartitioning, DiffComparison, NameClash } from './ipc.interfaces';
 import { installConsoleLogging } from '../logging';
 import type { Dirent } from 'fs';
 
@@ -65,22 +65,189 @@ const holdOnIfDue = async () => {
  *  running count probes it upfront instead, via countAllFilesQuick below. */
 const SCAN_PROGRESS_REPORT_INTERVAL = 25;
 
+/** An entry a directory scan left out, and why: one it could not read (a folder Windows denies listing, e.g.
+ *  "System Volume Information" at a drive's root), or a link a disc scan cannot back up as a shortcut (see linkAsShortcutEntry). */
+type SkippedScanEntry = { path: string, reason: string };
+
+const scanErrorMessage = function (error: any): string {
+  return error && error.message ? error.message : String(error);
+}
+
+/** Tells the user which entries a scan left out, as a dialog with every left-out path and the reason in a scrollable
+ *  list (sent over 'app-error' directly, with a title and the list - console.error's own dialog only has room for a
+ *  summary and collapsed technical details), and logs the same list to logs.txt. Only scans that collect such
+ *  entries (their `skipped` list) ever get here: unreadable entries a scan was asked to skip, and the rare link a disc
+ *  scan cannot back up as a shortcut (linkAsShortcutEntry). Left-out entries are not part of that scan's result, so for a backup source this is
+ *  exactly the list of things that will NOT be backed up - which is why it is reported rather than silently
+ *  dropped. */
+const reportSkippedScanEntries = function (skipped: SkippedScanEntry[]): void {
+  if (skipped.length === 0) {
+    return;
+  }
+  const summary = `${skipped.length} item(s) were left out - they are not part of this operation (for a backup: ` +
+    `they are NOT backed up). Each one says why.`;
+  const items = skipped.map((s) => `${s.path}  -  ${s.reason}`);
+  console.warn(summary, items);
+  electron.ipcRenderer.send('app-error', {
+    source: 'worker', title: 'Some items were left out', summary, details: '',
+    lists: [{ label: `Left out (${items.length}):`, items }]
+  });
+}
+
+/** A disc cannot hold a link (symbolic link or junction), and burning a link's path would burn what it points to -
+ *  outside the folder being backed up. So a link is backed up to a disc as a Windows shortcut instead: one small
+ *  "<link name>.lnk" file pointing where the link points, and nothing else. Opened from the disc, it says it is
+ *  broken unless its target is there; recovered to where its target exists, it opens it. */
+const LINK_SHORTCUT_EXTENSION = '.lnk';
+
+/** How big a link's shortcut is assumed to be while planning discs - a real one is 1-2 KB. The shortcut itself is
+ *  only created when its disc is sent (createOpticalMediaDiscPartials), so planning needs a safe upper bound. */
+const LINK_SHORTCUT_PLANNED_SIZE_BYTES = 64 * 1024;
+
+/** The disc-scan entry for the link at `linkPath` (see LINK_SHORTCUT_EXTENSION): "<link path>.lnk", with the link's
+ *  own modified time and `linkTarget` - where it points, as a full path (a relative link is resolved against its own
+ *  folder). The link is never followed. Returns null, with the reason recorded in `skipped` when the scan collects
+ *  left-out entries (otherwise in logs.txt), when the link cannot be read or a real "<link name>.lnk" already sits
+ *  next to it. */
+const linkAsShortcutEntry = function (linkPath: string, linkStats: any, skipped?: SkippedScanEntry[]):
+  { path: string, stats: { size: number, mtime: Date, isDirectory: boolean, linkTarget: string } } | null {
+  const leaveOut = (reason: string) => {
+    const entry = { path: node_path_module.normalize(linkPath), reason };
+    if (skipped) { skipped.push(entry); } else { console.warn(`Left out a link: ${entry.path}  -  ${entry.reason}`); }
+    return null;
+  };
+  let pointsTo: string;
+  try {
+    pointsTo = fs.readlinkSync(linkPath);
+  } catch (error) {
+    return leaveOut(`a link whose target could not be read (${scanErrorMessage(error)})`);
+  }
+  const shortcutPath = node_path_module.normalize(linkPath) + LINK_SHORTCUT_EXTENSION;
+  if (lstatOrNull(shortcutPath) !== null) {
+    return leaveOut(`a link to "${pointsTo}" - it is backed up as the shortcut "${node_path_module.basename(shortcutPath)}", ` +
+      `but a file with that name is already next to it, so it is not backed up`);
+  }
+  return {
+    path: shortcutPath,
+    stats: {
+      size: LINK_SHORTCUT_PLANNED_SIZE_BYTES,
+      mtime: linkStats.mtime,
+      isDirectory: false,
+      linkTarget: node_path_module.resolve(node_path_module.dirname(linkPath), pointsTo),
+    },
+  };
+}
+
+/** If `shortcutPath` is the path a disc scan gave a link (see linkAsShortcutEntry) - it ends in ".lnk", nothing is
+ *  there, and a link is there without the ".lnk" - returns that link's target (full path) and modified time. */
+const linkBehindShortcutPath = function (shortcutPath: string): { target: string, mtime: Date } | null {
+  if (!shortcutPath.toLowerCase().endsWith(LINK_SHORTCUT_EXTENSION) || lstatOrNull(shortcutPath) !== null) { return null; }
+  const linkPath = shortcutPath.slice(0, -LINK_SHORTCUT_EXTENSION.length);
+  const linkStats = lstatOrNull(linkPath);
+  if (!linkStats || !linkStats.isSymbolicLink()) { return null; }
+  try {
+    return { target: node_path_module.resolve(node_path_module.dirname(linkPath), fs.readlinkSync(linkPath)), mtime: linkStats.mtime };
+  } catch (error) {
+    return null;
+  }
+}
+
+/** PowerShell script behind createShortcutFiles: Windows' own shortcut object through its Unicode interface
+ *  (IShellLinkW) - WScript.Shell's shortcut object refuses paths with characters outside the system code page (e.g.
+ *  Greek). Reads its jobs, [{shortcut, target}], from the UTF-8 JSON file named by the SHORTCUT_JOBS variable. */
+const CREATE_SHORTCUTS_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Text;
+[ComImport, Guid("00021401-0000-0000-C000-000000000046")] class CShellLink { }
+[ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F9-0000-0000-C000-000000000046")]
+interface IShellLinkW {
+  void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cch, IntPtr pfd, int fFlags);
+  void GetIDList(out IntPtr ppidl);
+  void SetIDList(IntPtr pidl);
+  void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cch);
+  void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+  void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cch);
+  void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+  void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cch);
+  void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+  void GetHotkey(out short pwHotkey);
+  void SetHotkey(short wHotkey);
+  void GetShowCmd(out int piShowCmd);
+  void SetShowCmd(int iShowCmd);
+  void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cch, out int piIcon);
+  void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+  void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, int dwReserved);
+  void Resolve(IntPtr hwnd, int fFlags);
+  void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+}
+public static class ShortcutMaker {
+  public static void Make(string shortcutPath, string targetPath) {
+    IShellLinkW link = (IShellLinkW)new CShellLink();
+    link.SetPath(targetPath);
+    ((IPersistFile)link).Save(shortcutPath, true);
+  }
+}
+'@
+$jobs = Get-Content -Raw -Encoding UTF8 -LiteralPath $env:SHORTCUT_JOBS | ConvertFrom-Json
+foreach ($j in @($jobs)) { [ShortcutMaker]::Make($j.shortcut, $j.target) }
+`;
+
+/** Creates one Windows shortcut (.lnk) per job, pointing to `target` - which does not have to exist (the shortcut
+ *  then says it is broken when opened, until something is there) - and gives it `mtime`. One PowerShell process for
+ *  all of them. Windows only, like burning a disc with ImgBurn. */
+const createShortcutFiles = async function (jobs: Array<{ shortcut: string, target: string, mtime: Date }>): Promise<void> {
+  if (jobs.length === 0) { return; }
+  if (process.platform !== 'win32') { throw new Error('Links can only be backed up to a disc (as Windows shortcuts) on Windows.'); }
+  const jobsDirectory = fs.mkdtempSync(node_path_module.join(require('os').tmpdir(), 'my-backup-shortcuts-'));
+  try {
+    const jobsFile = node_path_module.join(jobsDirectory, 'jobs.json');
+    fs.writeFileSync(jobsFile, JSON.stringify(jobs.map((j) => ({ shortcut: j.shortcut, target: j.target }))), 'utf8');
+    const execFile = require('util').promisify(require('child_process').execFile);
+    await execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', CREATE_SHORTCUTS_SCRIPT],
+      { env: { ...process.env, SHORTCUT_JOBS: jobsFile }, windowsHide: true });
+  } finally {
+    fs.rmSync(jobsDirectory, { recursive: true, force: true });
+  }
+  for (const job of jobs) {
+    if (!fs.existsSync(job.shortcut)) { throw new Error(`The shortcut "${job.shortcut}" for a link could not be created.`); }
+    fs.utimesSync(job.shortcut, job.mtime, job.mtime);
+  }
+}
+
+/** A bare drive ("D:") means "the current directory on drive D", not its root - so a scan starting there would
+ *  list whatever directory the app last used on that drive. Gives it its root's backslash; anything else is
+ *  returned unchanged (so this is a no-op for every path that isn't a bare Windows drive). */
+const asScanRoot = function (dirPath: string): string {
+  return /^[A-Za-z]:$/.test(dirPath) ? dirPath + '\\' : dirPath;
+}
+
+/** `dirPath` without a trailing backslash - except for a drive root ("D:\"), where that backslash is what makes
+ *  it a root rather than "the current directory on drive D". */
+const trimTrailingBackslash = function (dirPath: string): string {
+  return (dirPath.endsWith('\\') && !/^[A-Za-z]:\\$/.test(dirPath)) ? dirPath.slice(0, -1) : dirPath;
+}
+
+/** `dirPath` ending in exactly one backslash - the prefix to strip off the front of the paths found under it. */
+const asPathPrefix = function (dirPath: string): string {
+  return dirPath.endsWith('\\') ? dirPath : dirPath + '\\';
+}
+
 /** Quick recursive file count for `dirPath`, used as a fast upfront "probe" so a caller driving a progress bar
  *  off of getAllFiles/getAllFilesSet/getAllFilePathsWithStats's `onProgress` (see SCAN_PROGRESS_REPORT_INTERVAL
  *  above) can report a real "(i of N)" percentage - see parseScanItemsProgress, shared/utils - instead of just
  *  an open-ended running count. Uses `withFileTypes` (a Dirent already knows whether an entry is a directory,
- *  without a separate stat() syscall) rather than those functions' own fs.statSync-per-entry traversal, so this
- *  probe pass is meaningfully cheaper than the real scan that follows it - still a full tree walk, just a
- *  lighter one, EXCEPT for a symlink/junction entry, which still needs one real fs.statSync call: a Dirent's
- *  own isDirectory() does NOT follow links (a symlinked directory reports false), while getAllFiles/
- *  getAllFilesSet/getAllFilePathsWithStats all use fs.statSync (which DOES follow links) to decide whether to
- *  recurse - without this fallback, a symlinked subdirectory would be counted here as a single file while the
- *  real scan recurses into its full contents, undercounting the probe's total (the on-screen percentage would
- *  then reach "100%"/N-of-N well before the real scan actually finishes). Doesn't need to match those
- *  functions' exact final count otherwise (it's only ever used as a percentage denominator, and every caller
- *  forces its bar to the real 100%/next-phase boundary once its own real scan actually finishes, regardless of
- *  what this probe predicted) - so small edge-case mismatches (a file deleted between the probe and the real
- *  scan, a permission error skipped one way but not the other) are harmless. */
+ *  without a separate stat() syscall) rather than those functions' own stat-per-entry traversal, so this probe
+ *  pass is meaningfully cheaper than the real scan that follows it - still a full tree walk, just a lighter one.
+ *  A link (symbolic link or junction) counts as one item and is never looked inside, the way every scan treats it
+ *  (see statEntryOrSkip) - a Dirent's isDirectory() is false for a link. Doesn't need to match those functions'
+ *  exact final count otherwise (it's only ever used as a percentage denominator, and every caller forces its bar
+ *  to the real 100%/next-phase boundary once its own real scan actually finishes, regardless of what this probe
+ *  predicted) - so small mismatches (a file deleted between the probe and the real scan, a permission error
+ *  skipped one way but not the other, getAllFilePathsWithStats leaving links out) are harmless. */
 const countAllFilesQuick = async function (dirPath: string): Promise<number> {
   let entries: Dirent[];
   try {
@@ -92,12 +259,38 @@ const countAllFilesQuick = async function (dirPath: string): Promise<number> {
   let count = 0;
   for (const entry of entries) {
     if (process.env._stop == 'stop') { break; }
-    const entryPath = node_path_module.join(dirPath, entry.name);
-    const isDirectory = entry.isSymbolicLink() ? fs.statSync(entryPath).isDirectory() : entry.isDirectory();
-    count += isDirectory ? await countAllFilesQuick(entryPath) : 1;
+    count += entry.isDirectory() ? await countAllFilesQuick(node_path_module.join(dirPath, entry.name)) : 1;
     await holdOnIfDue();
   }
   return count;
+}
+
+/** fs.lstatSync for one entry found while scanning: a link (symbolic link or junction) is described as itself -
+ *  one entry, never followed, so a scan never lists anything outside the folder it was given. When `skipped` is
+ *  given, an entry that cannot be stat'ed (access denied) is recorded there and null is returned so the scan
+ *  carries on without it; without `skipped` the error is thrown, as scans always did. */
+const statEntryOrSkip = function (entryPath: string, skipped?: SkippedScanEntry[]): any | null {
+  try {
+    return fs.lstatSync(entryPath);
+  } catch (error) {
+    if (!skipped) { throw error; }
+    skipped.push({ path: node_path_module.normalize(entryPath), reason: scanErrorMessage(error) });
+    return null;
+  }
+}
+
+/** Runs `scan` (the recursive call for one subdirectory) and returns its result. When `skipped` is given and that
+ *  directory cannot be listed (access denied - a subdirectory's own entries are already handled by its own
+ *  scan), it is recorded there and `resultIfSkipped` (the caller's unchanged accumulator) is returned instead of
+ *  failing the whole scan; without `skipped` the error is thrown. */
+const scanSubdirectoryOrSkip = async function <T>(subdirectoryPath: string, skipped: SkippedScanEntry[] | undefined, scan: () => Promise<T>, resultIfSkipped: T): Promise<T> {
+  try {
+    return await scan();
+  } catch (error) {
+    if (!skipped) { throw error; }
+    skipped.push({ path: node_path_module.normalize(subdirectoryPath), reason: scanErrorMessage(error) });
+    return resultIfSkipped;
+  }
 }
 
 /** @return an array that contains the absolute paths of all files in "dirPath" (in a recursive fashion).
@@ -106,8 +299,13 @@ const countAllFilesQuick = async function (dirPath: string): Promise<number> {
  * @param arrayOfFiles <empty> (used internally for recursion)
  * @param onProgress optional - called with the running total of items found so far, every
  *  SCAN_PROGRESS_REPORT_INTERVAL items (see its own doc comment). Left undefined, every existing caller behaves
- *  exactly as before. */
-const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string> = [], onProgress?: (itemsFoundSoFar: number) => void): Promise<string[]> {
+ *  exactly as before.
+ * @param skipped optional - when given, an entry below `dirPath` that cannot be read (see statEntryOrSkip and the
+ *  recursive readdir below) is recorded here and left out instead of failing the whole scan; `dirPath` itself
+ *  must still be readable. Left undefined, the first unreadable entry throws, as it always did.
+ *  A link (symbolic link or junction) below `dirPath` is listed as one entry, like a file, and never looked inside
+ *  - so nothing outside `dirPath` is listed. */
+const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string> = [], onProgress?: (itemsFoundSoFar: number) => void, skipped?: SkippedScanEntry[]): Promise<string[]> {
   let files: Array<string> = fs.readdirSync(dirPath)
 
   arrayOfFiles = arrayOfFiles || []
@@ -117,8 +315,13 @@ const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string>
     for (let i = 0; i < files.length; i++) {
       if(process.env._stop == 'stop'){break;}
       file = files[i];
-      if (fs.statSync(dirPath + "/" + file).isDirectory()) {
-        arrayOfFiles = await getAllFiles(dirPath + "/" + file, arrayOfFiles, onProgress)
+      const entryStats = statEntryOrSkip(dirPath + "/" + file, skipped);
+      if (entryStats === null) {
+        await holdOnIfDue();
+        continue;
+      }
+      if (entryStats.isDirectory()) {
+        arrayOfFiles = await scanSubdirectoryOrSkip(dirPath + "/" + file, skipped, () => getAllFiles(dirPath + "/" + file, arrayOfFiles, onProgress, skipped), arrayOfFiles)
       } else {
         arrayOfFiles.push(node_path_module.join(dirPath, "/", file))
         //print_line(arrayOfFiles.length + "")
@@ -274,8 +477,9 @@ const assertValidSessionId = function (sessionId: string): void {
 /** True if `entryPath` is safe for clearTempDataDirectory to delete, given ownership of its containing temp
  *  directory has already been established (ensureTempDataDirectoryIsAppOwned): a symlink/junction (always
  *  safe - deleting it only ever removes the link entry itself, never follows it into whatever it points to);
- *  a file whose name matches PART_FILE_PATTERN or IBB_PROJECT_FILE_PATTERN; or a directory all of whose
- *  contents, recursively, are themselves safe by this same rule.
+ *  a file whose name matches PART_FILE_PATTERN or IBB_PROJECT_FILE_PATTERN, or a shortcut (".lnk" - how a link is
+ *  burned, see LINK_SHORTCUT_EXTENSION); or a directory all of whose contents, recursively, are themselves safe
+ *  by this same rule.
  *
  *  This exists on top of the ownership guarantee, not instead of it: ownership proves the directory *started*
  *  out empty, but nothing about that guarantee stops something unexpected from having been written into it
@@ -305,7 +509,8 @@ const isRecognizedTempContent = function (entryPath: string, isSymlink: boolean)
     return children.every((child) => isRecognizedTempContent(node_path_module.join(entryPath, child.name), child.isSymbolicLink()));
   }
   const baseName = node_path_module.basename(entryPath);
-  return PART_FILE_PATTERN.test(baseName) || IBB_PROJECT_FILE_PATTERN.test(baseName);
+  return PART_FILE_PATTERN.test(baseName) || IBB_PROJECT_FILE_PATTERN.test(baseName)
+    || baseName.toLowerCase().endsWith(LINK_SHORTCUT_EXTENSION);
 }
 
 /** Fallback used only for the cache/temp directory name when it is missing from config.json - this is what
@@ -352,9 +557,10 @@ const CACHE_DIRECTORY_OWNERSHIP_MARKER_FILENAME = '.this-directory-was-created-b
 /** Builds the exact marker file content for `tempDataDirectoryPath` - a small JSON payload whose resolvedPath
  *  field is checked against the CURRENT resolution on every ownership check (verifyOwnershipMarker), not just
  *  the marker file's mere presence. This closes the gap a presence-only check would have: a file that merely
- *  happens to share the marker's name (e.g. manually copied over from a different temp directory, or left
- *  behind after this exact folder was renamed/moved outside of the app) would otherwise be trusted as proof
- *  of ownership even though it does not actually correspond to this directory. */
+ *  happens to share the marker's name (e.g. manually copied over from a different temp directory) would
+ *  otherwise be trusted as proof of ownership even though it does not actually correspond to this directory.
+ *  A marker whose recorded path is stale because the whole app folder was copied or moved is handled
+ *  separately - see adoptRelocatedTempDirectory. */
 const buildOwnershipMarkerContent = function (tempDataDirectoryPath: string): string {
   return JSON.stringify({
     _comment: 'This directory was created by, and is owned by, the backup app as a temp/cache scratch space ' +
@@ -382,6 +588,56 @@ const verifyOwnershipMarker = function (tempDataDirectoryPath: string): boolean 
   }
 }
 
+/** The path recorded inside `tempDataDirectoryPath`'s ownership marker, or null if there is no usable marker
+ *  (missing, a symlink/junction, unparseable, or not in the shape buildOwnershipMarkerContent writes). */
+const readOwnershipMarkerRecordedPath = function (tempDataDirectoryPath: string): string | null {
+  const markerPath = node_path_module.join(tempDataDirectoryPath, CACHE_DIRECTORY_OWNERSHIP_MARKER_FILENAME);
+  try {
+    if (fs.lstatSync(markerPath).isSymbolicLink()) {
+      return null;
+    }
+    const parsed = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    return (parsed && typeof parsed.resolvedPath === 'string') ? parsed.resolvedPath : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/** Handles a temp directory whose ownership marker is genuine but records a different absolute path than the
+ *  directory now resolves to - what happens when the whole app folder is copied or moved after it has run once,
+ *  since the temp directory (by default appData\tempFilesCanBeDeleted) travels along with it. The app has to keep
+ *  working wherever its folder ends up, so rather than treating that as "not created by this app" it re-registers
+ *  the directory at its new location - but ONLY if everything in it is recognizably this app's own scratch output
+ *  (isRecognizedTempContent, and no symlinks at the top level), so a marker that was merely copied into a
+ *  directory holding real content still fails the ownership check. Returns true (after rewriting the marker with
+ *  the current path) if the directory was adopted, false if it must be refused. */
+const adoptRelocatedTempDirectory = function (tempDataDirectoryPath: string): boolean {
+  if (readOwnershipMarkerRecordedPath(tempDataDirectoryPath) === null) {
+    return false;
+  }
+  let entries: Dirent[];
+  try {
+    entries = fs.readdirSync(tempDataDirectoryPath, { withFileTypes: true });
+  } catch (error) {
+    return false;
+  }
+  const onlyContainsThisAppsOwnContent = entries
+    .filter((e: Dirent) => e.name !== CACHE_DIRECTORY_OWNERSHIP_MARKER_FILENAME)
+    .every((e: Dirent) => !e.isSymbolicLink() && isRecognizedTempContent(node_path_module.join(tempDataDirectoryPath, e.name), false));
+  if (!onlyContainsThisAppsOwnContent) {
+    return false;
+  }
+  try {
+    fs.writeFileSync(
+      node_path_module.join(tempDataDirectoryPath, CACHE_DIRECTORY_OWNERSHIP_MARKER_FILENAME),
+      buildOwnershipMarkerContent(tempDataDirectoryPath)
+    );
+  } catch (error) {
+    return false;
+  }
+  return true;
+}
+
 /** Ensures the configured cache/temp directory (resolveTempDataDirectoryPath) both exists AND was created by
  *  this app itself - never a pre-existing directory config.json's cacheDataDirectoryPath merely happens to
  *  point at. This is the precondition every other piece of temp-directory logic in this file relies on
@@ -396,6 +652,9 @@ const verifyOwnershipMarker = function (tempDataDirectoryPath: string): boolean 
  *  - Directory exists and contains the marker file: this app created it (in this run or an earlier one) - the
  *    marker file's presence is the only thing checked, so this remains true across restarts and after
  *    clearTempDataDirectory has emptied it (which preserves the marker). Succeeds without touching anything.
+ *  - Directory exists with a marker that records a different path (the app folder was copied or moved): adopted
+ *    - the marker is rewritten with the current path - if everything in it is recognizably this app's own
+ *    scratch output; otherwise refused like the next case (see adoptRelocatedTempDirectory).
  *  - Directory exists WITHOUT the marker file: some other, pre-existing directory (could be empty, could be
  *    the user's Documents folder) - fails without creating or touching anything, so the caller can refuse to
  *    use it rather than risk writing to or ever clearing something that wasn't created empty by this app.
@@ -426,7 +685,7 @@ const ensureTempDataDirectoryIsAppOwned = async function (): Promise<{ ok: boole
     return { ok: false, path: tempDataDirectoryPath, message: 'The configured temp/cache directory path already exists but is a file, not a directory: "' + tempDataDirectoryPath + '".' };
   }
 
-  if (!verifyOwnershipMarker(tempDataDirectoryPath)) {
+  if (!verifyOwnershipMarker(tempDataDirectoryPath) && !adoptRelocatedTempDirectory(tempDataDirectoryPath)) {
     return {
       ok: false,
       path: tempDataDirectoryPath,
@@ -603,30 +862,31 @@ const getTempDataDirectoryPath = async function (): Promise<string> {
  *  `message` - the caller uses this to show the user exactly what was deleted, not just a count. `cleared` is
  *  true only when EVERY clearable entry was actually removed - the caller only shows `message` in a dialog when
  *  `cleared` is false, so a partial run (some entries deleted, others skipped or failed) must also report
- *  `cleared: false`, or its `message` (which does describe exactly what went wrong) would never reach the user. */
-const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, message: string, deletedItems: string[] }> {
+ *  `cleared: false`, or its `message` (a summary) would never reach the user. `notClearedItems` lists every entry
+ *  that was not cleared, one "<full path>  -  <reason>" line each, for the caller to show as a scrollable list. */
+const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, message: string, deletedItems: string[], notClearedItems: string[] }> {
   const ownership = await ensureTempDataDirectoryIsAppOwned();
   if (!ownership.ok) {
-    return { cleared: false, message: 'Refusing to clear: ' + ownership.message, deletedItems: [] };
+    return { cleared: false, message: 'Refusing to clear: ' + ownership.message, deletedItems: [], notClearedItems: [] };
   }
   const tempDataDirectoryPath = ownership.path;
 
   if (!fs.existsSync(tempDataDirectoryPath)) {
-    return { cleared: true, message: 'The temp directory did not exist; nothing to clear.', deletedItems: [] };
+    return { cleared: true, message: 'The temp directory did not exist; nothing to clear.', deletedItems: [], notClearedItems: [] };
   }
 
   let realTempDataDirectoryPath: string;
   try {
     realTempDataDirectoryPath = fs.realpathSync(tempDataDirectoryPath);
   } catch (error) {
-    return { cleared: false, message: 'Failed to resolve the real path of the temp directory: ' + (error && (error as any).message ? (error as any).message : String(error)), deletedItems: [] };
+    return { cleared: false, message: 'Failed to resolve the real path of the temp directory: ' + (error && (error as any).message ? (error as any).message : String(error)), deletedItems: [], notClearedItems: [] };
   }
 
   let entries: Array<{ name: string, isSymbolicLink: () => boolean }>;
   try {
     entries = fs.readdirSync(tempDataDirectoryPath, { withFileTypes: true });
   } catch (error) {
-    return { cleared: false, message: 'Failed to list the contents of the temp directory: ' + (error && (error as any).message ? (error as any).message : String(error)), deletedItems: [] };
+    return { cleared: false, message: 'Failed to list the contents of the temp directory: ' + (error && (error as any).message ? (error as any).message : String(error)), deletedItems: [], notClearedItems: [] };
   }
 
   // Excludes the ownership marker file, which is always present once the directory has been used and is
@@ -638,10 +898,10 @@ const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, me
   // Names of the entries actually removed below, in the order they were removed - reported back to the caller
   // so it can show the user exactly what was deleted (as opposed to `message`, which is just a summary).
   const deletedItems: string[] = [];
-  // One human-readable sentence per entry that did NOT end up cleared (skipped for safety, or an actual delete
-  // failure) - folded into `message` below so the caller's dialog can say exactly what didn't clear and why,
-  // not just report a bare count.
-  const unclearedEntryMessages: string[] = [];
+  // One "<full path>  -  <reason>" line per entry that did NOT end up cleared (skipped for safety, or an actual
+  // delete failure) - returned as notClearedItems so the caller's dialog can list exactly what didn't clear and
+  // why, not just report a bare count.
+  const notClearedItems: string[] = [];
 
   for (const entry of entries) {
     if (entry.name === CACHE_DIRECTORY_OWNERSHIP_MARKER_FILENAME) {
@@ -659,11 +919,11 @@ const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, me
       try {
         const entryRealPath = fs.realpathSync(entryPath);
         if (!isPathStrictlyInside(entryRealPath, realTempDataDirectoryPath)) {
-          unclearedEntryMessages.push(`"${entry.name}" was skipped: it does not resolve to a location inside the temp directory.`);
+          notClearedItems.push(`${entryPath}  -  skipped: it does not resolve to a location inside the temp directory`);
           continue;
         }
       } catch (error) {
-        unclearedEntryMessages.push(`"${entry.name}" was skipped: could not resolve its real path (${error && (error as any).message ? (error as any).message : String(error)}).`);
+        notClearedItems.push(`${entryPath}  -  skipped: could not resolve its real path (${error && (error as any).message ? (error as any).message : String(error)})`);
         continue;
       }
     }
@@ -671,7 +931,7 @@ const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, me
     // entry never touches whatever it points to, regardless of the `recursive` option.
 
     if (!isRecognizedTempContent(entryPath, entry.isSymbolicLink())) {
-      unclearedEntryMessages.push(`"${entry.name}" was skipped: it does not look like this app's own temp/cache content (only .partNNN split files, .ibb project files, and directories containing exclusively such files are deleted).`);
+      notClearedItems.push(`${entryPath}  -  skipped: it does not look like this app's own temp/cache content`);
       continue;
     }
 
@@ -680,15 +940,16 @@ const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, me
       deletedCount++;
       deletedItems.push(entry.name);
     } catch (error) {
-      unclearedEntryMessages.push(`"${entry.name}" could not be deleted: ${error && (error as any).message ? (error as any).message : String(error)}.`);
+      notClearedItems.push(`${entryPath}  -  could not be deleted: ${error && (error as any).message ? (error as any).message : String(error)}`);
     }
   }
 
-  if (unclearedEntryMessages.length === 0) {
+  if (notClearedItems.length === 0) {
     return {
       cleared: true,
       message: clearableEntryCount === 0 ? 'The temp directory was already empty.' : `The temp directory has been cleared (${deletedCount} item(s) removed).`,
-      deletedItems
+      deletedItems,
+      notClearedItems
     };
   }
   // Some entries were skipped or failed to delete: `cleared: false` even though deletedCount may be > 0 - this
@@ -696,8 +957,10 @@ const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, me
   // false) to actually surface which entries didn't clear and why, instead of that detail being silently lost.
   return {
     cleared: false,
-    message: `Cleared ${deletedCount} of ${clearableEntryCount} item(s) from the temp directory. ` + unclearedEntryMessages.join(' '),
-    deletedItems
+    message: `Cleared ${deletedCount} of ${clearableEntryCount} item(s) from the temp directory. The ones listed below were ` +
+      `not cleared (only .partNNN split files, .ibb project files, and folders containing only such files are ever deleted).`,
+    deletedItems,
+    notClearedItems
   };
 }
 
@@ -788,13 +1051,19 @@ const writeJSONtoDisk = async function(path: string, json:Object): Promise<void>
       }
     }
    ]
- * @param dirPath the directory for which you want to list the files. 
- * @param arrayOfFiles <empty> (used internally for recursion) */
+ * This is the scan behind every disc: planning a backup to optical media, the source scan of "Add missing files",
+ * and reading a disc back. A link (symbolic link or junction) is never followed: a disc cannot hold a link, and what
+ * one points to is outside the folder being backed up - so it is listed as the Windows shortcut it will be burned
+ * as, "<link path>.lnk", with `linkTarget` (see linkAsShortcutEntry).
+ * @param dirPath the directory for which you want to list the files.
+ * @param arrayOfFiles <empty> (used internally for recursion)
+ * @param skipped optional - see the identical parameter of getAllFiles. A link that cannot be backed up as a shortcut is recorded here too. */
 const getAllFilePathsWithStats = async function (
   dirPath: string,
-  arrayOfFiles: Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}> = [],
-  onProgress?: (itemsFoundSoFar: number) => void
-): Promise<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}>> {
+  arrayOfFiles: Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean, "linkTarget"?: string}}> = [],
+  onProgress?: (itemsFoundSoFar: number) => void,
+  skipped?: SkippedScanEntry[]
+): Promise<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean, "linkTarget"?: string}}>> {
 
   // This resets the stop signal in case the user canceled the operation previously.
   process.env._stop = 'NoStop'
@@ -810,9 +1079,19 @@ const getAllFilePathsWithStats = async function (
       // One statSync call, reused for isDirectory/size/mtime below - this used to be 4 separate statSync calls
       // on the exact same path (one per property read, plus the isDirectory check above), each a real syscall
       // re-fetching data the first call already had.
-      const entryStats = fs.statSync(dirPath + "/" + file);
-      if (entryStats.isDirectory()) {
-        arrayOfFiles = await getAllFilePathsWithStats(dirPath + "/" + file, arrayOfFiles, onProgress)
+      const entryStats = statEntryOrSkip(dirPath + "/" + file, skipped);
+      if (entryStats === null) {
+        await holdOnIfDue();
+        continue;
+      }
+      if (entryStats.isSymbolicLink()) {
+        const shortcutEntry = linkAsShortcutEntry(node_path_module.join(dirPath, "/", file), entryStats, skipped);
+        if (shortcutEntry) {
+          arrayOfFiles.push(shortcutEntry);
+          if (onProgress && arrayOfFiles.length % SCAN_PROGRESS_REPORT_INTERVAL === 0) { onProgress(arrayOfFiles.length); }
+        }
+      } else if (entryStats.isDirectory()) {
+        arrayOfFiles = await scanSubdirectoryOrSkip(dirPath + "/" + file, skipped, () => getAllFilePathsWithStats(dirPath + "/" + file, arrayOfFiles, onProgress, skipped), arrayOfFiles)
       } else {
         arrayOfFiles.push({"path": node_path_module.join(dirPath, "/", file), "stats": {
           "size": entryStats.size,
@@ -824,13 +1103,22 @@ const getAllFilePathsWithStats = async function (
       await holdOnIfDue();
     }
   } else {
-    // Empty directory - same one-statSync-call reuse as above.
-    const dirStats = fs.statSync(dirPath + "/");
-    arrayOfFiles.push({"path": node_path_module.join(dirPath, "/"), "stats": {
-          "size": dirStats.size,
-          "mtime": dirStats.mtime,
-          "isDirectory": dirStats.isDirectory()
-        }})
+    // Empty directory. fs.statSync on the directory itself (not statEntryOrSkip's lstat): this is the folder being
+    // listed, which is only ever a link when it is the folder the scan was started on - and then it is followed.
+    let dirStats: any = null;
+    try {
+      dirStats = fs.statSync(dirPath);
+    } catch (error) {
+      if (!skipped) { throw error; }
+      skipped.push({ path: node_path_module.normalize(dirPath), reason: scanErrorMessage(error) });
+    }
+    if (dirStats !== null) {
+      arrayOfFiles.push({"path": node_path_module.join(dirPath, "/"), "stats": {
+            "size": dirStats.size,
+            "mtime": dirStats.mtime,
+            "isDirectory": dirStats.isDirectory()
+          }})
+    }
   }
 
   return arrayOfFiles
@@ -946,7 +1234,7 @@ const partitionArrayBasedOnFilter = <T,>(
  *  disc it fills (not per file - packing potentially hundreds of thousands of files into a couple dozen discs
  *  is already coarse-grained at that level, so there's no need for a separate throttling interval the way the
  *  per-item scan/hash loops elsewhere need one). Left undefined, behaves exactly as before (no probing overhead). */
-const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, splitLargeFiles:boolean=false, sessionId: string, filesMetadata?:filesMetadata[], onProgress?: (line: string) => void): Promise<ColdStorageMetadata>{
+const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, splitLargeFiles:boolean=false, sessionId: string, filesMetadata?:filesMetadata[], onProgress?: (line: string) => void, skipUnreadable: boolean = false): Promise<ColdStorageMetadata>{
   assertValidSessionId(sessionId);
   process.env._stop="NoStop";
 
@@ -963,24 +1251,44 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
   }
   const tempDataDirectoryPath = ownership.path;
 
-  if(dirPath.slice(-1) == '\\'){
-    dirPath = dirPath.slice(0, -1);
-  }
+  // No trailing backslash - except on a drive root ("D:\"), which needs it (see trimTrailingBackslash).
+  dirPath = asScanRoot(trimTrailingBackslash(dirPath));
 
   // Skips the scan entirely when filesMetadata is given (its result would just be thrown away below) - this
   // used to run unconditionally, silently wasting however long a full scan of dirPath took even when the
   // caller already had every path/stat it needed (e.g. add-missing-files-to-optical-media-cold-storage's own
   // partition() call, which always supplies filesMetadata).
   let filePathsAndStats: Awaited<ReturnType<typeof getAllFilePathsWithStats>>;
+  // Only a scan that was asked to (the caller's backup source - see the request's skipUnreadable) leaves out
+  // entries it cannot read, and it then tells the user which ones - along with the links it leaves out.
+  let skipped: SkippedScanEntry[] | undefined = undefined;
   if (filesMetadata !== undefined) {
     filePathsAndStats = filesMetadata;
   } else {
     let scanProbedTotal = 0;
     if (onProgress) { scanProbedTotal = await countAllFilesQuick(dirPath); }
+    skipped = skipUnreadable ? [] : undefined;
     filePathsAndStats = await getAllFilePathsWithStats(dirPath, [], onProgress
       ? (count) => onProgress(`Scanning items (${Math.min(count, scanProbedTotal)} of ${scanProbedTotal})`)
-      : undefined)
+      : undefined, skipped)
   }
+
+  // Without splitting, every file too large for a single disc is reported at once - all of them, not just the first
+  // one the packing loop below would stop at - so the user sees the full list of what "split the large files"
+  // would apply to (too_large_files: full paths and sizes). Same >= threshold as that loop's own check.
+  if (!splitLargeFiles) {
+    const tooLargeFiles = filePathsAndStats.filter((item) => item.stats.size >= mediaCapacityInBytes);
+    if (tooLargeFiles.length > 0) {
+      throw {
+        msg: `${tooLargeFiles.length} file(s) are too large to be contained on any single optical disk, e.g. ${tooLargeFiles[0].path}`,
+        err_code: 'FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC',
+        too_large_files: tooLargeFiles.map((item) => ({ path: item.path, size: item.stats.size }))
+      };
+    }
+  }
+  // Reported only once the plan goes ahead: when it stops above, the wizard asks about splitting and plans again,
+  // and this list would otherwise be shown a second time.
+  if (skipped) { reportSkippedScanEntries(skipped); }
 
   let largeFilePathsAndStats: typeof filePathsAndStats = [];
   let Gb = Math.pow(1024, 3); // Windows style Gb
@@ -1084,7 +1392,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
     let largeFilePathsAndStats_: typeof filePathsAndStats = [];
     for (const itm of largeFilePathsAndStats) {
       const fileName = itm.path.split('\\').slice(-1)[0];
-      const pathToLargeFileRelativeToOpticalMediumRoot = itm.path.replace(dirPath + "\\", "");
+      const pathToLargeFileRelativeToOpticalMediumRoot = itm.path.replace(asPathPrefix(dirPath), "");
       const relativeDirOfLargeFile = pathToLargeFileRelativeToOpticalMediumRoot.split("\\").slice(0, -1).join("\\");
       // Predicted under this job's own session subfolder (see SESSION_FOLDER_NAME_PATTERN's own comment) -
       // never directly under tempDataDirectoryPath itself, so a different job's real split partials (past or
@@ -1187,6 +1495,8 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
  *     splitting, so its stats were already correct.
  *   - An already-created split partial (exists under the temp directory from an earlier call): also just a
  *     pass-through.
+ *   - A link's shortcut ("<link path>.lnk" - see linkAsShortcutEntry): created in the temp directory, pointing
+ *     where the link points, the first time it is asked for; returned with its `linkTarget`.
  *   - A predicted-but-not-yet-real split partial (matches PART_FILE_PATTERN, exists under neither): reconstructs
  *     the original file's real path by stripping the ".part.NNN" suffix, runs the real 7-Zip split for that
  *     original file if not already done (idempotent - same "does a part file already exist" check
@@ -1221,7 +1531,7 @@ const createOpticalMediaDiscPartials = async function (dirPath: string, paths: A
   // This job's own session subfolder (see SESSION_FOLDER_NAME_PATTERN's own comment) - never the temp
   // directory's root directly, so this job's real split partials can never collide with a different job's.
   const tempDataDirectoryPath = node_path_module.join(ownership.path, sessionId);
-  if (dirPath.slice(-1) == '\\') { dirPath = dirPath.slice(0, -1); }
+  dirPath = asScanRoot(trimTrailingBackslash(dirPath));
 
   const config = await readConfig();
   const _7zipExecutablePath = config._7zipExecutablePath;
@@ -1230,6 +1540,23 @@ const createOpticalMediaDiscPartials = async function (dirPath: string, paths: A
   // file only checks/splits it once, and so the surplus-partial check below only ever runs once per file too.
   const alreadyProcessedOriginalFiles = new Set<string>();
   const surplusPartials: filesMetadata[] = [];
+
+  // A link is burned as a Windows shortcut (see LINK_SHORTCUT_EXTENSION): create, in one go, every shortcut these
+  // paths need that does not exist yet - in this job's session folder, like split partials, so nothing is ever
+  // written into the source. `linkTargets` also marks those entries in the results below.
+  const linkTargets = new Map<string, string>();
+  const shortcutJobs: Array<{ shortcut: string, target: string, mtime: Date }> = [];
+  for (const relPath of paths) {
+    const link = linkBehindShortcutPath(node_path_module.join(dirPath, relPath));
+    if (link === null) { continue; }
+    linkTargets.set(relPath, link.target);
+    const shortcut = node_path_module.join(tempDataDirectoryPath, relPath);
+    if (!fs.existsSync(shortcut)) {
+      fs.mkdirSync(node_path_module.dirname(shortcut), { recursive: true });
+      shortcutJobs.push({ shortcut, target: link.target, mtime: link.mtime });
+    }
+  }
+  await createShortcutFiles(shortcutJobs);
 
   const results: filesMetadata[] = [];
   for (const relPath of paths) {
@@ -1244,9 +1571,10 @@ const createOpticalMediaDiscPartials = async function (dirPath: string, paths: A
 
     const tempAbsolutePath = node_path_module.join(tempDataDirectoryPath, relPath);
     if (fs.existsSync(tempAbsolutePath)) {
-      // Already created (this call or an earlier one).
+      // Already created (this call or an earlier one) - a split partial, or a link's shortcut.
       const s = fs.statSync(tempAbsolutePath);
-      results.push({ path: relPath, stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
+      const linkTarget = linkTargets.get(relPath);
+      results.push({ path: relPath, stats: { size: s.size, mtime: s.mtime, isDirectory: false, ...(linkTarget !== undefined ? { linkTarget } : {}) } });
       continue;
     }
 
@@ -1361,7 +1689,7 @@ const computeSha256ForBackedUpFiles = async function (dirPath: string, paths: Ar
     throw new Error(ownership.message);
   }
   const tempDataDirectoryPath = node_path_module.join(ownership.path, sessionId);
-  if (dirPath.slice(-1) == '\\') { dirPath = dirPath.slice(0, -1); }
+  dirPath = asScanRoot(trimTrailingBackslash(dirPath));
 
   const results: Array<{ path: string, sha256: string }> = [];
   for (let i = 0; i < paths.length; i++) {
@@ -1434,26 +1762,27 @@ const verifyFileHashes = async function (files: Array<{ absolutePath: string, ex
  *  realpath-inside-temp-dir containment check, isRecognizedTempContent) rather than introducing a separate,
  *  less-safe deletion path - this is effectively clearTempDataDirectory's own per-entry deletion loop, scoped to
  *  a caller-supplied allowlist of exact paths instead of "every recognized entry in the directory". Returns the
- *  same {cleared, message, deletedItems} shape as clearTempDataDirectory for UI consistency.
+ *  same {cleared, message, deletedItems, notClearedItems} shape as clearTempDataDirectory for UI consistency.
  *
  *  Deliberately does not also try to remove now-empty parent subdirectories left behind - clearTempDataDirectory
  *  doesn't do that either, and correctly telling "empty of everything" apart from "empty of THIS disc's partials
  *  but still holding another, not-yet-confirmed disc's partials" adds real risk for cosmetic benefit; leftover
  *  empty subdirectories are harmless and are cleaned up whenever clearTempDataDirectory next runs. */
-const deletePartialsForDisc = async function (partialAbsolutePaths: Array<string>): Promise<{ cleared: boolean, message: string, deletedItems: string[] }> {
+const deletePartialsForDisc = async function (partialAbsolutePaths: Array<string>): Promise<{ cleared: boolean, message: string, deletedItems: string[], notClearedItems: string[] }> {
   const ownership = await ensureTempDataDirectoryIsAppOwned();
   if (!ownership.ok) {
-    return { cleared: false, message: 'Refusing to delete: ' + ownership.message, deletedItems: [] };
+    return { cleared: false, message: 'Refusing to delete: ' + ownership.message, deletedItems: [], notClearedItems: [] };
   }
   let realTempDataDirectoryPath: string;
   try {
     realTempDataDirectoryPath = fs.realpathSync(ownership.path);
   } catch (error) {
-    return { cleared: false, message: 'Failed to resolve the real path of the temp directory: ' + (error && (error as any).message ? (error as any).message : String(error)), deletedItems: [] };
+    return { cleared: false, message: 'Failed to resolve the real path of the temp directory: ' + (error && (error as any).message ? (error as any).message : String(error)), deletedItems: [], notClearedItems: [] };
   }
 
   const deletedItems: string[] = [];
-  const problems: string[] = [];
+  // One "<full path>  -  <reason>" line per partial that was not deleted - see clearTempDataDirectory's notClearedItems.
+  const notClearedItems: string[] = [];
   for (const entryPath of partialAbsolutePaths) {
     if (!fs.existsSync(entryPath)) {
       // Already gone - idempotent, not a problem (e.g. a previous, partially-failed confirm already removed it).
@@ -1463,33 +1792,33 @@ const deletePartialsForDisc = async function (partialAbsolutePaths: Array<string
     try {
       entryRealPath = fs.realpathSync(entryPath);
     } catch (error) {
-      problems.push(`"${entryPath}" was skipped: could not resolve its real path.`);
+      notClearedItems.push(`${entryPath}  -  skipped: could not resolve its real path`);
       continue;
     }
     if (!isPathStrictlyInside(entryRealPath, realTempDataDirectoryPath)) {
-      problems.push(`"${entryPath}" was skipped: it does not resolve to a location inside the temp directory.`);
+      notClearedItems.push(`${entryPath}  -  skipped: it does not resolve to a location inside the temp directory`);
       continue;
     }
     if (!isRecognizedTempContent(entryPath, false)) {
-      problems.push(`"${entryPath}" was skipped: it does not look like this app's own temp/cache content.`);
+      notClearedItems.push(`${entryPath}  -  skipped: it does not look like this app's own temp/cache content`);
       continue;
     }
     try {
       fs.rmSync(entryPath, { force: true });
       deletedItems.push(entryPath);
     } catch (error) {
-      problems.push(`"${entryPath}" could not be deleted: ${error && (error as any).message ? (error as any).message : String(error)}.`);
+      notClearedItems.push(`${entryPath}  -  could not be deleted: ${error && (error as any).message ? (error as any).message : String(error)}`);
     }
   }
 
-  if (problems.length === 0) {
-    return { cleared: true, message: `Removed ${deletedItems.length} item(s) for this disc.`, deletedItems };
+  if (notClearedItems.length === 0) {
+    return { cleared: true, message: `Removed ${deletedItems.length} item(s) for this disc.`, deletedItems, notClearedItems };
   }
   // false for any partial run, even if some items DID delete successfully - same fix as
-  // clearTempDataDirectory's own identical `cleared` flag (see its doc comment): the caller only shows
-  // `message`'s actual problem detail when `cleared` is false, so a partial failure here must report `cleared:
-  // false` too, or the fact that this disc's temp cleanup didn't fully succeed would be silently lost.
-  return { cleared: false, message: `Removed ${deletedItems.length} of ${partialAbsolutePaths.length} item(s). ` + problems.join(' '), deletedItems };
+  // clearTempDataDirectory's own identical `cleared` flag (see its doc comment): the caller only reports a problem
+  // when `cleared` is false, so a partial failure here must report `cleared: false` too, or the fact that this
+  // disc's temp cleanup didn't fully succeed would be silently lost.
+  return { cleared: false, message: `Removed ${deletedItems.length} of ${partialAbsolutePaths.length} item(s).`, deletedItems, notClearedItems };
 }
 
 /** Deletes exactly the given real, absolute paths of recovered files that FAILED SHA-256 verification after a
@@ -1505,15 +1834,16 @@ const deletePartialsForDisc = async function (partialAbsolutePaths: Array<string
  *  something it points to elsewhere). A path that no longer exists is treated as already gone, not a problem
  *  (idempotent - e.g. it belonged to a .part.NNN group that the optional reassembly step, which runs before
  *  this, already merged and cleaned up). */
-const deleteRecoveredFailedFiles = async function (failedAbsolutePaths: Array<string>, targetDirectory: string): Promise<{ cleared: boolean, message: string, deletedItems: string[] }> {
+const deleteRecoveredFailedFiles = async function (failedAbsolutePaths: Array<string>, targetDirectory: string): Promise<{ cleared: boolean, message: string, deletedItems: string[], notClearedItems: string[] }> {
   let realTargetDirectory: string;
   try {
     realTargetDirectory = fs.realpathSync(targetDirectory);
   } catch (error) {
-    return { cleared: false, message: 'Refusing to delete: could not resolve the real path of the recovery target directory: ' + (error && (error as any).message ? (error as any).message : String(error)), deletedItems: [] };
+    return { cleared: false, message: 'Refusing to delete: could not resolve the real path of the recovery target directory: ' + (error && (error as any).message ? (error as any).message : String(error)), deletedItems: [], notClearedItems: [] };
   }
 
   const deletedItems: string[] = [];
+  // One "<full path>  -  <reason>" line per file that was not deleted - see clearTempDataDirectory's notClearedItems.
   const problems: string[] = [];
   for (const entryPath of failedAbsolutePaths) {
     if (!fs.existsSync(entryPath)) {
@@ -1527,31 +1857,31 @@ const deleteRecoveredFailedFiles = async function (failedAbsolutePaths: Array<st
       // resolved through to whatever it points at.
       stats = fs.lstatSync(entryPath);
     } catch (error) {
-      problems.push(`"${entryPath}" was skipped: could not resolve its real path.`);
+      problems.push(`${entryPath}  -  skipped: could not resolve its real path`);
       continue;
     }
     if (!isPathStrictlyInside(entryRealPath, realTargetDirectory)) {
-      problems.push(`"${entryPath}" was skipped: it does not resolve to a location inside the recovery target directory.`);
+      problems.push(`${entryPath}  -  skipped: it does not resolve to a location inside the recovery target directory`);
       continue;
     }
     if (!stats.isFile()) {
-      problems.push(`"${entryPath}" was skipped: it is not a regular file (directories and symbolic links are never deleted by this feature).`);
+      problems.push(`${entryPath}  -  skipped: it is not a regular file (directories and symbolic links are never deleted by this feature)`);
       continue;
     }
     try {
       fs.unlinkSync(entryPath);
       deletedItems.push(entryPath);
     } catch (error) {
-      problems.push(`"${entryPath}" could not be deleted: ${error && (error as any).message ? (error as any).message : String(error)}.`);
+      problems.push(`${entryPath}  -  could not be deleted: ${error && (error as any).message ? (error as any).message : String(error)}`);
     }
   }
 
   if (problems.length === 0) {
-    return { cleared: true, message: `Deleted ${deletedItems.length} file(s) which failed integrity verification.`, deletedItems };
+    return { cleared: true, message: `Deleted ${deletedItems.length} file(s) which failed integrity verification.`, deletedItems, notClearedItems: problems };
   }
   // false for any partial run, even if some items DID delete successfully - same reasoning as
   // deletePartialsForDisc/clearTempDataDirectory's own identical `cleared` flag.
-  return { cleared: false, message: `Deleted ${deletedItems.length} of ${failedAbsolutePaths.length} file(s). ` + problems.join(' '), deletedItems };
+  return { cleared: false, message: `Deleted ${deletedItems.length} of ${failedAbsolutePaths.length} file(s); the ones listed below were not deleted.`, deletedItems, notClearedItems: problems };
 }
 
 
@@ -1561,8 +1891,9 @@ const deleteRecoveredFailedFiles = async function (failedAbsolutePaths: Array<st
  * @param arrayOfFiles <empty> (used internally for recursion) */
 /** Same recursive scan as getAllFiles, into a Set instead of an Array (see diff's own use of both - the target
  *  side only ever needs membership checks). `onProgress` follows the same "every SCAN_PROGRESS_REPORT_INTERVAL
- *  items" convention. */
-const getAllFilesSet = async function (dirPath: string, arrayOfFiles: Set<string> = new Set<string>(), onProgress?: (itemsFoundSoFar: number) => void): Promise<Set<string>> {
+ *  items" convention. `skipped` is the same optional parameter as getAllFiles's. */
+/** getAllFiles, collected into a Set - see getAllFiles for the parameters. */
+const getAllFilesSet = async function (dirPath: string, arrayOfFiles: Set<string> = new Set<string>(), onProgress?: (itemsFoundSoFar: number) => void, skipped?: SkippedScanEntry[]): Promise<Set<string>> {
   let files: Array<string> = fs.readdirSync(dirPath)
 
   if (files.length > 0) {
@@ -1570,8 +1901,13 @@ const getAllFilesSet = async function (dirPath: string, arrayOfFiles: Set<string
     for (let i = 0; i < files.length; i++) {
       if(process.env._stop == 'stop'){break;}
       file = files[i];
-      if (fs.statSync(dirPath + "/" + file).isDirectory()) {
-        arrayOfFiles = await getAllFilesSet(dirPath + "/" + file, arrayOfFiles, onProgress)
+      const entryStats = statEntryOrSkip(dirPath + "/" + file, skipped);
+      if (entryStats === null) {
+        await holdOnIfDue();
+        continue;
+      }
+      if (entryStats.isDirectory()) {
+        arrayOfFiles = await scanSubdirectoryOrSkip(dirPath + "/" + file, skipped, () => getAllFilesSet(dirPath + "/" + file, arrayOfFiles, onProgress, skipped), arrayOfFiles)
       } else {
         arrayOfFiles.add(node_path_module.join(dirPath, "/", file))
         //print_line(arrayOfFiles.length + "")
@@ -1701,6 +2037,164 @@ const waitForOpticalDiskToBeMounted = async function (): Promise<any|null> {
 }
 
 
+/** Two modification times this close count as equal when diff runs in one of its 'any-difference' modes. Copying a file keeps
+ *  its mtime, so on NTFS a copy matches its source exactly - but a FAT volume stores mtimes to 2 seconds, and
+ *  without this allowance a mirror onto one would re-copy every file on every run. */
+const MIRROR_MTIME_TOLERANCE_MS = 2000;
+
+/** Size of each chunk haveSameContent reads from each of the two files at a time. */
+const CONTENT_COMPARE_CHUNK_BYTES = 1024 * 1024;
+
+/** Reads from `fileHandle` until `buffer` is full or the file ends; resolves with how many bytes it holds. (A single
+ *  read may return fewer bytes than asked for even when more follow.) */
+const readIntoBuffer = async function (fileHandle: any, buffer: Buffer): Promise<number> {
+  let filled = 0;
+  while (filled < buffer.length) {
+    const { bytesRead } = await fileHandle.read(buffer, filled, buffer.length - filled, null);
+    if (bytesRead === 0) { break; }
+    filled += bytesRead;
+  }
+  return filled;
+}
+
+/** True if the two files (already known to have the same size) hold exactly the same bytes. Reads both in chunks
+ *  and stops at the first chunk that differs, so a difference near the start is found without reading the rest;
+ *  identical files are read to the end. This is deliberately a direct comparison, not a hash of each file: two
+ *  hashes read exactly the same bytes, cost several times more CPU (SHA-256 is much slower than comparing
+ *  memory), and can never stop early. The two files' reads are issued together, so when they are on different
+ *  drives the drives work at the same time. Awaits between chunks, so a pending `stop` (Cancel) is noticed within
+ *  one chunk - if one arrives, this reports "same" and the caller's own stop check discards the whole result. Throws
+ *  if either file cannot be read. `buffers` are the two scratch buffers to read into (shared across calls, so a
+ *  comparison over many files does not allocate two new chunks per file). */
+const haveSameContent = async function (pathA: string, pathB: string, buffers: [Buffer, Buffer]): Promise<boolean> {
+  const handleA = await fs.promises.open(pathA, 'r');
+  try {
+    const handleB = await fs.promises.open(pathB, 'r');
+    try {
+      for (;;) {
+        if (process.env._stop == 'stop') { return true; }
+        const [readA, readB] = await Promise.all([readIntoBuffer(handleA, buffers[0]), readIntoBuffer(handleB, buffers[1])]);
+        if (readA !== readB) { return false; }
+        if (readA === 0) { return true; }
+        if (buffers[0].compare(buffers[1], 0, readB, 0, readA) !== 0) { return false; }
+      }
+    } finally {
+      await handleB.close();
+    }
+  } finally {
+    await handleA.close();
+  }
+}
+
+/** Compares two folders entry by entry, the check "Synchronize directories" runs after a sync: by exact name (letter
+ *  case included) and, for a file, exact size in bytes. A link is one entry - compared by where it points
+ *  (linkTargetText), never followed. Returns whether everything matched, the source's totals (its files, links
+ *  included, and their bytes) and one line per difference, "<relative path>  -  <what differs>". A folder only one
+ *  side has is one line, not one per file in it; two names that differ only in letter case are one line too.
+ *  Reports "Comparing items (i of N)" through `onProgress`, N being both folders' probed item counts together. */
+const compareFolders = async function (source: string, target: string, onProgress?: (line: string) => void):
+  Promise<{ matched: boolean, fileCount: number, totalBytes: number, mismatches: string[] }> {
+  const mismatches: string[] = [];
+  let fileCount = 0;
+  let totalBytes = 0;
+  let visited = 0;
+  const total = onProgress ? (await countAllFilesQuick(source)) + (await countAllFilesQuick(target)) : 0;
+  const visit = async (count: number) => {
+    visited += count;
+    if (onProgress && total > 0) { onProgress(`Comparing items (${Math.min(visited, total)} of ${total})`); }
+    await holdOnIfDue();
+  };
+  const kindOf = (stats: any) => stats.isSymbolicLink() ? 'link' : stats.isDirectory() ? 'folder' : 'file';
+  const describe = (stats: any, fullPath: string) => stats.isSymbolicLink() ? `a link to "${linkTargetText(fullPath)}"`
+    : stats.isDirectory() ? 'a folder' : `a file, ${stats.size} bytes`;
+
+  const walk = async (relativeDir: string): Promise<void> => {
+    const sourceDir = node_path_module.join(source, relativeDir);
+    const targetDir = node_path_module.join(target, relativeDir);
+    const sourceNames: string[] = fs.readdirSync(sourceDir);
+    const targetNames: string[] = fs.readdirSync(targetDir);
+    const inSource = new Set(sourceNames);
+    const inTarget = new Set(targetNames);
+    // Target-only names by lower case, so a source-only name that differs from one only in letter case is one line.
+    const targetOnlyByLowerCase = new Map(targetNames.filter((n) => !inSource.has(n)).map((n) => [n.toLowerCase(), n]));
+    for (const name of sourceNames) {
+      const relativePath = node_path_module.join(relativeDir, name);
+      const sourcePath = node_path_module.join(source, relativePath);
+      const sourceStats = fs.lstatSync(sourcePath);
+      if (!inTarget.has(name)) {
+        const caseVariant = targetOnlyByLowerCase.get(name.toLowerCase());
+        if (caseVariant !== undefined) {
+          targetOnlyByLowerCase.delete(name.toLowerCase());
+          mismatches.push(`${relativePath}  -  the name differs only in letter case: "${caseVariant}" in the target`);
+        } else {
+          mismatches.push(`${relativePath}  -  only in the source (${describe(sourceStats, sourcePath)})`);
+        }
+        await visit(1);
+        continue;
+      }
+      const targetPath = node_path_module.join(target, relativePath);
+      const targetStats = fs.lstatSync(targetPath);
+      if (kindOf(sourceStats) !== kindOf(targetStats)) {
+        mismatches.push(`${relativePath}  -  ${describe(sourceStats, sourcePath)} in the source, ${describe(targetStats, targetPath)} in the target`);
+        await visit(2);
+      } else if (sourceStats.isDirectory() && !sourceStats.isSymbolicLink()) {
+        await walk(relativePath);
+      } else {
+        fileCount++;
+        if (sourceStats.isSymbolicLink()) {
+          if (linkTargetText(sourcePath) !== linkTargetText(targetPath)) {
+            mismatches.push(`${relativePath}  -  ${describe(sourceStats, sourcePath)} in the source, ${describe(targetStats, targetPath)} in the target`);
+          }
+        } else {
+          totalBytes += sourceStats.size;
+          if (sourceStats.size !== targetStats.size) {
+            mismatches.push(`${relativePath}  -  the size differs: ${sourceStats.size} bytes in the source, ${targetStats.size} bytes in the target`);
+          }
+        }
+        await visit(2);
+      }
+    }
+    for (const name of targetOnlyByLowerCase.values()) {
+      const relativePath = node_path_module.join(relativeDir, name);
+      const targetPath = node_path_module.join(target, relativePath);
+      mismatches.push(`${relativePath}  -  only in the target (${describe(fs.lstatSync(targetPath), targetPath)})`);
+      await visit(1);
+    }
+  };
+  await walk('');
+  if (onProgress && total > 0) { onProgress(`Comparing items (${total} of ${total})`); }
+  return { matched: mismatches.length === 0, fileCount, totalBytes, mismatches };
+}
+
+/** Throws if one of the two folders is inside the other. "Synchronize directories" would otherwise delete the
+ *  source when the target contains it (the source's own files are extra files in the target), and it and Cumulative
+ *  backup would both copy the target into itself once more on every run when the source contains it. The same
+ *  folder twice is fine - nothing differs, so there is nothing to do. Links are resolved first, so a link to a
+ *  folder counts as that folder. */
+const refuseFoldersInsideEachOther = function (first: string, second: string): void {
+  const resolve = (folder: string) => {
+    try { return fs.realpathSync.native(folder); } catch (error) { return node_path_module.resolve(folder); }
+  };
+  const isInside = (inner: string, outer: string) => {
+    const relative = node_path_module.relative(outer, inner);
+    return relative !== '' && relative !== '..' && !relative.startsWith('..' + node_path_module.sep) && !node_path_module.isAbsolute(relative);
+  };
+  const a = resolve(first);
+  const b = resolve(second);
+  if (isInside(a, b) || isInside(b, a)) {
+    throw new Error(`One of the two folders is inside the other: "${first}" and "${second}". Choose two folders where neither one contains the other.`);
+  }
+}
+
+/** Where the link at `linkPath` points, as text to compare - without a trailing backslash (or slash): the same
+ *  junction reads back with or without one depending on what created it (Electron's Node writes one, Windows'
+ *  mklink and newer Node do not), so a junction copyLink made would otherwise never match its original. A drive
+ *  root ("C:\") keeps its backslash. */
+const linkTargetText = function (linkPath: string): string {
+  const text = fs.readlinkSync(linkPath);
+  return /^[A-Za-z]:\\$/.test(text) ? text : text.replace(/[\\/]+$/, '');
+}
+
 /**
  * Returns the elements that exist only in source.
  * The paths for the source and target must be absolute.
@@ -1708,15 +2202,44 @@ const waitForOpticalDiskToBeMounted = async function (): Promise<any|null> {
  * let target = 'F:\\User\\backup_system\\target' + "\\"
  * diff(source, target)
  */
-/** @param onProgress optional - reports this call's progress as plain text lines, same "(i of N)" convention as
+/** A path that differs from one in the target only in letter case counts as present if the filesystem says it is
+ *  the same entry: on a normal (case-insensitive) NTFS folder "Photos\IMG.JPG" in the source and
+ *  "photos\img.jpg" in the target are one file, so comparing the two strings literally would report a case-only
+ *  rename as "source only" (so it is re-copied) and - seen from the other direction, as used by "Synchronize
+ *  directories" to find what to delete - as "target only", i.e. a file the target must lose although the source
+ *  still has it. In a case-sensitive directory they are two different files and are reported as such.
+ *
+ *  @param onProgress optional - reports this call's progress as plain text lines, same "(i of N)" convention as
  *  every other long-running operation's logsBuffer lines (see parseProgressFromLine, shared/utils) for the
  *  comparison phase below, and - via an upfront countAllFilesQuick probe of both sides, see its own doc comment
  *  - a real "(i of N)" percentage for the two scan phases too (see parseScanItemsProgress, shared/utils),
  *  reported as ONE continuous count across both scans (target's count picks up where source's left off) against
  *  their combined probed total, rather than two separate open-ended counters, so a caller can drive one smooth
- *  progress bar across the whole scan phase. Left undefined, behaves exactly as before (no probing overhead). */
-const diff = async function (source: string, target: string, onProgress?: (line: string) => void): Promise<string[]> {
+ *  progress bar across the whole scan phase. Left undefined, behaves exactly as before (no probing overhead).
+ *  @param comparison how a file that exists on both sides is judged - see DiffComparison (ipc.interfaces.ts).
+ *  Cumulative backup uses the default. "Synchronize directories" calls diff twice with the arguments swapped -
+ *  diff(source, target) for what to copy, diff(target, source) for what to delete - and removes from the delete
+ *  list everything that is also in the copy list (a file that exists on both sides but differs). That only
+ *  works if the delete-list call never reports an existing file the copy-list call does not: the default
+ *  comparison can (it looks only at whether the FIRST directory's copy is newer), 'any-difference' cannot (it is
+ *  symmetric), and sync passes it for the delete list. The copy list is asked with 'any-difference-or-content',
+ *  which additionally compares the BYTES of files that look unchanged, so the target matches the source exactly;
+ *  that reads every such file on both sides, which is why it is not used for the delete list too.
+ *  @param skipUnreadable when true, an entry either directory's scan cannot read is left out (and reported to the
+ *  user afterwards - see reportSkippedScanEntries) instead of failing the whole comparison. Only Cumulative
+ *  backup asks for this. "Synchronize directories" must not: it deletes whatever is missing from the source, so an
+ *  unreadable source entry that was merely skipped would look like "not in the source" and the target's copy of
+ *  it would be deleted.
+ *
+ *  A link (symbolic link or junction) inside either directory is one entry, like a file, and is never followed:
+ *  it is reported when the other side has no link at that path pointing to the same place, and createTree /
+ *  deleteFilesAndDirsForDirSync then copy or delete the link itself. That keeps both features to what is inside
+ *  the two directories - nothing a link points to elsewhere is read, copied, overwritten or deleted.
+ *
+ *  Throws if one directory is inside the other - see refuseFoldersInsideEachOther. */
+const diff = async function (source: string, target: string, onProgress?: (line: string) => void, comparison: DiffComparison = 'source-newer-or-different-size', skipUnreadable: boolean = false): Promise<string[]> {
   process.env._stop = "noStop";
+  refuseFoldersInsideEachOther(source, target);
 
   if (source[source.length - 1] != '\\') { source += "\\"; }
   if (target[target.length - 1] != '\\') { target += "\\"; }
@@ -1732,12 +2255,17 @@ const diff = async function (source: string, target: string, onProgress?: (line:
     [sourceProbedTotal, targetProbedTotal] = await Promise.all([countAllFilesQuick(source), countAllFilesQuick(target)]);
     combinedProbedTotal = sourceProbedTotal + targetProbedTotal;
   }
-  let source_files = await getAllFiles(source, [], onProgress ? (count) => onProgress(`Scanning items (${Math.min(count, combinedProbedTotal)} of ${combinedProbedTotal})`) : undefined)
+  const skipped: SkippedScanEntry[] | undefined = skipUnreadable ? [] : undefined;
+  let source_files = await getAllFiles(source, [], onProgress ? (count) => onProgress(`Scanning items (${Math.min(count, combinedProbedTotal)} of ${combinedProbedTotal})`) : undefined, skipped)
   console.log("\nReading paths of: " + target)
-  let target_files = await getAllFilesSet(target, new Set<string>(), onProgress ? (count) => onProgress(`Scanning items (${Math.min(sourceProbedTotal + count, combinedProbedTotal)} of ${combinedProbedTotal})`) : undefined)
+  let target_files = await getAllFilesSet(target, new Set<string>(), onProgress ? (count) => onProgress(`Scanning items (${Math.min(sourceProbedTotal + count, combinedProbedTotal)} of ${combinedProbedTotal})`) : undefined, skipped)
+  if (skipped) { reportSkippedScanEntries(skipped); }
   let time_end = performance.now();
   console.log("DONE READING FILES " + ((time_end - time_start) / 1000).toFixed(2))
   time_start = performance.now();
+  // Lower-cased names, only used to cheaply spot a possible case-only match - see this function's own doc comment.
+  const target_keys = new Set<string>();
+  target_files.forEach((p) => target_keys.add(p.toLowerCase()));
   // Converted from a plain synchronous .filter() to an explicit loop: source_files.length IS a known total by
   // this point (both scans above have already finished), so - unlike the open-ended scan phases just above -
   // this comparison phase can report a REAL "(i of N)" percentage instead of just a running count. The periodic
@@ -1745,11 +2273,15 @@ const diff = async function (source: string, target: string, onProgress?: (line:
   // actually lets process.env._stop be checked mid-comparison, which the original single synchronous .filter()
   // call never could.
   let source_only: string[] = [];
+  let contentBuffers: [Buffer, Buffer] | undefined;
   for (let i = 0; i < source_files.length; i++) {
     if (process.env._stop == 'stop') { break; }
+    let contentWasCompared = false;
     let file = source_files[i];
     let sourcePath = file
-    let targetPath = file.replace(source, target)
+    // A replacer function rather than `target` itself: as a plain replacement string, "$&", "$$" etc. inside a
+    // directory name would be interpreted as String.replace's own special patterns instead of literal characters.
+    let targetPath = file.replace(source, () => target)
 
     // getAllFiles/getAllFilesSet list an empty directory as a single trailing-backslash entry. It counts as backed
     // up as soon as that directory exists in the target, whatever it contains there (a non-empty target directory
@@ -1759,9 +2291,21 @@ const diff = async function (source: string, target: string, onProgress?: (line:
     const isEmptyDirectoryEntry = file[file.length - 1] == '\\';
 
     let b = target_files.has(targetPath)
+    if (!b && target_keys.has(targetPath.toLowerCase())) {
+      // Same name in a different letter case. Whether that is the same entry is the filesystem's call, not ours:
+      // on a default (case-insensitive) NTFS folder it is, in a case-sensitive directory or share it is not.
+      // Asking it (one stat, only for these rare case-mismatched names) is right in both.
+      try {
+        fs.lstatSync(targetPath);
+        b = true;
+      } catch (error) {
+        b = false;
+      }
+    }
     if (!b && isEmptyDirectoryEntry) {
       try {
-        b = fs.statSync(targetPath).isDirectory();
+        // Without the trailing backslash, and lstat: a link at that path is not the directory.
+        b = fs.lstatSync(trimTrailingBackslash(targetPath)).isDirectory();
       } catch (error) {
         b = false; // no such directory in the target
       }
@@ -1769,13 +2313,33 @@ const diff = async function (source: string, target: string, onProgress?: (line:
     if (!b) {
       source_only.push(file); // source only
     } else if (!isEmptyDirectoryEntry) {
-      // One statSync call per side, reused for both the mtime and size comparisons below - this used to be 4
+      // One lstatSync call per side, reused for both the mtime and size comparisons below - this used to be 4
       // statSync calls (2 per path) every time a file exists on both sides, which is the common case for a real
       // incremental backup (most files are already backed up and unchanged).
-      const sourceStats = fs.statSync(sourcePath);
-      const targetStats = fs.statSync(targetPath);
-      if ((sourceStats.mtime > targetStats.mtime) || (sourceStats.size != targetStats.size)) {
-        source_only.push(file); // modified
+      const sourceStats = fs.lstatSync(sourcePath);
+      const targetStats = fs.lstatSync(targetPath);
+      let differs: boolean;
+      if (sourceStats.isSymbolicLink() || targetStats.isSymbolicLink()) {
+        // A link is the same only as a link pointing to the same place. What it points to is never compared.
+        differs = !(sourceStats.isSymbolicLink() && targetStats.isSymbolicLink() && linkTargetText(sourcePath) === linkTargetText(targetPath));
+      } else if (sourceStats.isDirectory() !== targetStats.isDirectory()) {
+        // A file on one side and a folder on the other, found through a name that differs only in letter case - see
+        // NameClash for how the copy resolves it.
+        differs = true;
+      } else {
+        differs = comparison === 'source-newer-or-different-size'
+          ? (sourceStats.mtime > targetStats.mtime) || (sourceStats.size != targetStats.size)
+          : (Math.abs(sourceStats.mtimeMs - targetStats.mtimeMs) > MIRROR_MTIME_TOLERANCE_MS) || (sourceStats.size != targetStats.size);
+      }
+      if (!differs && comparison === 'any-difference-or-content' && sourceStats.isFile() && sourceStats.size > 0) {
+        // Size and mtime say "unchanged" - the bytes are the only thing left that can still differ. Sizes are
+        // equal here, so haveSameContent's chunk-by-chunk comparison is well defined.
+        contentBuffers = contentBuffers || [Buffer.allocUnsafe(CONTENT_COMPARE_CHUNK_BYTES), Buffer.allocUnsafe(CONTENT_COMPARE_CHUNK_BYTES)];
+        differs = !(await haveSameContent(sourcePath, targetPath, contentBuffers));
+        contentWasCompared = true;
+      }
+      if (differs) {
+        source_only.push(file); // modified (or, for the 'any-difference' modes, different in any way)
       } // else: backed up - not included
     }
     // Yielding (and reporting progress) only every SCAN_PROGRESS_REPORT_INTERVAL items, not every single one -
@@ -1786,8 +2350,11 @@ const diff = async function (source: string, target: string, onProgress?: (line:
     // source_files.length isn't an exact multiple of SCAN_PROGRESS_REPORT_INTERVAL, the final "(i of N)" a
     // caller ever sees falls short of N, and a caller driving a percentage bar off of it (see LoadingDialogComponent)
     // would visibly stop short of 100% right as this phase actually finishes.
+    // After every file whose contents were read as well, not just every SCAN_PROGRESS_REPORT_INTERVAL items: that
+    // read can take long enough (a big file) for a bar that only moved every 25 items to look frozen. Reporting
+    // is cheap - the log buffer sends at most a few batches a second regardless of how often it is pushed to.
     const isLastItem = i === source_files.length - 1;
-    if ((i + 1) % SCAN_PROGRESS_REPORT_INTERVAL === 0 || isLastItem) {
+    if ((i + 1) % SCAN_PROGRESS_REPORT_INTERVAL === 0 || isLastItem || contentWasCompared) {
       if (onProgress) { onProgress(`Comparing items (${i + 1} of ${source_files.length})`); }
       await holdOn();
     }
@@ -1853,7 +2420,9 @@ const check_commmon_files_for_equality = async function (source: string, target:
 }
 
 
-const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boolean, source: string, target: string): Promise<void> {
+/** Copies (doCopy) or previews every path diff reported, one at a time - see insertBranch.
+ *  @param nameClash see NameClash (ipc.interfaces.ts). */
+const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boolean, source: string, target: string, nameClash?: NameClash): Promise<void> {
   process.env._stop = "noStop";
   
   if (source[source.length - 1] != '\\') { source += "\\"; }
@@ -1868,7 +2437,7 @@ const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boole
     }
     path = sourceOnlyPaths[index];
     let tokens = path.split('\\')
-    insertBranch(tree, tokens, 0, doCopy, source, target);
+    insertBranch(tree, tokens, 0, doCopy, source, target, nameClash);
     // A dedicated progress marker, on top of insertBranch's own descriptive lines above (which don't map 1:1 to
     // items - a copy can log a size-tier line plus a "copied/updated" line, a directory logs its own separate
     // "will create"/"created" line, etc.) - callers who already know sourceOnlyPaths.length up front (every one
@@ -1935,22 +2504,19 @@ const deleteFilesAndDirsForDirSync = async function (pathsMarkedForDeletion: Arr
         let subTreeContents = getContentsFromTree(subTree);
         let mp = source + path_to_be_checked.join("\\") + ("\\");
         let tp = target + path_to_be_checked.join("\\") + ("\\");
-        let exists_in_master:boolean;        
-        try {
-          fs.readdirSync(mp, {recursive:true});
-          exists_in_master = true; 
-        } catch (error) {
-          exists_in_master = false;
-        }
+        let exists_in_master = isRealDirectoryAt(mp);
 
-        // Replace any trailing '\' characters. This is because fs.readdirSync does not add '\' to the end of a directory path.
-        subTreeContents = subTreeContents.map((d)=>{return d.replace(/\\+$/, "");});
-        let dirContents = fs.readdirSync(tp, {recursive:true});
-        if(!commit && !exists_in_master && sameMembers(subTreeContents, dirContents)){
-          logsBuffer.push("will delete directory :" + tp)
-        }else if(commit && !exists_in_master && dirContents.length==0){
-          fs.rmdirSync(tp) 
-          logsBuffer.push("deleted directory :" + tp);
+        // No longer a folder in the target: the copy phase replaced it with a file of the template's (see NameClash).
+        if (isRealDirectoryAt(tp)) {
+          // Replace any trailing '\' characters. This is because the listing does not add '\' to the end of a directory path.
+          subTreeContents = subTreeContents.map((d)=>{return d.replace(/\\+$/, "");});
+          let dirContents = listEntriesWithoutFollowingLinks(tp);
+          if(!commit && !exists_in_master && sameMembers(subTreeContents, dirContents)){
+            logsBuffer.push("will delete directory :" + tp)
+          }else if(commit && !exists_in_master && dirContents.length==0){
+            fs.rmdirSync(tp)
+            logsBuffer.push("deleted directory :" + tp);
+          }
         }
 
         tokens_diff_slice.pop();
@@ -1982,25 +2548,19 @@ const deleteFilesAndDirsForDirSync = async function (pathsMarkedForDeletion: Arr
         full_path_to_be_checked_target = target + tokens.join("\\") + "\\" + dir_name + "\\";
         full_path_to_be_checked_master = source + tokens.join("\\") + "\\" + dir_name + "\\";
       }
-      if(dir_name){
+      // Not a folder in the target any more: see the same check in the loop above.
+      if(dir_name && isRealDirectoryAt(full_path_to_be_checked_target)){
         let subTree = getSubTree(tree, tokens.concat([dir_name]))
-        let dir_exists_in_master:boolean;
-        try {
-          fs.readdirSync(full_path_to_be_checked_master, {recursive:true})
-          dir_exists_in_master = true;
-        } catch (error) {
-          //path does not exist
-          dir_exists_in_master = false;
-        }
+        let dir_exists_in_master = isRealDirectoryAt(full_path_to_be_checked_master);
 
         let dir_emptied_in_target: boolean;
         dir_emptied_in_target = (sameMembers(
           getContentsFromTree(subTree).map((d)=>{return d.replace(/\\+$/, "");}),
-          fs.readdirSync(full_path_to_be_checked_target, {recursive:true})));
+          listEntriesWithoutFollowingLinks(full_path_to_be_checked_target)));
 
         if(!commit && !dir_exists_in_master && dir_emptied_in_target){
           logsBuffer.push("will delete directory :"+ full_path_to_be_checked_target);
-        }else if(commit && !dir_exists_in_master && fs.readdirSync(full_path_to_be_checked_target, {recursive:true}).length==0){
+        }else if(commit && !dir_exists_in_master && fs.readdirSync(full_path_to_be_checked_target).length==0){
           fs.rmdirSync(full_path_to_be_checked_target) 
           logsBuffer.push("deleted directory :" + full_path_to_be_checked_target);
         }
@@ -2054,19 +2614,75 @@ const getSubTree = function(tree:{}, path:Array<string>){
   }, tree)    
 }
 
+/** True if `absolutePath` is an existing regular file (a directory, a missing path, or one that cannot be stat'ed
+ *  are all false). */
+const isFileAt = function (absolutePath: string): boolean {
+  try {
+    return fs.statSync(absolutePath).isFile();
+  } catch (error) {
+    return false;
+  }
+}
+
+/** fs.lstatSync (describes a link itself, not what it points to), or null if nothing is at `absolutePath`. */
+const lstatOrNull = function (absolutePath: string): any | null {
+  try {
+    return fs.lstatSync(absolutePath);
+  } catch (error) {
+    return null;
+  }
+}
+
+/** True if `absolutePath` (a trailing backslash is allowed) is a real directory - not a link to one. */
+const isRealDirectoryAt = function (absolutePath: string): boolean {
+  return lstatOrNull(trimTrailingBackslash(absolutePath))?.isDirectory() === true;
+}
+
+/** Every entry below `dirPath`, as paths relative to it joined with '\' - like fs.readdirSync(dirPath, { recursive:
+ *  true }), except that a link (symbolic link or junction) is listed as one entry and never looked inside, the
+ *  same way diff's scans treat it. (Node's recursive readdir does look inside junctions.) */
+const listEntriesWithoutFollowingLinks = function (dirPath: string, prefix: string = ''): string[] {
+  const entries: string[] = [];
+  for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+    entries.push(prefix + entry.name);
+    if (entry.isDirectory()) {
+      entries.push(...listEntriesWithoutFollowingLinks(node_path_module.join(dirPath, entry.name), prefix + entry.name + '\\'));
+    }
+  }
+  return entries;
+}
+
 const insertBranchForDirSyncDeletions = function (
 tree: any, tokens: Array<string>, index: number, commit: boolean, target: string, source: string): void {
-  if ((tokens.length - index) == 1) {   
+  if ((tokens.length - index) == 1) {
     if (tokens[index] != '') {
-      tree[tokens[index]] = null;
       let path_suffix = createPath(tokens, index)
       let source_path = source + path_suffix
       let target_path = target + path_suffix
+      if (lstatOrNull(source_path) !== null) {
+        // Never delete a target entry that the template directory also has, as the filesystem sees it - the copy
+        // phase has already made it match. "Synchronize directories" removes every file it is about to copy from its
+        // deletion list, but by exact name: on a case-insensitive filesystem (NTFS) a file that was renamed in
+        // letter case only AND changed is "REPORT.TXT" in the copy list and "report.txt" in the deletion list -
+        // one and the same file - and deleting it here would delete what the copy phase just wrote. On a
+        // case-sensitive filesystem those are two different files, the template has no "report.txt", and the
+        // deletion goes ahead. Likewise a link in the target where the template has a folder: the copy phase
+        // has replaced that link with the folder. Not added to `tree` either, since `tree` records what gets deleted.
+        return;
+      }
+      const existingTarget = lstatOrNull(target_path);
+      if (existingTarget === null) {
+        // Already gone: the copy phase replaced the folder it was in with a file of the template's (see NameClash).
+        return;
+      }
+      tree[tokens[index]] = null;
+      // A link is deleted as the link itself (unlinkSync never follows it) - what it points to is left alone.
+      const kind = existingTarget.isSymbolicLink() ? 'link' : 'file';
       if (commit) {
         fs.unlinkSync(target_path);
-        logsBuffer.push("deleted file :" + target_path);
+        logsBuffer.push(`deleted ${kind} :` + target_path);
       } else {
-        logsBuffer.push("will delete file :" + target_path);
+        logsBuffer.push(`will delete ${kind} :` + target_path);
       }
     }
   } else {
@@ -2154,7 +2770,50 @@ const createPath = function (tokens: Array<string>, index: number): string {
   return path
 }
 
-const insertBranch = function (tree: any, tokens: Array<string>, index: number, doCopy: boolean, source: string, target: string): void {
+/** fs.copyFileSync, except that an existing target file the copy is refused for - on Windows one marked read-only
+ *  (a copy of a read-only file is itself read-only) or hidden while the source is not; on Linux one without write
+ *  permission - is deleted and the copy made again. */
+const copyFileReplacingProtectedTarget = function (sourcePath: string, targetPath: string): void {
+  try {
+    fs.copyFileSync(sourcePath, targetPath);
+  } catch (error: any) {
+    if ((error?.code !== 'EPERM' && error?.code !== 'EACCES') || !isFileAt(targetPath)) { throw error; }
+    fs.unlinkSync(targetPath);
+    fs.copyFileSync(sourcePath, targetPath);
+  }
+}
+
+/** Makes `targetPath` a link pointing where the link at `sourcePath` points - the same text, so a relative link
+ *  stays relative. Nothing it points to is read or copied. A link to a folder given by its full path is made a
+ *  junction, which Windows lets anyone create; any other link has to be a symbolic link, which Windows lets only
+ *  administrators create unless Developer Mode is on. On Linux every link is a symbolic link. A link that points to
+ *  nothing (what it pointed to was deleted) does not say whether that was a folder; given by its full path, it is
+ *  made a junction - that is what such a link on Windows almost always is. */
+const copyLink = function (sourcePath: string, targetPath: string): void {
+  const pointsTo = fs.readlinkSync(sourcePath);
+  let pointsToFolder: boolean | null = null;
+  try {
+    pointsToFolder = fs.statSync(sourcePath).isDirectory();
+  } catch (error) {
+    // points to nothing that exists
+  }
+  const type = (pointsToFolder !== false && node_path_module.isAbsolute(pointsTo)) ? 'junction' : (pointsToFolder ? 'dir' : 'file');
+  try {
+    fs.symlinkSync(pointsTo, targetPath, type);
+  } catch (error: any) {
+    if (error?.code === 'EPERM' && process.platform === 'win32') {
+      throw new Error(`Could not create the link "${targetPath}" (a copy of the link "${sourcePath}"): Windows lets only administrators create this kind of link, unless Developer Mode is turned on.`);
+    }
+    throw error;
+  }
+}
+
+/** Copies (doCopy) or previews one path from diff: creates the folders on its way that the target lacks, then copies
+ *  the file - or, if the source has a link there, the link itself (copyLink). Never writes through a link in the
+ *  target: a link where a folder is needed, or where a file or link is being copied, is removed first (only the
+ *  link - what it points to is left alone), so everything created stays inside the target. A real folder where a
+ *  file or link is being copied, or a file where a folder is needed, is dealt with by resolveNameClash. */
+const insertBranch = function (tree: any, tokens: Array<string>, index: number, doCopy: boolean, source: string, target: string, nameClash?: NameClash): void {
   if ((tokens.length - index) == 1) {
     tree[tokens[index]] = {}
     // Create file OR directory
@@ -2162,22 +2821,33 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
       let path_suffix = createPath(tokens, index)
       let target_path = target + path_suffix
       let source_path = source + path_suffix
+      let existingTarget = lstatOrNull(target_path);
+      const sourceIsLink = lstatOrNull(source_path)?.isSymbolicLink() === true;
+      const kind = sourceIsLink ? 'link' : 'file';
+      if (existingTarget && existingTarget.isDirectory()) {
+        // A real folder where the source has a file or a link (lstat: a link to a folder is not a directory here).
+        resolveNameClash(target_path, 'folder', nameClash, doCopy);
+        existingTarget = null;
+      }
       if (doCopy) {
-        let filePathAlreadyExistedInBackup = false;
-        if(fs.existsSync(target_path)){
-          filePathAlreadyExistedInBackup = true;
+        if (existingTarget && (existingTarget.isSymbolicLink() || (sourceIsLink && existingTarget.isFile()))) {
+          fs.unlinkSync(target_path);
         }
-        fs.copyFileSync(source_path, target_path);
-        if(filePathAlreadyExistedInBackup){
-          logsBuffer.push("updated existing file :" + target_path);
+        if (sourceIsLink) {
+          copyLink(source_path, target_path);
+        } else {
+          copyFileReplacingProtectedTarget(source_path, target_path);
+        }
+        if(existingTarget){
+          logsBuffer.push(`updated existing ${kind} :` + target_path);
         }else{
-          logsBuffer.push("copied file :" + target_path);
+          logsBuffer.push(`copied ${kind} :` + target_path);
         }
       } else {
-        if(fs.existsSync(target_path)){
-          logsBuffer.push("will update existing file :" + target_path);
+        if(existingTarget){
+          logsBuffer.push(`will update existing ${kind} :` + target_path);
         }else{
-          logsBuffer.push("will copy file :" + target_path);
+          logsBuffer.push(`will copy ${kind} :` + target_path);
         }
       }
     }
@@ -2187,8 +2857,15 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
       // Create directory (only)
       let path_suffix = createPath(tokens, index)
       let target_path = target + path_suffix
-      if (!fs.existsSync(target_path)) {
+      let existingTarget = lstatOrNull(target_path);
+      if (existingTarget && !existingTarget.isDirectory() && !existingTarget.isSymbolicLink()) {
+        // A file where the source has a folder.
+        resolveNameClash(target_path, 'file', nameClash, doCopy);
+        existingTarget = null;
+      }
+      if (existingTarget === null || existingTarget.isSymbolicLink()) {
         if (doCopy) {
+          if (existingTarget) { fs.unlinkSync(target_path); } // a link where the source has a folder
           fs.mkdirSync(target_path);
           logsBuffer.push("created directory :" + target_path);
           //console.log("created DIR: ", target_path);
@@ -2199,8 +2876,47 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
     }
     let a = tokens[index]
     index += 1
-    insertBranch(tree[a], tokens, index, doCopy, source, target);
+    insertBranch(tree[a], tokens, index, doCopy, source, target, nameClash);
   }
+}
+
+/** A name that is a folder in the target where the source has a file or a link, or a file where the source has a
+ *  folder: makes room at `targetPath` for the source's entry the way `nameClash` says (see NameClash) - or, with no
+ *  `nameClash` (recovery), throws an error naming the clash. With doCopy false it only says what it would do. */
+const resolveNameClash = function (targetPath: string, existing: 'folder' | 'file', nameClash: NameClash | undefined, doCopy: boolean): void {
+  const incoming = existing === 'folder' ? 'a file' : 'a folder';
+  if (nameClash === 'replace') {
+    if (doCopy) {
+      // A link inside the folder is removed as the link itself - rmSync never follows one.
+      fs.rmSync(targetPath, { recursive: true, force: true });
+      logsBuffer.push(`replaced existing ${existing} with ${incoming} :` + targetPath);
+    } else {
+      logsBuffer.push(`will replace existing ${existing} with ${incoming} :` + targetPath);
+    }
+  } else if (nameClash === 'keep-both') {
+    const asidePath = nameToSetAside(targetPath, existing);
+    if (doCopy) {
+      fs.renameSync(targetPath, asidePath);
+      logsBuffer.push(`renamed existing ${existing} to "${node_path_module.basename(asidePath)}" :` + targetPath);
+    } else {
+      logsBuffer.push(`will rename existing ${existing} to "${node_path_module.basename(asidePath)}" :` + targetPath);
+    }
+  } else {
+    throw new Error(`"${targetPath}" is a ${existing}, but ${incoming} with that name has to be copied there.`);
+  }
+}
+
+/** "<path> (old folder)" / "<path> (old file)" - or, if that is taken, "<path> (old folder 2)", 3, ... */
+const nameToSetAside = function (targetPath: string, existing: 'folder' | 'file'): string {
+  for (let n = 1; ; n++) {
+    const candidate = `${targetPath} (old ${existing}${n > 1 ? ' ' + n : ''})`;
+    if (lstatOrNull(candidate) === null) { return candidate; }
+  }
+}
+
+/** The request's nameClash, if it is one of NameClash's values. */
+const asNameClash = function (value: any): NameClash | undefined {
+  return value === 'replace' || value === 'keep-both' ? value : undefined;
 }
 
 
@@ -2271,25 +2987,49 @@ const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>
  *  single place that knows how ImgBurn is actually invoked. Deliberately not awaited by either caller - both
  *  only need ImgBurn to have been STARTED, never for the user to have finished with it, before they themselves
  *  report back as done (see the matching comment on the component side, e.g. createIBB_file in
- *  backup-to-optical-media.component.ts). */
+ *  backup-to-optical-media.component.ts).
+ *
+ *  Because neither caller waits for this, a failure to START ImgBurn (a missing or wrong imgBurnExecutablePath in
+ *  config.json, or the executable not being launchable) cannot be part of either caller's response - both have
+ *  already resolved by then. It is reported with console.error instead, which shows the user a dialog through
+ *  the dedicated 'app-error' channel (see the logging notes near the top of this file): a message pushed on the
+ *  request/response channel after the response had already been delivered would arrive when nothing is
+ *  listening any more, or be mistaken for a reply to whatever request happens to be in flight.
+ *
+ *  ImgBurn exiting with a non-zero code AFTER it started is not a launch failure (the user may just have closed
+ *  it, or a burn failed inside ImgBurn's own window, which tells them itself) - that is only logged. */
 const invokeImgBurnOnIBBFile = async function (pathToIBBFile: string): Promise<void> {
   const util = require('util');
   const exec = util.promisify(require('child_process').exec);
+  let imgBurnExecutablePath: string | undefined;
   try {
     const configJSON = fs.readFileSync(node_path_module.join(__dirname, `../../appData/config.json`));
-    const imgBurnExecutablePath = JSON.parse(configJSON).imgBurnExecutablePath;
+    imgBurnExecutablePath = JSON.parse(configJSON).imgBurnExecutablePath;
+  } catch (error) {
+    console.error('ImgBurn could not be started: the app configuration (appData\\config.json) could not be read.', error);
+    return;
+  }
+  if (!imgBurnExecutablePath || typeof imgBurnExecutablePath !== 'string' || !fs.existsSync(imgBurnExecutablePath)) {
+    console.error(`ImgBurn could not be started: "${imgBurnExecutablePath}" does not exist. Check imgBurnExecutablePath in appData\\config.json.`);
+    return;
+  }
 
-    const { stdout, stderr } = await exec(`"${imgBurnExecutablePath}" /MODE BUILD /SRC ${pathToIBBFile}`);
+  try {
+    // The .ibb path is quoted like the executable's: it lives under the temp directory, which sits inside the app
+    // folder (or wherever config.json's cacheDataDirectoryPath points), and either can contain spaces.
+    const { stdout, stderr } = await exec(`"${imgBurnExecutablePath}" /MODE BUILD /SRC "${pathToIBBFile}"`);
     console.log('stdout:', stdout);
     console.log('stderr:', stderr);
   } catch (error) {
-    // Neither caller awaits or catches this function's own promise (see the doc comment above) - both have
-    // already resolved and reported success by the time ImgBurn is actually invoked, so a launch failure here
-    // (e.g. a bad imgBurnExecutablePath in config.json, or ImgBurn itself failing to start) can only be
-    // surfaced as its own independent push message, not as part of either caller's response. Left uncaught,
-    // this would otherwise be an unhandled promise rejection, which crashes the whole worker process by default.
+    // Left uncaught this would be an unhandled promise rejection (nobody awaits this function - see above).
     const message = error && (error as any).message ? (error as any).message : String(error);
-    ipc.sendResponseToMain({ key: 'imgburn-launch-failed', res: { message }, status: 'error' });
+    if (typeof (error as any)?.code === 'number') {
+      // The process ran and exited with this code.
+      console.warn(`ImgBurn exited with code ${(error as any).code}.`, message);
+    } else {
+      // No exit code at all: the process could not be started (or was killed before it could run).
+      console.error('ImgBurn could not be started.', message);
+    }
   }
 }
 
@@ -2446,10 +3186,22 @@ const init = function() : void
     //console.log(JSON.stringify(arg.key));
     //console.log(JSON.stringify(arg))
     switch (arg.key) {
+      case 'compare-folders':
+        logsBuffer.setChannel('compare-folders');
+        compareFolders(asScanRoot(trimTrailingBackslash(arg.params.source)), asScanRoot(trimTrailingBackslash(arg.params.target)),
+          (line) => logsBuffer.push(line)).then((result) => {
+          logsBuffer.flush();
+          ipc.sendResponseToMain({ key: 'compare-folders', res: result, status: 'completed' });
+        }).catch((err) => {
+          ipc.sendResponseToMain({ key: 'compare-folders', res: err, status: 'error' });
+        });
+        break;
       case 'diff':
         console.log("(worker) in diff")
         logsBuffer.setChannel('diff');
-        diff(arg.params.source, arg.params.target, (line) => logsBuffer.push(line)).then((d)=>{
+        diff(arg.params.source, arg.params.target, (line) => logsBuffer.push(line),
+          (arg.params.comparison === 'any-difference' || arg.params.comparison === 'any-difference-or-content') ? arg.params.comparison : undefined,
+          arg.params.skipUnreadable === true).then((d)=>{
           logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'diff', res: d, status: "completed" });
@@ -2462,7 +3214,7 @@ const init = function() : void
         break;
       case 'incremental-preview':
         logsBuffer.setChannel("incremental-preview");
-        createTree(arg.params.sourceOnlyPaths, /*doCopy=*/false, arg.params.source, arg.params.target).then((res)=>{
+        createTree(arg.params.sourceOnlyPaths, /*doCopy=*/false, arg.params.source, arg.params.target, asNameClash(arg.params.nameClash)).then((res)=>{
           logsBuffer.flush(); // whatever remained in the buffer
           //tell user that the function has finished
           if(process.env._stop != 'stop'){
@@ -2478,7 +3230,7 @@ const init = function() : void
         break;
       case 'incremental-copy-files':
         logsBuffer.setChannel("incremental-copy-files");
-        createTree(arg.params.sourceOnlyPaths, /*doCopy=*/true, arg.params.source, arg.params.target).then((res) => {
+        createTree(arg.params.sourceOnlyPaths, /*doCopy=*/true, arg.params.source, arg.params.target, asNameClash(arg.params.nameClash)).then((res) => {
         //dummy_copy().then((res) => {
           logsBuffer.flush(); // whatever remained in the buffer
           //tell user that the function has finished
@@ -2500,7 +3252,7 @@ const init = function() : void
       case 'partition-backup-to-optical-media':
         console.log("(worker) in partition-backup-to-optical-media")
         logsBuffer.setChannel('partition-backup-to-optical-media');
-        partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.splitLargeFiles, arg.params.sessionId, arg.params.filesMetadata, (line) => logsBuffer.push(line)).then((d)=>{
+        partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.splitLargeFiles, arg.params.sessionId, arg.params.filesMetadata, (line) => logsBuffer.push(line), arg.params.skipUnreadable === true).then((d)=>{
           logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'partition-backup-to-optical-media', res: d, status: "completed" });
@@ -2645,9 +3397,16 @@ const init = function() : void
         process.env._stop = 'NoStop';
         // Probes the real total upfront (see countAllFilesQuick) so this scan reports a real "(i of N)"
         // percentage (parseScanItemsProgress, shared/utils) instead of an open-ended running count.
-        countAllFilesQuick(arg.params.dirPath).then((total) => {
-          return getAllFilePathsWithStats(arg.params.dirPath, [], (count) => logsBuffer.push(`Scanning items (${Math.min(count, total)} of ${total})`));
+        // asScanRoot: the disc readers pass a bare drive ("E:"), which would otherwise mean "the current directory
+        // on drive E" rather than the disc's root. skipUnreadable is only sent for a backup SOURCE (see
+        // scanMasterDirectoryWithProgress in add-missing-files-to-optical-media-cold-storage.component.ts) - a disc
+        // that cannot be read completely must fail, since its ID is a hash of everything on it.
+        const scanRoot = asScanRoot(arg.params.dirPath);
+        const skippedWhileScanning: SkippedScanEntry[] | undefined = arg.params.skipUnreadable === true ? [] : undefined;
+        countAllFilesQuick(scanRoot).then((total) => {
+          return getAllFilePathsWithStats(scanRoot, [], (count) => logsBuffer.push(`Scanning items (${Math.min(count, total)} of ${total})`), skippedWhileScanning);
         }).then((d)=>{
+          if (skippedWhileScanning) { reportSkippedScanEntries(skippedWhileScanning); }
           logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'get-file-paths-with-stats', res: d, status: "completed" });
@@ -2695,8 +3454,10 @@ const init = function() : void
         process.env._stop = 'NoStop';
         // Probes the real total upfront (see countAllFilesQuick) so this scan reports a real "(i of N)"
         // percentage (parseScanItemsProgress, shared/utils) instead of an open-ended running count.
-        countAllFilesQuick(arg.params.sourceDir).then((total) => {
-          return getAllFiles(arg.params.sourceDir, [], (count) => logsBuffer.push(`Scanning items (${Math.min(count, total)} of ${total})`));
+        // asScanRoot - see the same call in 'get-file-paths-with-stats' above.
+        const sourceDirRoot = asScanRoot(arg.params.sourceDir);
+        countAllFilesQuick(sourceDirRoot).then((total) => {
+          return getAllFiles(sourceDirRoot, [], (count) => logsBuffer.push(`Scanning items (${Math.min(count, total)} of ${total})`));
         }).then((d)=>{
           logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){

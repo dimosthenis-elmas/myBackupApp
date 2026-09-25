@@ -1,0 +1,4 @@
+# Windows batch files must have CRLF line endings: with LF-only lines, cmd.exe fails to find labels
+# ("call :run", "goto") in parts of the file and silently skips those steps.
+*.bat text eol=crlf
+*.cmd text eol=crlf

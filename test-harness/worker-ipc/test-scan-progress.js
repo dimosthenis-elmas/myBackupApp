@@ -9,8 +9,9 @@
  *
  *   - The probed total N equals what the real scan actually finds - counted here by an independent walk, not
  *     taken from the worker's own answer. The source tree deliberately contains a directory junction to a
- *     second folder (a link to a directory): the real scanners follow links, so a probe that didn't would
- *     undercount, and the circle would hit 100% long before the scan finished.
+ *     second folder (a link to a directory): no scan ever follows a link, so neither may the probe - counting what
+ *     is behind it would make N far too big. Every scan lists the junction as one entry (the scan behind every
+ *     disc as "linked-folder.lnk", the Windows shortcut it is burned as).
  *   - A cancel left over from an earlier operation (a `stop` with nothing running) doesn't zero the probe: the
  *     scan must still complete (not "stopped") and still report the real N, not "(0 of 0)".
  *   - diff() reports one scan phase and then one comparison phase, in that order, and the comparison ends
@@ -59,15 +60,15 @@ function parseLines(lines, pattern) {
 }
 
 /** Counts what the app's scanners are supposed to find under `dir`, the same way they define it: every file is
- *  one entry, an empty directory is one entry, and a link to a directory is followed (fs.statSync follows links,
- *  which is exactly why the app's own scanners use it). Deliberately its own walk, so the test never trusts the
- *  worker to grade itself. */
+ *  one entry, an empty directory is one entry, and a link (symbolic link or junction) is one entry, never
+ *  followed. Deliberately its own walk, so the test never trusts the worker to grade itself. */
 function countExpectedEntries(dir) {
   const names = fs.readdirSync(dir);
   if (names.length === 0) { return 1; }
   let count = 0;
   for (const name of names) {
-    count += fs.statSync(path.join(dir, name)).isDirectory() ? countExpectedEntries(path.join(dir, name)) : 1;
+    const stats = fs.lstatSync(path.join(dir, name));
+    count += stats.isDirectory() ? countExpectedEntries(path.join(dir, name)) : 1;
   }
   return count;
 }
@@ -119,14 +120,15 @@ async function main() {
   const emptyTarget = path.join(scratch, 'empty-target');
   const linkPath = path.join(source, 'linked-folder');
   console.log(`Generating fixtures under ${scratch} ...`);
-  generateTree(source, 70, 3, 4242);
+  generateTree(source, 110, 3, 4242);
   generateTree(linkedTarget, 30, 2, 777);
   fs.mkdirSync(emptyTarget, { recursive: true });
   fs.symlinkSync(linkedTarget, linkPath, 'junction');
 
   const expected = countExpectedEntries(source);
   const linkedCount = countExpectedEntries(linkedTarget);
-  console.log(`\nSource tree holds ${expected} entries by an independent count (${linkedCount} of them reached only through the junction).`);
+  console.log(`\nSource tree holds ${expected} entries by an independent count, the junction as one; the ${linkedCount} ` +
+    `entries behind the junction must never be counted.`);
   if (expected < 100) { throw new Error(`Fixture too small to produce several progress lines (${expected} entries) - the generator's output changed.`); }
 
   // 2. Launch the real app and call the real worker.
@@ -139,8 +141,9 @@ async function main() {
     check('get-file-paths-with-stats: finished normally', scanWithStats.response.status === 'completed', scanWithStats.response.status);
     check('get-file-paths-with-stats: result count matches the independent count', scanWithStats.response.res.length === expected,
       `got ${scanWithStats.response.res.length}, expected ${expected}`);
-    check('get-file-paths-with-stats: the scan followed the junction',
-      scanWithStats.response.res.some((entry) => entry.path.includes(`${path.sep}linked-folder${path.sep}`)));
+    check('get-file-paths-with-stats: the junction is one entry - the shortcut it is burned as - and nothing behind it is listed',
+      scanWithStats.response.res.some((entry) => entry.path.endsWith(`${path.sep}linked-folder.lnk`) && entry.stats.linkTarget === linkedTarget)
+        && !scanWithStats.response.res.some((entry) => entry.path.includes(`${path.sep}linked-folder${path.sep}`)));
     checkNoUnknownLines('get-file-paths-with-stats', scanWithStats.progressLines, [SCAN_LINE]);
     checkPhase('get-file-paths-with-stats', parseLines(scanWithStats.progressLines, SCAN_LINE), expected);
 
@@ -163,13 +166,15 @@ async function main() {
     checkNoUnknownLines('get-file-paths', paths.progressLines, [SCAN_LINE]);
     checkPhase('get-file-paths', parseLines(paths.progressLines, SCAN_LINE), expected);
 
-    console.log('\n4) diff (source against an empty folder - every source entry is source-only)');
+    console.log('\n4) diff (source against an empty folder - every source entry is source-only; the junction is one entry)');
     const diff = await callWorkerWithProgress(win, 'diff', { source, target: emptyTarget });
     const diffScan = parseLines(diff.progressLines, SCAN_LINE);
     const diffCompare = parseLines(diff.progressLines, COMPARE_LINE);
     check('diff: finished normally', diff.response.status === 'completed', diff.response.status);
     check('diff: every source entry reported as source-only', diff.response.res.length === expected,
       `got ${diff.response.res.length}, expected ${expected}`);
+    check('diff: the junction is one entry, not followed',
+      diff.response.res.includes('linked-folder') && !diff.response.res.some((p) => p.startsWith(`linked-folder${path.sep}`)));
     checkNoUnknownLines('diff', diff.progressLines, [SCAN_LINE, COMPARE_LINE]);
     // The empty target folder is one entry itself, so the scan phase's total is the source's plus one.
     checkPhase('diff scan phase', diffScan, expected + 1);
@@ -191,7 +196,8 @@ async function main() {
     const partitionPack = parseLines(partition.progressLines, PACK_LINE);
     check('partition: finished normally', partition.response.status === 'completed', partition.response.status);
     check('partition: needs several discs (so the packing loop reports more than once)', discs.length > 1, `${discs.length} disc(s)`);
-    check('partition: every entry placed on a disc', discs.reduce((sum, disc) => sum + disc.length, 0) === expected);
+    check('partition: every entry placed on a disc - the junction as its shortcut, nothing behind it', discs.reduce((sum, disc) => sum + disc.length, 0) === expected
+      && !discs.flat().some((entry) => entry.path.includes(`${path.sep}linked-folder${path.sep}`)));
     checkNoUnknownLines('partition', partition.progressLines, [SCAN_LINE, PACK_LINE]);
     checkPhase('partition scan phase', partitionScan, expected);
     checkPhase('partition packing phase', partitionPack, expected);

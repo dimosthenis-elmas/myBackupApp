@@ -8,6 +8,11 @@ export type ErrorSource = 'main' | 'worker' | 'renderer';
 export interface ReportedError {
   summary: string;
   details: string;
+  /** Optional dialog title in place of the default for its source (see ErrorReporterService's SOURCE_LABELS). */
+  title?: string;
+  /** Optional lists of items (e.g. file paths) shown as scrollable lists below the summary - see
+   *  ConfirmationDialogComponent's `lists`. */
+  lists?: Array<{ label: string, items: string[] }>;
 }
 
 type DialogHandler = (source: ErrorSource, reported: ReportedError) => void;

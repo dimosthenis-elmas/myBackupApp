@@ -88,7 +88,7 @@ async function main() {
     // Pause after every successful step, deliberately - long enough for a human watching the window to actually
     // see what just happened before the next click fires. Purely for watchability; the app itself doesn't need
     // this.
-    const WATCH_PAUSE_MS = 5000;
+    const WATCH_PAUSE_MS = 1000;
 
     const step = async (label, fn) => {
       process.stdout.write(`  [ ] ${label} ... `);

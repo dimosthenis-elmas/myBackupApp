@@ -8,7 +8,7 @@ import { ConfirmationDialogComponent } from '../shared/components/confirmation-d
 import { LoadingDialogComponent } from '../shared/components/loading-dialog/loading-dialog.component';
 import { Subject, firstValueFrom } from 'rxjs';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
-import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
+import { OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
 import { filesMetadata } from '../../types/interface';
 import { SerialQueue } from '../shared/utils/serial-queue';
@@ -93,7 +93,6 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   @ViewChildren('cmp')
   private filesTrees!: QueryList<FilesTreeComponent>;
   
-  private workerListener!: WorkerListener;
   private tempDataDirectoryPath!: string;
   /** This job's own temp-dir session subfolder name (see SESSION_FOLDER_NAME_PATTERN's own comment in
    *  worker.ts) - generated once (see WriteToOpticalMediaProceed) and reused for every worker call this job
@@ -298,7 +297,9 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
             }
           });
         });
-        let promise = ipc.partitionBackupToOpticalMedia(this.backup.sourcePath, this.selected_optical_medium.capacity, this.splitLargeFiles, this.tempSessionId);
+        // filesMetadata undefined (the worker scans sourcePath itself), skipUnreadable true: an entry in the backup
+        // source that cannot be read is left out and reported, rather than making the whole planning fail.
+        let promise = ipc.partitionBackupToOpticalMedia(this.backup.sourcePath, this.selected_optical_medium.capacity, this.splitLargeFiles, this.tempSessionId, undefined, true);
 
         promise.then((response)=>{
           this.isPartitioning = false;
@@ -311,10 +312,13 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
           /* the response from the worker returns the full paths relative to the host file system.
            Since we are indifferent for the full system file structure we trim the 'this.backup.sourcePath'
            part from all paths. This way our root becomes the directory chosen by the user in the dialog.*/
+          // Ending in exactly one backslash: the folder picker returns a drive root ("D:\") with its backslash
+          // already, so appending another would never match the paths found under it.
+          const sourcePathPrefix = this.backup.sourcePath.endsWith('\\') ? this.backup.sourcePath : this.backup.sourcePath + '\\';
           let opticalDiskPartitioningTrimmed = response.res.map(
             (subarray)=>{
               return subarray.map(x=>{
-                x.path = x.path.replace(this.backup.sourcePath + "\\", "");
+                x.path = x.path.replace(sourcePathPrefix, "");
                 return x;              
               })
           });
@@ -363,15 +367,26 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
           console.log(JSON.stringify(err));
           loadingDialogRef.close();
 
-          if(err.res.err_code == 'FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC'){
-            const confirmDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
+          // Optional chaining: not every rejection is a full worker response (e.g. a cancelled queued request
+          // rejects with a plain string), and reading err.res.err_code off one of those would itself throw.
+          if(err?.res?.err_code == 'FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC'){
+            const confirmDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '700px'});
             confirmDialog.disableClose = true;
-            confirmDialog.componentInstance.message = JSON.stringify(err.res.msg) + `\n\nBut wait, there might be a fix to this! This app could
-            split those large files which don't fit to any single optical disc into parts for you and write those
-            to the optical disks. For example if you have a large file myFile.zip the app
-            could create a directory myFile.zip and add the parts myFile.zip.part_01 myFile.zip.part_02 etc. Would you like to proceed with
-            this approach?`;
-            confirmDialog.componentInstance.title = "Error - Too large files found"
+            // Every too-large file, by full path, as a scrollable list - there can be many. err.res.msg (a one-line
+            // summary naming only the first one) is the fallback for a response without the list.
+            const tooLargeFiles: Array<{ path: string, size: number }> = Array.isArray(err.res.too_large_files) ? err.res.too_large_files : [];
+            confirmDialog.componentInstance.message =
+              (tooLargeFiles.length > 0
+                ? `${tooLargeFiles.length} file(s) are too large to fit on any single ${this.selected_optical_medium.viewValue} disc - see the list below.`
+                : `${err.res.msg}`) +
+              `\n\nBut wait, there might be a fix to this! This app can split each of those files into 500 MB parts ` +
+              `and write the parts to the discs like any other file. For example, a large file myFile.zip becomes ` +
+              `myFile.zip.part.001, myFile.zip.part.002 and so on, in the same folder. When you recover the data, the ` +
+              `app offers to reassemble the original file from its parts. Would you like to proceed with this approach?`;
+            if (tooLargeFiles.length > 0) {
+              confirmDialog.componentInstance.lists = [{ label: `Too large for a single disc (${tooLargeFiles.length}):`, items: tooLargeFiles.map(f => f.path) }];
+            }
+            confirmDialog.componentInstance.title = "Large files found"
             confirmDialog.componentInstance.actionsNum = 2;
             confirmDialog.componentInstance.action1Label = "No, thanks. Cancel operation.";
             confirmDialog.componentInstance.action1Callback = () => { 
@@ -415,7 +430,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
             }else{
               const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
               errorDialog.componentInstance.title = "Error";
-              errorDialog.componentInstance.message = JSON.stringify(err);            
+              errorDialog.componentInstance.message = `${err}`;
             }
         })
   
@@ -542,43 +557,9 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     const collectionName = this.coldStorageCollectionName.trim();
     const volumeLabel = (collectionName ? collectionName + ' ' : '') + 'Disc ' + (disk_id + 1);
 
-    this.workerListener = ipc.onResponseFromWorker((event, response) => {
-      this.ngZone.run(() => {
-        switch (response.key) {
-          case 'create-IBB-file':
-            if(response.status == 'completed'){
-              console.log(response)
-            }
-            break;
-          case 'imgburn-launch-failed': {
-            // Pushed independently by invokeImgBurnOnIBBFile (worker.ts), asynchronously - by the time ImgBurn
-            // actually fails to launch, createIBB_file/openExistingIBBFile have already resolved successfully
-            // (see that function's own doc comment), so this can arrive well after either of those calls
-            // returned, not as part of their own response. Nothing about the sent/created/metadata-JSON
-            // state for this disc is trustworthy once ImgBurn itself never actually opened, so send the user
-            // back to the main menu rather than leaving them on a screen that looks like the send succeeded.
-            const failureDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
-            failureDialog.componentInstance.title = "Error";
-            failureDialog.componentInstance.message = `ImgBurn could not be launched: ${response.res.message}`;
-            failureDialog.componentInstance.actionsNum = 1;
-            failureDialog.componentInstance.action1Label = "Ok";
-            failureDialog.componentInstance.action1Callback = () => {
-              failureDialog.close();
-              goToMainMenuAndReload(this.router);
-            };
-            break;
-          }
-          default:
-            console.error('The app received an unexpected internal message and may be out of sync. It is best to restart it.', response)
-            break;
-        }
-      });
-    });
-
-    // Await (previously fired-and-forgotten): ipc.createIBB_file() only resolves once the worker has actually
-    // finished building the .ibb file and invoking ImgBurn. Without awaiting it, this method (and therefore the
-    // caller's .then()) resolved on the next microtick instead - closing the loading dialog and silently
-    // dropping any failure before the real work was done.
+    // A failure to START ImgBurn is not reported through this call: the worker shows it as an error dialog of its
+    // own (see invokeImgBurnOnIBBFile in worker.ts), and clicking "Send to ImgBurn" again reopens the same .ibb file.
+    // ipc.createIBB_file() resolves once the worker has finished building the .ibb file and invoking ImgBurn.
     await ipc.createIBB_file(disk_id, paths, sourcePath, this.tempSessionId, volumeLabel);
   }
 
@@ -797,19 +778,15 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       OPTICAL_DRIVE_LETTER_CONVENTION (see disc-id-hash.ts for why). */
       const selectedFiles = finalStats.map(e => { return { "path": OPTICAL_DRIVE_LETTER_CONVENTION + e.path, "stats": e.stats } });
 
-      // Same disc-identification hash used during recovery (see getDiscIdHash / OpticalDiscBackupDataRetriever) -
-      // computed here from the exact same OPTICAL_DRIVE_LETTER_CONVENTION-prefixed paths that are about to be written
-      // into the cold storage metadata JSON for this disc, so the label the user writes on the physical disc now will
-      // match what the app later checks against when that disc is inserted for a recovery.
-      const discIdHash = getDiscIdHash(selectedFiles.map(f => f.path).sort().toString());
-
+      // Only the disc's number: during a recovery the app recognizes each inserted disc by itself (a hash of its
+      // contents, see getDiscIdHash) and asks for discs by this number.
       await new Promise<void>((resolve) => {
         const labelDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
         labelDialog.disableClose = true;
         labelDialog.componentInstance.title = "Disc label";
         labelDialog.componentInstance.message =
-          `Please physically label this disc as disc ${i + 1}, with ID hash: ${discIdHash}. Both are needed to ` +
-          `identify this disc correctly during a future recovery.`;
+          `Please physically label this disc as disc ${i + 1}. During a future recovery, the app asks for each ` +
+          `disc by this number.`;
         labelDialog.componentInstance.actionsNum = 1;
         labelDialog.componentInstance.action1Label = "Ok";
         labelDialog.componentInstance.action1Callback = () => {
@@ -846,7 +823,9 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         return;
       }
 
-      this.sentDiscPartPaths[i] = finalStats.filter(e => PART_FILE_PATTERN.test(e.path)).map(e => e.path);
+      // What this disc needed created in the temp folder - split partials, and links' shortcuts (linkTarget) - deleted
+      // again once the disc is confirmed burned (confirmDiscBurned).
+      this.sentDiscPartPaths[i] = finalStats.filter(e => PART_FILE_PATTERN.test(e.path) || e.stats.linkTarget !== undefined).map(e => e.path);
 
       // Awaited (previously fired-and-forgotten): see sendingDiscs's own doc comment for why this guard needs
       // this chain's real completion, not just its start, to reset on.
@@ -974,11 +953,14 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       const tempDirNormalized = rawTempDataDirectoryPath.replace(/\\$/, '') + '\\' + this.tempSessionId;
       const partialPaths = partRelativePaths.map(p => tempDirNormalized + '\\' + p);
       const response = await ipc.deletePartialsForDisc(partialPaths);
-      const result: { cleared: boolean; message: string; deletedItems: string[] } = response.res;
+      const result: { cleared: boolean; message: string; deletedItems: string[]; notClearedItems: string[] } = response.res;
       if (!result.cleared) {
-        const warnDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        const warnDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
         warnDialog.componentInstance.title = "Temp cleanup incomplete";
-        warnDialog.componentInstance.message = `Disc ${i + 1} was confirmed burned, but its temporary split-part files could not all be removed: ${result.message} You can safely ignore this - leftover temp files are cleaned up automatically the next time the app starts.`;
+        warnDialog.componentInstance.message = `Disc ${i + 1} was confirmed burned, but its temporary split-part files could not all be removed: ${result.message} You can safely ignore this - the app offers to clear leftover temp files the next time it starts.`;
+        if (result.notClearedItems?.length) {
+          warnDialog.componentInstance.lists = [{ label: `Not removed (${result.notClearedItems.length}):`, items: result.notClearedItems }];
+        }
         warnDialog.componentInstance.actionsNum = 1;
         warnDialog.componentInstance.action1Label = "Ok";
         warnDialog.componentInstance.action1Callback = () => { warnDialog.close(); };

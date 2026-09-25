@@ -7,6 +7,8 @@
  */
 
 const { execFileSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const MODULE_PATH = path.join(__dirname, '../optical-media/OpticalMediaTestKit.psm1');
@@ -54,14 +56,27 @@ function buildIso(sourceDir, isoPath, volumeName) {
   `);
 }
 
+/** Mounts the .iso and returns its drive info. Never as D: when that letter is free: the app writes every disc's
+ *  paths with a fixed "D:\" (OPTICAL_DRIVE_LETTER_CONVENTION in disc-id-hash.ts), whatever letter the disc
+ *  actually has, and on a machine with only a C: drive Windows would otherwise always pick D: - so a disc that
+ *  mounts under another letter, as it does on most real machines, would never be exercised. A free D: is held by a
+ *  temporary SUBST while mounting and released right after (the disc keeps the letter it got). */
 function mountIso(isoPath) {
-  const out = runPS(`
-    $ErrorActionPreference = 'Stop'
-    Import-Module "${MODULE_PATH}" -Force
-    (Mount-TestIso -IsoPath "${isoPath}") | ConvertTo-Json -Compress
-  `);
-  const jsonLine = out.trim().split(/\r?\n/).filter(Boolean).pop();
-  return JSON.parse(jsonLine);
+  let holdingD = false;
+  if (!fs.existsSync('D:\\')) {
+    try { execFileSync('subst', ['D:', os.tmpdir()], { stdio: 'pipe' }); holdingD = true; } catch { /* D: is taken after all (e.g. an empty optical drive) */ }
+  }
+  try {
+    const out = runPS(`
+      $ErrorActionPreference = 'Stop'
+      Import-Module "${MODULE_PATH}" -Force
+      (Mount-TestIso -IsoPath "${isoPath}") | ConvertTo-Json -Compress
+    `);
+    const jsonLine = out.trim().split(/\r?\n/).filter(Boolean).pop();
+    return JSON.parse(jsonLine);
+  } finally {
+    if (holdingD) { try { execFileSync('subst', ['D:', '/D'], { stdio: 'pipe' }); } catch { /* already gone */ } }
+  }
 }
 
 function dismountIso(isoPath) {

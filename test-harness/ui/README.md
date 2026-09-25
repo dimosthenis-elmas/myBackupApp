@@ -33,7 +33,7 @@ the shared tree generator doesn't fit. The other two DO use the same shared `gen
 support `--random-tree`/`--json-tree` like the eight main scripts above) - they just don't ship a bundled
 `tree-spec.json` of their own yet, so `--json-tree` isn't usable against them without adding one first.
 
-**Every script that clicks through a full wizard pauses 5 seconds after every click** (`WATCH_PAUSE_MS` near the
+**Every script that clicks through a full wizard pauses 1 second after every click** (`WATCH_PAUSE_MS` near the
 top of each script's `step()` helper) - purely so you can actually watch each step land on screen as it runs, not
 because the app needs it. Lower it (or remove the `await new Promise(...)` line) if you'd rather they run at full
 speed.
@@ -120,7 +120,10 @@ already used for a much simpler existing check (`e2e/main.spec.ts`, which just c
 script uses it to click all the way through an actual real task instead.
 
 Since a real "insert a disc" moment needs an actual disc, this test uses a mounted `.iso` file instead (see
-`test-harness/optical-media`) — Windows can't tell the difference, so the app genuinely can't either.
+`test-harness/optical-media`) — Windows can't tell the difference, so the app genuinely can't either. The disc is
+never mounted as `D:` when that letter is free (`iso-disc.js` holds `D:` with a temporary `SUBST` while mounting,
+then releases it): the app writes every disc's paths with a fixed `D:\` whatever letter the disc really has, so a
+disc under another letter — as on most real machines — is the case worth exercising.
 
 One more trick: when you click "choose a folder to save to," the app normally pops up Windows' own folder-picker
 window and waits for you to click something in it. A script can't click a window that isn't part of the app's
@@ -207,7 +210,9 @@ Next → the destructive-operation warning dialog → "Continue" → the preview
 `IncrementalDialogComponent` the Cumulative backup wizard uses) → "Write to the backup" (which starts
 **disabled** until the preview stream finishes — this script relies on Playwright's normal click-actionability
 wait for that, no extra polling needed) → "Yes, continue" on the sync confirmation → waits for the copy+delete to
-finish → "Ok" on the success dialog. Then verifies the target folder exactly matches a freshly rebuilt manifest
+finish → the success dialog, whose title says so and whose text states the number of files and their total size in
+bytes (the check the wizard runs after a sync, compared with the script's own count) → "Ok" (after which the Cancel
+button must be gone). Then verifies the target folder exactly matches a freshly rebuilt manifest
 of source's final state — `verify-manifest.js`'s own `EXTRA` detection is what actually proves deleted files are
 gone, not just that the expected ones are.
 
@@ -234,7 +239,7 @@ it covers, all at once, on a single run:
 - A large file's REAL split pieces (via the app's own `partition-backup-to-optical-media`, same as
   `worker-ipc/test-large-file-split.js` and its proven-safe size constants) spread across the two DIFFERENT
   discs, reassembled during recovery via the wizard's own "Partial files detected - want me to reassemble them?"
-  flow - a code path no other test here exercises (the worker-ipc large-file test proves the raw split+merge
+  flow (both it and the following "Reassembly successful" dialog must list the file by its full path) - a code path no other test here exercises (the worker-ipc large-file test proves the raw split+merge
   mechanism directly over IPC; this proves the recovery UI's own merge-offer screen, which only exists there).
 - Full before/after directory-tree printouts (source, each disc's own contents before burning, and the final
   recovered result) via `lib/print-tree.js`.
@@ -287,9 +292,12 @@ normalizes the paths the same way the real burn-time flow does before saving (se
 that marks an empty directory and change that disc's computed ID hash). The result is structurally identical to
 what the app would have saved for real.
 
-It also covers the same large-file-split-across-discs merge scenario `test-recover-multi-disc.js` proves for the
-physical-disc-read path — one real split piece (via `partition-backup-to-optical-media`, same proven-safe size
-constants) placed on each disc, reassembled during recovery via the wizard's own "Partial files detected" screen.
+It also covers the same large-file-split-across-discs scenario `test-recover-multi-disc.js` proves for the
+physical-disc-read path — one real split piece placed on each disc — but here the wizard's "Partial files
+detected" offer is **declined**: the wizard then shows one 7-Zip command per file for reassembling it by hand
+("How to reassemble manually"). The script checks the command names the parts' folder with `-o"<folder>"` and the
+first part by its full path, then runs exactly that command through `cmd.exe` from an unrelated folder (the way a
+user would paste it) and verifies the file comes out next to its parts with the original content.
 
 **A structural race worth knowing about if this script (or the wizard) is ever changed:** the mat-chip showing
 the chosen JSON path appears on screen the instant a path is picked — *before* `afterJSONpathIsGiven()` actually
@@ -315,8 +323,8 @@ cases plus a real 700MB file, big enough on its own to force a real split.
 `add-missing-files-to-optical-media-cold-storage.component.ts`'s `partition()` (which hardcodes
 `splitLargeFiles: true` unconditionally, every time - see `ui/test-add-missing-files.js`), THIS wizard's
 `WriteToOpticalMediaProceed` tries *without* splitting first, and only on catching a
-`FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC` error does it show its own confirmation chain: "Error - Too large files
-found" → "Yes, split the large files" → an "Info" dialog about the temp directory → "Ok, got it." (which retries
+`FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC` error does it show its own confirmation chain: "Large files found" (which
+must list the large file by its full path) → "Yes, split the large files" → an "Info" dialog about the temp directory → "Ok, got it." (which retries
 the same PLANNING call with `splitLargeFiles: true` - still no 7-Zip involved yet; the real split only happens
 later, lazily, per disc, the first time each disc is actually sent to ImgBurn). The real 700MB file
 reliably produces 3 discs (1 for the small normal files, 2 for the real ~500MB/~176MB split pieces - same
@@ -521,6 +529,62 @@ still mounted, before the script ever reached its own PASS/FAIL line - leaving t
 manual eject, with no clean error message pointing at why. Fixed by moving the verify/cleanup/PASS-FAIL logic to
 AFTER the try/finally closes (matching every other script here's existing convention: dismount and close the app
 FIRST, only clean up scratch files once nothing is still locked).
+
+## `test-sync-dirs-cancel.js`
+
+```
+node test-harness/ui/test-sync-dirs-cancel.js
+```
+
+Cancel in the "Synchronize directories" wizard at the three moments it can be pressed, each with a fresh app and a
+fresh folder pair (3000 files to copy, so the copy phase lasts a few seconds, and 25 leftover files in the target
+that the delete phase would remove): **on the warning** shown before anything is compared (the wizard simply stops -
+no error dialog, nothing touched); **straight after "Yes, continue"**, before the commit has had time to start (the
+Cancel button appears as the confirmation closes, while the commit starts a moment later - a Cancel pressed in
+between used to be ignored and the whole sync ran, deletions included); and **while files are being copied** (the
+copy stops and the deletions never start - this used to end in "Directory synchronization failed" with the
+"Stopping the synchronization" dialog stuck open). In the last two the wizard must show "Directory synchronization
+has stopped", close its "Stopping" dialog, show no error, no longer show its Cancel button (nor once a sync
+completes - checked by test-sync-dirs.js), and leave every leftover file in place.
+
+## `test-wizard-error-dialogs.js`
+
+```
+node test-harness/ui/test-wizard-error-dialogs.js
+```
+
+What the user sees when a folder wizard cannot go ahead: Cumulative backup with the backup folder inside the source,
+and Synchronize directories with the target containing the template folder, are both refused with a message that
+says so in words and names both folders (worker errors used to reach dialogs as "[object Object]"), and nothing on
+disk changes - in particular the template folder inside the target is not deleted. And Cumulative backup with a
+source folder Windows refuses to list (a temporary "deny list folder" ACL): a "Some items were left out"
+warning names that folder by its full path, and the comparison still goes on to show everything else. And a sync
+after which the two folders still differ - a file renamed only in letter case, which the sync leaves as it is: the
+check afterwards shows "Directory synchronization - differences found" with that file in its scrollable list.
+
+## `test-recover-copy-failure.js`
+
+```
+node test-harness/ui/test-recover-copy-failure.js
+```
+
+The recovery wizard with one simulated disc, where the recovery folder is made unwritable (a temporary "deny
+write" ACL) just before the copy: the wizard must show its own "Error while recovering from this disc" dialog with
+"Try this disc again" and "Cancel recovery" - not the generic error, and not a progress bar that never finishes.
+The folder is then made writable again and "Try this disc again" clicked: every file must be recovered with
+matching content.
+
+## `test-install-path-special-characters.js`
+
+```
+node test-harness/ui/test-install-path-special-characters.js
+```
+
+Copies the built app (`app/`, `dist/`, and `appData`'s `config.json` and `IBB_TEMPLATE.ibb`) into a folder named
+`app copy # 100% <run id>` and launches that copy: the main menu has to appear, loaded from the copy's own
+`dist/index.html` (the page URL used to be glued together from the path, where `#` and `%` mean something else, so
+the window stayed blank), nothing may be loaded from the internet, and the Roboto and Material Icons fonts have to
+come from the copy's own `assets/fonts`. Needs `npm run build:prod` first - it copies the build output.
 
 ## `capture-readme-screenshots.js`
 

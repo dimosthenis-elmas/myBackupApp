@@ -28,7 +28,7 @@
  * Unlike add-missing-files-to-optical-media-cold-storage.component.ts's partition() (which hardcodes
  * splitLargeFiles: true, unconditionally, every time), THIS wizard's WriteToOpticalMediaProceed tries WITHOUT
  * splitting first, and only on catching a FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC error does it show a
- * confirmation dialog chain ("Error - Too large files found" -> "Yes, split the large files" -> an "Info" dialog
+ * confirmation dialog chain ("Large files found" -> "Yes, split the large files" -> an "Info" dialog
  * about the temp directory -> "Ok, got it.", which RETRIES the whole call with splitLargeFiles: true) - a
  * genuinely different code path from the other wizard's, and one no UI test here had ever clicked through before.
  * A real source tree with one file bigger than a CD's effective capacity forces exactly this chain. The retry
@@ -181,7 +181,7 @@ async function main() {
       dialog.showSaveDialog = async () => ({ canceled: false, filePath: queue.shift() });
     }, [sourceRoot, metadataJsonPath]);
 
-    const WATCH_PAUSE_MS = 5000;
+    const WATCH_PAUSE_MS = 1000;
     const step = async (label, fn) => {
       process.stdout.write(`  [ ] ${label} ... `);
       try {
@@ -226,8 +226,12 @@ async function main() {
 
     // --- Phase B: the "too large" confirmation chain, unique to this wizard (see header comment) ---
 
-    await step('wait for the "Error - Too large files found" dialog', () =>
-      win.getByText('Error - Too large files found', { exact: true }).waitFor({ timeout: 30_000 }));
+    await step('wait for the "Large files found" dialog', () =>
+      win.getByText('Large files found', { exact: true }).waitFor({ timeout: 30_000 }));
+
+    // The dialog lists every too-large file by its full path (a scrollable list - there can be many).
+    await step('the "Large files found" dialog lists the large file by its full path', () =>
+      win.getByRole('dialog').filter({ hasText: 'Large files found' }).getByText(largeFileAbsPath).first().waitFor({ timeout: 10_000 }));
 
     await step('click "Yes, split the large files"', () =>
       win.getByRole('button', { name: 'Yes, split the large files', exact: true }).click({ timeout: 15_000 }));

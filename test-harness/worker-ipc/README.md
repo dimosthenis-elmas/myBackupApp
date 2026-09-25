@@ -91,7 +91,13 @@ only an mtime comparison actually catches that); (4) empty directories are handl
 empty on both sides (even with a newer modified-time in the source), and one that is empty in the source but has
 files in the target, are both **not** reported by `diff` — a directory that already exists in the backup is backed
 up, whatever its own timestamp or contents — while one that exists only in the source **is** reported, and copying
-it creates it in the target.
+it creates it in the target; (5) edge cases, each in its own small folder pair: a source folder whose name contains
+`$&`/`$$` plus a Greek file name, a copy in the backup that is newer than the source's and a file that only exists in
+the backup (both left alone), a folder renamed in letter case only with one file inside edited (only that file is
+copied, into the existing folder - skipped on a case-sensitive filesystem), a folder Windows denies listing in the
+source (skipped and listed by full path in one warning when `diff` is called with `skipUnreadable` the way the wizard
+calls it, a failure without it), a file that disappears between `diff` and the copy (the copy reports an error), and a
+changed file whose earlier copy in the backup is read-only (replaced with the new version).
 
 One wrinkle worth knowing: `diff` correctly reports `generate-random-tree.js`'s own ownership-marker file
 (`.optical-backup-test-fixture.json`) as "source-only" too — it genuinely is a real file sitting in the source
@@ -103,9 +109,21 @@ that marker from their own directory listings for the same reason.
 node test-harness/worker-ipc/test-sync-dirs.js
 ```
 Tests the "Synchronize directories" screen's real logic — reproducing the exact algorithm
-`sync-dirs.component.ts` uses: `copyPaths = diff(source, target)`, `deletePaths = diff(target, source)` minus
-anything already in `copyPaths` (modified files are handled by copy, never delete+recreate), then copy, then
-delete. **This is the one script here that can genuinely delete real files** (everything else in `worker-ipc/`
+`sync-dirs.component.ts` uses: `copyPaths = diff(source, target, 'any-difference-or-content')`, `deletePaths =
+diff(target, source, 'any-difference')` minus anything already in `copyPaths`, then copy, then delete.
+`'any-difference'` is symmetric (mtimes differing in either direction, or sizes differing), so a file that exists
+on both sides but differs shows up in both lists and is overwritten by the copy, never deleted — the default
+comparison used by Cumulative backup only asks whether the first directory's copy is newer, which is why sync
+doesn't use it. The copy side's `'any-difference-or-content'` also compares the bytes of files whose size and mtime
+match. The test also plants two files whose target copy has different bytes — one with a newer mtime than the
+source's, one with exactly the source's size and mtime (only the byte comparison can see that one) — which the
+sync must overwrite with the source's version, and — only on a case-insensitive filesystem such as NTFS, where
+`name.txt` and `NAME.TXT` are one file (these scenarios are skipped on a case-sensitive one) — a file renamed in
+the source in letter case only, which is neither copied nor deleted, and one renamed in letter case only and
+changed, which must end up in the target with the new content. That last one stays in the deletion list under the
+target's spelling (the overlap removal compares names exactly), so it checks that the worker's deletion step never
+deletes a file the source has.
+**This is the one script here that can genuinely delete real files** (everything else in `worker-ipc/`
 only reads/copies), so it's worth reading its own header comment in full before touching it — in short: preview
 mode (`commit=false`) always runs first with an explicit on-disk assertion that nothing was deleted, the files it
 lets get deleted are a small hand-picked set it plants itself (never anything computed/sweeping), and a path
@@ -131,9 +149,10 @@ Every worker operation that scans a folder (`get-file-paths-with-stats`, `get-fi
 `partition-backup-to-optical-media`) first probes the folder's real size and then reports "(i of N)" progress lines
 against it, which the UI turns into its progress circle. This collects those lines (via `callWorkerWithProgress` in
 `call-worker.js`) and checks the things that would silently break the circle: N equals an independent count of
-what's really in the folder (the source tree includes a directory junction to a second folder, because the real
-scanners follow links and a probe that didn't would undercount); a leftover cancel from an earlier operation
-doesn't zero the total or turn the scan into "stopped"; `diff` reports its scan phase and then its comparison
+what's really in the folder (the source tree includes a directory junction to a second folder: no scan ever follows
+a link, so neither may the probe - every scan lists the junction as one entry, the scan behind every disc as
+`linked-folder.lnk`, the Windows shortcut it is burned as); a leftover cancel from an earlier operation doesn't zero
+the total or turn the scan into "stopped"; `diff` reports its scan phase and then its comparison
 phase in order, ending exactly on its last item; and `partition-backup-to-optical-media` reports its scan phase
 and then one "Packing items" line per disc — and, when handed the file list up front, doesn't scan at all (proved
 by pointing it at a folder that doesn't exist).
@@ -212,3 +231,68 @@ source file produces - the exact condition that used to spin forever. Uses a rea
 instead of hanging. Confirms the call now rejects with `err_code: 'FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC'` -
 the exact same rejection shape the ordinary-file pass has always produced for this situation - instead of never
 returning at all.
+
+### `test-scan-edge-cases.js` — links, unreadable entries, too-large files, and a whole drive as the folder
+```
+node test-harness/worker-ipc/test-scan-edge-cases.js
+```
+Plants a junction to a folder outside the scanned one, a dangling junction, and a folder Windows denies listing (a
+temporary "deny list folder" ACL). The scan behind every disc (`get-file-paths-with-stats`, backup planning) never
+follows a link: a disc cannot hold one, so each link is listed and planned as the one small Windows shortcut it is
+burned as (`<name>.lnk`, recording where it points), and nothing it points to ever appears in the result or the
+plan. When the disc is sent (with the app's temp folder pointed at a scratch folder for the run), each shortcut is
+created in the temp folder - never in the source - Windows itself reads it as pointing where the link points (also
+when that place no longer exists), and it is hashed like any other file; the folder the links point to is untouched.
+A backup-source scan (`skipUnreadable`, how the Backup to optical media and Add missing files wizards call it) names
+the folder that cannot be listed in **one** "Some items were left out" warning; the same scan without it (reading a
+disc) fails on it, and so does Synchronize directories' comparison - it must never skip (a skipped source entry
+would look "missing" and get deleted from the target). Planning a backup without splitting reports **every** file
+too large for one disc by full path, not just the first - and a plan that stops there shows no "left out" warning
+(the wizard plans again once splitting is agreed to), while one that goes ahead names the link it had to leave out
+because a real file already has its shortcut's name. And with a temporary `SUBST` drive letter onto a scratch folder: planning a backup of
+`X:\`, scanning a bare `X:` (what the disc readers pass), and resolving and hashing a file under the drive root all
+work (skipped if no drive letter is free). Uses `startRecordingAppErrors`/`takeAppErrors` from `call-worker.js` to
+see the warning dialogs. The ACL and the drive letter are removed again in a `finally` block; nothing is written
+into the app's real temp/cache folder.
+
+### `test-temp-dir-and-imgburn.js` — temp folder safety, clean-up lists, ImgBurn launch problems
+```
+node test-harness/worker-ipc/test-temp-dir-and-imgburn.js
+```
+Points `config.json`'s `cacheDataDirectoryPath` at scratch folders for the run (restored byte-for-byte afterwards),
+so the app's real temp/cache folder is never touched. Proves: a fresh folder is created and marked; clearing it
+deletes the app's own scratch content (split parts, and the shortcuts links are burned as) and keeps (and lists, by
+full path) anything it doesn't recognize; a folder
+whose marker records a different path - what copying or moving the app folder leaves behind - is adopted when it
+only holds the app's own content, but refused (and left untouched) when it holds anything else; the per-disc and
+recovery clean-up steps list what they refuse by full path. And ImgBurn, via `imgBurnExecutablePath` pointed at a
+missing path and at stub `.bat` files: a missing executable shows exactly one "ImgBurn could not be started" error,
+the `.ibb` path reaches ImgBurn as **one** quoted argument even with spaces in it, and ImgBurn exiting with an error
+code after it started shows nothing.
+
+### `test-sync-and-cumulative-rules.js` — both folder features against their rules, links, folders inside each other
+```
+node test-harness/worker-ipc/test-sync-and-cumulative-rules.js
+```
+Calls the worker exactly the way the Cumulative backup and Synchronize directories wizards do, and checks the
+results against the rules: Cumulative backup copies every source file that is missing from the backup or updated
+(newer in the source, or a different size) and never deletes or changes anything else; Synchronize directories
+leaves the target holding exactly the source's files, folders and links. (1) 20 random folder pairs per feature -
+missing files, target-only files and folders, empty folders, target copies that are newer, older, a different size,
+or the same size and date with different bytes - and the source must not change. (2) An earlier copy that Windows
+refuses to copy over (read-only, or hidden while the source file is not) is replaced; and sync's 2-second allowance
+for modified times (identical bytes 1 second apart are left alone, 3 seconds apart copied again). (3) Links
+(junctions): a link is one entry, never followed - copied as a link pointing to the same place, replaced or deleted
+as the link itself, also where the other side has a folder or a file at that path - and for every scenario a folder
+outside both, which the links point to, must be unchanged, and a second run must find nothing left to do.
+(4) Folders inside each other are refused with a message and nothing changes (the target containing the source, the
+reverse, a target that is a junction to a folder inside the source, differently cased paths); a sibling whose name
+merely starts with the other's is not refused; the same folder twice is simply up to date / in sync. (5) A name that
+is a file (or a junction) on one side and a folder on the other: Synchronize directories replaces the target's entry,
+folder contents and all; Cumulative backup deletes nothing - the backup's entry is renamed "<name> (old folder)" /
+"(old file)" (numbered if taken) and the source's entry backed up under the name - also for names that differ only in
+letter case. (6) The check Synchronize directories runs after a sync (`compare-folders`): after every sync above it
+finds both folders identical and counts the same files and bytes as the script's own walk; on a pair built to
+differ it reports each difference once - a size, an entry only one side has (a whole folder as one line), a name
+that differs only in letter case, a file against a folder, a link pointing elsewhere - and nothing else. Everything
+lives under `generated-fixtures/`; the app's temp/cache folder is not touched.

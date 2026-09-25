@@ -37,7 +37,7 @@ export class ErrorReporterService {
       // func is called as (event, arg), not just (arg), same as WorkerCommunicator.onResponseFromWorker's
       // identical two-parameter callback.
       api.ipcRenderer_on('app-error', (event: unknown, arg: { source: ErrorSource } & ReportedError) => {
-        showRelayedError(arg.source, { summary: arg.summary, details: arg.details });
+        showRelayedError(arg.source, { summary: arg.summary, details: arg.details, title: arg.title, lists: arg.lists });
       });
     }
   }
@@ -55,10 +55,11 @@ export class ErrorReporterService {
     // dialog.open must run inside Angular's zone - this can be reached from an IPC callback (via api.ipcRenderer_on
     // above), which runs outside it.
     this.ngZone.run(() => {
-      const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '600px' });
-      errorDialog.componentInstance.title = SOURCE_LABELS[source];
+      const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: reported.lists?.length ? '700px' : '600px' });
+      errorDialog.componentInstance.title = reported.title || SOURCE_LABELS[source];
       errorDialog.componentInstance.message = reported.summary;
       errorDialog.componentInstance.technicalDetails = reported.details || undefined;
+      if (reported.lists?.length) { errorDialog.componentInstance.lists = reported.lists; }
       errorDialog.componentInstance.actionsNum = 1;
       errorDialog.componentInstance.action1Label = 'Ok';
       errorDialog.afterClosed().subscribe(() => {

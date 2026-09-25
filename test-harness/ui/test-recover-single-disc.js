@@ -20,7 +20,8 @@
  *   2. Builds a .iso from that tree and mounts it (test-harness/optical-media).
  *   3. Launches the real app, stubs the native "select folder" dialog to return a fresh scratch output folder.
  *   4. Clicks through: main menu -> Recover data from optical media backup -> select output folder -> Next ->
- *      (waits for the app's OWN disc detection to find the mounted .iso) -> "all discs processed" -> select all
+ *      (waits for the app's OWN disc detection to find the mounted .iso) -> "all discs processed" -> checks the
+ *      totals shown under the files tree (number of files, total size in bytes) against the disc's own -> select all
  *      files -> Recover selected data -> confirm -> (waits for copy) -> "Ok" on the success dialog.
  *   5. Verifies the recovered folder's contents against the manifest by hash (verify-manifest.js) - a real
  *      pass/fail, not just "no error was thrown".
@@ -81,6 +82,7 @@ async function main() {
   console.log(`Mounted: ${JSON.stringify(drive)}`);
 
   let app, win;
+  let totalsLabelCorrect = false;
   try {
     // 3. Launch the app and stub the native folder-picker to return our scratch output folder.
     console.log('\nLaunching the app...');
@@ -94,7 +96,7 @@ async function main() {
     // Pause after every successful step, deliberately - long enough for a human watching the window to actually
     // see what just happened before the next click fires. Purely for watchability; the app itself doesn't need
     // this.
-    const WATCH_PAUSE_MS = 5000;
+    const WATCH_PAUSE_MS = 1000;
 
     const step = async (label, fn) => {
       process.stdout.write(`  [ ] ${label} ... `);
@@ -129,6 +131,24 @@ async function main() {
 
     await step('wait for disc detection + read, click "All disks have been processed..." (up to 60s)', () =>
       win.getByRole('button', { name: 'All disks have been processed, continue to the next step' }).click({ timeout: 60_000 }));
+
+    // Under the files tree: the cold storage's number of files and total size in bytes - here, everything on the disc.
+    await step('verify the totals under the files tree (number of files, total size in bytes)', async () => {
+      const label = win.getByText(/^Total number of files:/);
+      await label.waitFor({ timeout: 30_000 });
+      const shown = (await label.innerText()).trim();
+      let files = 0;
+      let bytes = 0;
+      (function walk(dir) {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) { walk(full); } else { files++; bytes += fs.statSync(full).size; }
+        }
+      })(sourceRoot);
+      const expected = `Total number of files: ${files.toLocaleString('en-US')} — Total size of the cold storage in bytes: ${bytes.toLocaleString('en-US')}`;
+      totalsLabelCorrect = shown === expected;
+      console.log(`\n  on screen: "${shown}"${totalsLabelCorrect ? '' : `\n  expected : "${expected}"`}`);
+    });
 
     await step('click the "Select all" checkbox', () =>
       win.getByRole('checkbox', { name: 'Select all' }).click({ timeout: 30_000 }));
@@ -177,14 +197,15 @@ async function main() {
   // 6. Clean up our own scratch files ONLY on success - on failure, leave everything (source tree, recovered
   //    output, the .iso) in place under scratchRoot so it can actually be inspected afterwards instead of
   //    guessing blind at what went wrong.
-  if (verifyPassed) {
+  const pass = verifyPassed && totalsLabelCorrect;
+  if (pass) {
     fs.rmSync(scratchRoot, { recursive: true, force: true });
   } else {
     console.log(`\nLeaving scratch files in place for inspection: ${scratchRoot}`);
   }
 
-  console.log(`\n${verifyPassed ? 'PASS' : 'FAIL'} - recovery wizard ${verifyPassed ? 'correctly recovered every file with matching content.' : 'did not produce a correct result, see verify-manifest output above.'}`);
-  process.exitCode = verifyPassed ? 0 : 1;
+  console.log(`\n${pass ? 'PASS' : 'FAIL'} - recovery wizard ${pass ? 'showed the right totals and correctly recovered every file with matching content.' : 'did not produce a correct result, see above.'}`);
+  process.exitCode = pass ? 0 : 1;
 }
 
 main().catch((e) => {

@@ -10,8 +10,29 @@ whole pattern again.
 
 
 import { filesMetadata, IElectronAPI } from '../../src/types/interface'
-import { WorkerChannel, WorkerRequest, WorkerResponse, OpticalMediaPartitioning, WorkerListener } from './ipc.interfaces'
+import { WorkerChannel, WorkerRequest, WorkerResponse, OpticalMediaPartitioning, WorkerListener, DiffComparison, NameClash } from './ipc.interfaces'
 
+/** The human-readable text for a worker error payload (`WorkerResponse.res` of a `status: 'error'` response): a
+ *  plain string as-is, an Error's (or an `{ msg }` object's) message, otherwise its JSON. */
+function describeWorkerError(res: any): string {
+    if (typeof res === 'string') { return res; }
+    if (res && typeof res.message === 'string') { return res.message; }
+    if (res && typeof res.msg === 'string') { return res.msg; }
+    try { return JSON.stringify(res); } catch { return String(res); }
+}
+
+/** Gives an error response a `toString()` that returns its message, so a caller that drops the rejection straight
+ *  into a dialog's text (`${error}`) shows the actual problem instead of "[object Object]". Non-enumerable, so
+ *  the response itself (`response.res`, `response.status`, JSON.stringify(response), ...) is otherwise unchanged
+ *  for callers that inspect it. Used for the default `rejectPayload: 'response'` only - see sendAndAwaitResponse. */
+function withReadableToString(response: WorkerResponse): WorkerResponse {
+    Object.defineProperty(response, 'toString', {
+        value: () => describeWorkerError(response.res),
+        enumerable: false,
+        configurable: true,
+    });
+    return response;
+}
 
 
 export class WorkerCommunicator {
@@ -93,7 +114,8 @@ export class WorkerCommunicator {
      *     partitionBackupToOpticalMedia for the one method that needs a different response shape than plain
      *     WorkerResponse).
      *   - `status: 'error'` -> rejects. With WHAT depends on `rejectPayload`:
-     *       - 'response' (the default): rejects with the full WorkerResponse object.
+     *       - 'response' (the default): rejects with the full WorkerResponse object, whose toString() returns the
+     *         error's message (see withReadableToString) so `${error}` reads properly in a dialog.
      *       - 'response.res': rejects with just its `res` field.
      *     This split is not a stylistic choice made here - it reflects a real difference each of these
      *     methods already had before this refactor, which at least one caller actually depends on (e.g.
@@ -166,7 +188,7 @@ export class WorkerCommunicator {
                             resolveTurn();
                         } else if (response.status === 'error') {
                             window.electronAPI.ipcRenderer_removeAllListeners('message-from-worker');
-                            rejectCaller(rejectPayload === 'response.res' ? response.res : response);
+                            rejectCaller(rejectPayload === 'response.res' ? response.res : withReadableToString(response));
                             resolveTurn();
                         }
                     } else if (response.key === 'stop') {
@@ -216,19 +238,24 @@ export class WorkerCommunicator {
     // ====================backup services API
     //=========================================================================
 
-    static incrementalPreview(sourceOnlyPaths: Array<string>, sourcePath: string, targetPath: string): Promise<WorkerResponse> {
+    /** @param nameClash see NameClash (ipc.interfaces.ts) - what to do where a name is a file on one side and a
+     *  folder on the other. */
+    static incrementalPreview(sourceOnlyPaths: Array<string>, sourcePath: string, targetPath: string, nameClash?: NameClash): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('incremental-preview', {
             sourceOnlyPaths: sourceOnlyPaths,
             source: sourcePath,
-            target: targetPath
+            target: targetPath,
+            nameClash: nameClash
         }, 'response.res');
     }
 
-    static incrementalCopyFiles(sourceOnlyPaths: Array<string>, sourcePath: string, targetPath: string): Promise<WorkerResponse> {
+    /** @param nameClash see incrementalPreview. */
+    static incrementalCopyFiles(sourceOnlyPaths: Array<string>, sourcePath: string, targetPath: string, nameClash?: NameClash): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('incremental-copy-files', {
             sourceOnlyPaths: sourceOnlyPaths,
             source: sourcePath,
-            target: targetPath
+            target: targetPath,
+            nameClash: nameClash
         }, 'response.res');
     }
 
@@ -247,17 +274,24 @@ export class WorkerCommunicator {
         }, 'response.res');
     }
 
+    /** Compares two folders by exact names and sizes - see compareFolders in worker.ts. Resolves with
+     *  `res: { matched, fileCount, totalBytes, mismatches }`. */
+    static compareFolders(source: string, target: string): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('compare-folders', { source, target });
+    }
+
     /** `sessionId` (see SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts) must be the one value generated
      *  once per job and reused consistently across every call this same job makes (this one, createIBB_file,
      *  and createOpticalMediaDiscPartials) - it is what keeps this job's real split partials and .ibb files
      *  isolated from any other job's, past or concurrent. */
-    static partitionBackupToOpticalMedia(rootPath: string, mediaCapacityInBytes: number, splitLargeFiles: boolean = false, sessionId: string, filesMetadata?: filesMetadata[]): Promise<OpticalMediaPartitioning<WorkerResponse>> {
+    static partitionBackupToOpticalMedia(rootPath: string, mediaCapacityInBytes: number, splitLargeFiles: boolean = false, sessionId: string, filesMetadata?: filesMetadata[], skipUnreadable: boolean = false): Promise<OpticalMediaPartitioning<WorkerResponse>> {
         return this.sendAndAwaitResponse<OpticalMediaPartitioning<WorkerResponse>>('partition-backup-to-optical-media', {
             rootPath: rootPath,
             mediaCapacityInBytes: mediaCapacityInBytes,
             splitLargeFiles: splitLargeFiles,
             sessionId: sessionId,
-            filesMetadata: filesMetadata
+            filesMetadata: filesMetadata,
+            skipUnreadable: skipUnreadable
         });
     }
 
@@ -314,14 +348,24 @@ export class WorkerCommunicator {
         return this.sendAndAwaitResponse('write-json-to-disk', { path: path, json: json });
     }
 
-    static getFilePathsWithStats(dirPath: string): Promise<WorkerResponse> {
-        return this.sendAndAwaitResponse('get-file-paths-with-stats', { dirPath: dirPath });
+    /** @param skipUnreadable true to leave out (and warn about) entries that cannot be read instead of failing the
+     *  whole scan - for scanning a backup SOURCE. Not for reading a disc: its ID is a hash of everything on it, so a
+     *  disc that cannot be read completely has to fail. */
+    static getFilePathsWithStats(dirPath: string, skipUnreadable: boolean = false): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('get-file-paths-with-stats', { dirPath: dirPath, skipUnreadable: skipUnreadable });
     }
 
-    static diff(sourcePath: string, targetPath: string): Promise<WorkerResponse> {
+    /** @param comparison how a file that exists on both sides is judged - see DiffComparison in
+     *  ipc.interfaces.ts. The default is what Cumulative backup wants; "Synchronize directories" passes
+     *  'any-difference-or-content' for its copy list and 'any-difference' for its delete list.
+     *  @param skipUnreadable true to leave out (and warn about) entries that cannot be read instead of failing -
+     *  see the parameter of the same name of diff in worker.ts; Synchronize directories must not use it. */
+    static diff(sourcePath: string, targetPath: string, comparison: DiffComparison = 'source-newer-or-different-size', skipUnreadable: boolean = false): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('diff', {
             source: sourcePath,
-            target: targetPath
+            target: targetPath,
+            comparison: comparison,
+            skipUnreadable: skipUnreadable
         }, 'response.res');
     }
 

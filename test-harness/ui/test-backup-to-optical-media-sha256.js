@@ -52,7 +52,7 @@ async function clickMainMenuButton(win, labelText) {
 /** Drives the SIMPLE (no large-file split needed) "Backup to optical media" wizard, start to finish for its one
  *  disc, against an already-launched app/window. */
 async function runSimpleBackupWizard(win, { sourceRoot, metadataJsonPath, collectionName, runId }) {
-  const WATCH_PAUSE_MS = 3000;
+  const WATCH_PAUSE_MS = 1000;
   const step = async (label, fn) => {
     process.stdout.write(`  [ ] ${label} ... `);
     try {

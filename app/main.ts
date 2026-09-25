@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, screen } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import { pathToFileURL } from 'url';
 import { Dialog } from '@angular/cdk/dialog';
 import { appendToLogFile, installConsoleLogging, ReportedError, rotateAndWriteSessionHeader } from './logging';
 
@@ -103,7 +104,11 @@ function resolveIndexHtmlUrl(): string {
   if (app.isPackaged) {
     const packagedIndexHtml = path.join(process.resourcesPath, 'dist', 'index.html');
     if (fs.existsSync(packagedIndexHtml)) {
-      return new URL(path.join('file:', packagedIndexHtml)).href;
+      // pathToFileURL (rather than gluing "file:" onto the path and parsing that) percent-encodes characters that
+      // are legal in a Windows folder name but mean something in a URL - "#" would otherwise start a fragment and
+      // cut the path short, "%" would be read as the start of an escape - so the app still loads from wherever
+      // its folder was copied to.
+      return pathToFileURL(packagedIndexHtml).href;
     }
     console.warn(`Packaged build, but "${packagedIndexHtml}" does not exist - falling back to relative-path guessing. This should not happen if extraResources is configured correctly; the window will likely load blank.`);
   }
@@ -122,7 +127,7 @@ function resolveIndexHtmlUrl(): string {
      // Path when running electron in local folder
     pathIndex = '../../../index.html';
   }
-  return new URL(path.join('file:', __dirname, pathIndex)).href;
+  return pathToFileURL(path.join(__dirname, pathIndex)).href;
 }
 
 /** Resolves the app's own icon - passed explicitly to both BrowserWindows below (main window and worker) as

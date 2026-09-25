@@ -42,10 +42,15 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
 ## Features
 
 - **Incremental backup** (perhaps a more fitting name would be "Cumulative backup"): copies files that are new or
-  changed into your backup location. It never deletes anything that was removed from the source.
+  changed into your backup location. It never deletes anything that was removed from the source. If a name is a
+  file in your source but a folder in the backup (or the other way round), the backup's old one is kept, renamed
+  "... (old folder)" or "... (old file)", and the new one is backed up under the name.
 
 - **Synchronize dirs:** makes a "target" directory an exact copy of a "master" directory, adding and deleting files
-  as needed. Because it can delete files from the target, use it with care.
+  as needed - including where a name is a file on one side and a folder on the other. Because it can delete files
+  from the target, use it with care. When it finishes, it checks that both directories hold exactly the same files -
+  by name and size in bytes - and tells you how many files there are and their total size, or lists every file that
+  differs.
 
 - **Backup to optical media:** splits your files across as many discs as needed and sends them to ImgBurn to burn.
   Large files that don't fit on one disc are split automatically. Every file also gets a SHA-256 checksum recorded
@@ -85,6 +90,18 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   cold storage metadata JSON, then insert your discs one at a time in any order - it identifies each disc
   automatically, hashes every file on it, and reports Verified/FAILED/no-data for each, with a running tally. If
   the JSON has no checksums recorded at all, it tells you up front instead of asking you to insert anything.
+
+- **Links, in every feature:** a link (a symbolic link or a junction) is always one single entry and is never
+  followed, so nothing outside the folders you chose is ever read, copied, overwritten or deleted. Cumulative
+  backup and Synchronize dirs copy a link as a link pointing to the same place. A disc cannot hold a link, so
+  "Backup to optical media" and "Add missing files" burn each one as a Windows shortcut instead - one small
+  `<name>.lnk` file pointing to the same place: opened from the disc it says it is broken unless that place exists,
+  and recovered to where it exists, it works. (A Windows shortcut you already have is an ordinary small file, and
+  every feature copies it as one.) Cumulative backup and Synchronize dirs also refuse two folders where one is
+  inside the other.
+
+- **Not supported: the FAT file system** (FAT, FAT32). Don't use the app with folders on a drive formatted as FAT -
+  e.g. many USB sticks and memory cards; format such a drive as NTFS first.
 
 - On startup, the app runs a couple of housekeeping checks:
   - It checks whether its internal temp folder has leftover partial (`.part.NNN`) files from an interrupted

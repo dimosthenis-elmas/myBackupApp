@@ -12,6 +12,7 @@ import { throwError } from 'rxjs';
 import { error } from 'console';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/progress-line';
+import { formatBytes } from '../shared/utils/format-bytes';
 
 
 
@@ -59,6 +60,10 @@ export class SyncDirsComponent {
 
   showCommitedOperationsLogs=false;
   finishedDirSync=false;
+  /** Set when the user presses Cancel during the commit (cancelDirSyncCommit). commitAllSyncOperations checks it
+   *  before each phase, so no phase starts after Cancel - including when Cancel was pressed before the commit
+   *  itself had started. */
+  commitCancelled=false;
 
   @ViewChild(ScrollableListComponent)  set scrollableLogsList(v: ScrollableListComponent) {
     setTimeout(() => {
@@ -169,13 +174,22 @@ export class SyncDirsComponent {
   }
 
   async getPathsOfFilesToBeCopied(): Promise<string[]> {
-    this.getAllPathsMarkedForCopyPromise = ipc.diff(this.backup.sourcePath, this.backup.targetPath);
+    // 'any-difference-or-content': the target has to end up identical to the template directory, so a file that
+    // differs in any way is copied over - including one whose target copy is NEWER than the template's
+    // (Cumulative backup's default comparison would leave that one alone, since it only looks for files modified
+    // in the source) and one whose size and modified time match but whose bytes do not. The byte comparison reads
+    // every otherwise-unchanged file on both sides, so this scan is much slower than a size/date one.
+    this.getAllPathsMarkedForCopyPromise = ipc.diff(this.backup.sourcePath, this.backup.targetPath, 'any-difference-or-content');
     return (await this.getAllPathsMarkedForCopyPromise).res;
   }
 
   async getPathsOfFilesToBeDeleted(): Promise<string[]> {
     //We repurpose the same method as for getPathsOfFilesToBeCopied changing the order of the parameters.
-    this.getAllPathsMarkedForDeletionPromise = ipc.diff(this.backup.targetPath, this.backup.sourcePath);
+    // 'any-difference' (no byte comparison - the copy side already made that): a file that exists in both
+    // directories and differs by size or date shows up in both lists, and syncDirs() removes it from this one
+    // (it is overwritten by the copy phase, not deleted). This call never reports an existing file that the copy
+    // side's call does not, which is what makes that removal sufficient.
+    this.getAllPathsMarkedForDeletionPromise = ipc.diff(this.backup.targetPath, this.backup.sourcePath, 'any-difference');
     return (await this.getAllPathsMarkedForDeletionPromise).res;
   }
 
@@ -213,7 +227,9 @@ export class SyncDirsComponent {
       });
     });
     
-    this.copyFilesPreviewPromise = ipc.incrementalPreview(filePathsToBeCopied, this.backup.sourcePath, this.backup.targetPath);
+    // 'replace': the target has to match the template, so a name that is a file on one side and a folder on the other
+    // takes the template's - see NameClash (ipc.interfaces.ts).
+    this.copyFilesPreviewPromise = ipc.incrementalPreview(filePathsToBeCopied, this.backup.sourcePath, this.backup.targetPath, 'replace');
     await this.copyFilesPreviewPromise;
     // By the time copyFilesPreviewPromise has resolved, this listener has already seen and handled the final
     // 'completed'/'stopped' message for 'incremental-preview' (both this listener and sendAndAwaitResponse's own
@@ -272,7 +288,12 @@ export class SyncDirsComponent {
     if(!await this.checkPathsSelectionIsOk()){
       return;
     }
-    await this.displayWarning()
+    try {
+      await this.displayWarning();
+    } catch {
+      // displayWarning rejects when the user presses "Cancel" - that is a normal way out, not an error to report.
+      return;
+    }
     this.backup.resetStream();
 
     let userCancelledOperation = false;
@@ -337,12 +358,10 @@ export class SyncDirsComponent {
       diffProgressListener.removeListener();
     }
 
-    //If pathsOfFilesToBeDeleted contains paths which are also present in pathsOfFilesToBeCopied then delete those paths.
-    //This happens when we have files which do exist, but have been modified.
-    //This will be registered as paths to be deleted.
-    this.pathsOfFilesToBeDeleted = this.pathsOfFilesToBeDeleted.filter((k) => {
-      return this.pathsOfFilesToBeCopied.indexOf(k) == -1;
-    });
+    //If pathsOfFilesToBeDeleted contains paths which are also present in pathsOfFilesToBeCopied then do not delete those paths.
+    //This happens when we have files which do exist in both directories, but differ - they are overwritten by the copy.
+    const pathsToBeCopied = new Set(this.pathsOfFilesToBeCopied);
+    this.pathsOfFilesToBeDeleted = this.pathsOfFilesToBeDeleted.filter((k) => !pathsToBeCopied.has(k));
 
     if(userCancelledOperation){return}
 
@@ -423,17 +442,12 @@ export class SyncDirsComponent {
             this.showCommitedOperationsLogs=true;
             //Wait a bit for thecomponent to be loaded. I know, this is not the most elegant solution though..
             await this.holdOn(500);
-            this.commitAllSyncOperations().then((status)=>{
+            this.commitAllSyncOperations().then(async (status)=>{
               if(status=="completed"){
                 this.finishedDirSync=true;
                 this.workFinished_=true;
                 this.workIsInProgess_=false;
-                const confirmCopyDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
-                confirmCopyDialog.componentInstance.message =`Directory synchronization completed successfully.`;
-                confirmCopyDialog.componentInstance.title = "Directory synchronization"
-                confirmCopyDialog.componentInstance.actionsNum = 1;
-                confirmCopyDialog.componentInstance.action1Label = "Ok";
-                confirmCopyDialog.componentInstance.action1Callback = () => { confirmCopyDialog.close(); }
+                await this.checkAndShowSyncResult();
               }
             }).catch((err)=>{
                 this.finishedDirSync=true;
@@ -453,7 +467,8 @@ export class SyncDirsComponent {
 
   }
 
-  async commitAllSyncOperations() {
+  async commitAllSyncOperations(): Promise<string | null> {
+    if (this.commitCancelled) { return 'stopped'; }
     let status = null;
     // Combined total across both phases (copy, then delete) - both known up front, before either phase starts -
     // so percentComplete progresses smoothly across the whole commit rather than resetting at the halfway point.
@@ -497,12 +512,17 @@ export class SyncDirsComponent {
       });
     });
 
-    this.copyFilesPromise = ipc.incrementalCopyFiles(this.pathsOfFilesToBeCopied, this.backup.sourcePath, this.backup.targetPath);
-    await this.copyFilesPromise;
+    this.copyFilesPromise = ipc.incrementalCopyFiles(this.pathsOfFilesToBeCopied, this.backup.sourcePath, this.backup.targetPath, 'replace');
+    const copyResult = await this.copyFilesPromise;
     // See the identical cleanup (and its comment) in previewOperationsBeforeCommiting - this listener has
     // already handled the final message by the time copyFilesPromise resolved, and the delete-phase listener
     // registered next needs this one gone first so it isn't left dangling once THAT one is itself reassigned.
     this.workerListener.removeListener();
+    if (copyResult.status === 'stopped' || this.commitCancelled) {
+      // Cancel was pressed during the copy phase: the deletions must not start.
+      this.backup.previewLogsStream.complete();
+      return 'stopped';
+    }
 
     // deleting files from dir to be synched
     this.workerListener = ipc.onResponseFromWorker((event, response) => {
@@ -550,7 +570,58 @@ export class SyncDirsComponent {
 
   }
 
+  /** After a completed sync: checks that the two directories now hold exactly the same files, by name and size in
+   *  bytes (compareFolders in worker.ts), and tells the user - the number of files and their total size, or every
+   *  difference in a scrollable list. Never throws: a check that fails is reported as such. */
+  async checkAndShowSyncResult(): Promise<void> {
+    const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+    loadingDialogRef.componentInstance.showCancelButton = false;
+    loadingDialogRef.componentInstance.message = 'Checking that both directories hold the same files';
+    const progressListener = ipc.onResponseFromWorker((event, response) => {
+      this.ngZone.run(() => {
+        if (response.key === 'compare-folders' && response.status === 'running') {
+          for (const line of response.res as string[]) {
+            const progress = parseProgressFromLine(line);
+            if (progress) { loadingDialogRef.componentInstance.percent = Math.round((progress.current / progress.total) * 100); }
+          }
+        }
+      });
+    });
+    let result: { matched: boolean, fileCount: number, totalBytes: number, mismatches: string[] } | undefined;
+    let checkError: unknown;
+    try {
+      result = (await ipc.compareFolders(this.backup.sourcePath, this.backup.targetPath)).res;
+    } catch (error) {
+      checkError = error;
+    } finally {
+      progressListener.removeListener();
+      loadingDialogRef.close();
+    }
+
+    const resultDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: result && !result.matched ? '700px' : '450px' });
+    resultDialog.componentInstance.actionsNum = 1;
+    resultDialog.componentInstance.action1Label = "Ok";
+    resultDialog.componentInstance.action1Callback = () => { resultDialog.close(); }
+    if (!result) {
+      resultDialog.componentInstance.title = "Directory synchronization";
+      resultDialog.componentInstance.message = `Directory synchronization completed, but checking the result afterwards failed: ${checkError}`;
+    } else if (result.matched) {
+      resultDialog.componentInstance.title = "Directory synchronization successful";
+      resultDialog.componentInstance.message = `Directory synchronization completed successfully. Both directories now ` +
+        `hold exactly the same files: ${result.fileCount} file(s), ${formatBytes(result.totalBytes)} in total.`;
+    } else {
+      resultDialog.componentInstance.title = "Directory synchronization - differences found";
+      resultDialog.componentInstance.message = `The synchronization finished, but the two directories do not hold ` +
+        `exactly the same files: ${result.mismatches.length} item(s) differ by name or size.`;
+      resultDialog.componentInstance.lists = [{ label: `Differences (${result.mismatches.length}):`, items: result.mismatches }];
+    }
+  }
+
   async cancelDirSyncCommit(){
+    this.commitCancelled = true;
+    // Hides the Cancel button right away: it cannot be pressed twice, and once stopped the sync is over - like a
+    // sync that completed or failed (see commitAllSyncOperations' caller).
+    this.finishedDirSync = true;
     ipc.stop();
 
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true, width: '400px' });

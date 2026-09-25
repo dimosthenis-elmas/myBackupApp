@@ -5,9 +5,24 @@
  * Exercises the "Synchronize directories" flow - diff (both directions) + incremental-copy-files +
  * delete-files-and-dirs-for-dir-sync - through the app's REAL worker IPC, no app source touched, no UI clicking.
  * Reproduces the exact same algorithm src/app/sync-dirs/sync-dirs.component.ts uses (see its syncDirs() and
- * commitAllSyncOperations()): copyPaths = diff(source, target); deletePaths = diff(target, source) with any
- * overlap with copyPaths removed (those are modified files - handled by copy, never delete+recreate); then copy
- * copyPaths, then delete deletePaths.
+ * commitAllSyncOperations()): copyPaths = diff(source, target, 'any-difference-or-content'); deletePaths =
+ * diff(target, source, 'any-difference') with any overlap with copyPaths removed (a file that exists on both sides
+ * but differs shows up in both lists - it is overwritten by the copy, never deleted); then copy copyPaths, then
+ * delete deletePaths. 'any-difference' is symmetric (mtimes differing in either direction, or sizes differing),
+ * which is what makes that overlap removal correct - the default comparison only asks whether the FIRST
+ * directory's copy is newer. The copy side additionally compares the BYTES of files whose size and mtime match.
+ *
+ * Besides the ordinary changes (a modified file, a new file, two planted leftovers), it also plants a file whose
+ * target copy has different bytes (same size) and a NEWER mtime than the source's, and another whose target copy
+ * has different bytes but the SAME size and mtime as the source's (only a byte comparison can see that one): the
+ * sync has to overwrite both with the source's version, not leave them and above all not delete them. And - on a
+ * case-insensitive filesystem such as NTFS, where "name.txt" and "NAME.TXT" are one file - a file renamed in the
+ * source in letter case only ("name.txt" -> "NAME.TXT"), which is neither copied nor deleted since it is the same
+ * file, and a second one renamed in letter case only AND changed, which has to end up in the target with the new
+ * content: the deletion list names it in the target's spelling, which the exact-name overlap removal misses, so
+ * this checks that the worker's deletion step refuses to delete a file the source has. Finally, the same algorithm
+ * in a case-sensitive folder, where those two spellings ARE different files: the target must end up with exactly
+ * the source's spelling (skipped when Windows won't make a folder case-sensitive).
  *
  * ============================================================================================================
  * SAFETY - this is the one test-harness script that can genuinely delete real files, so read this before editing
@@ -47,6 +62,7 @@ const { launchApp, callWorker } = require('./call-worker');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { MARKER_FILE_NAME } = require('../lib/safety');
 const { printTree } = require('../lib/print-tree');
+const { isCaseInsensitiveFilesystem } = require('../lib/filesystem-case');
 
 // See the SAFETY block above. Named after what they DO rather than passed as a bare true/false, so intent stays
 // obvious at each deleteFilesAndDirsForDirSync call site in this file.
@@ -135,7 +151,7 @@ async function main() {
     //    pair on its own).
     console.log('\nEstablishing baseline (target = copy of source)...');
     const baselineDiff = await callWorker(win, 'diff', { source: sourceRoot, target: targetRoot });
-    await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: excludeMarkerFile(baselineDiff.res), source: sourceRoot, target: targetRoot });
+    await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: excludeMarkerFile(baselineDiff.res), source: sourceRoot, target: targetRoot, nameClash: 'replace' });
 
     // 2. Diverge: modify+add on the SOURCE side (should end up copied), and plant two deliberate "leftovers"
     //    directly in the TARGET side that don't exist in source at all (should end up deleted). One leftover
@@ -164,20 +180,75 @@ async function main() {
     fs.writeFileSync(path.join(targetRoot, leftoverAloneDirRel), crypto.randomBytes(1234));
     console.log(`  leftover file+empty dir: ${leftoverAloneDirRel}`);
 
+    // Two more files that exist on both sides (see the header comment), picked from the generated files that are
+    // not the one modified above. The first gets different bytes of the same size and a newer mtime in the target.
+    const otherFiles = manifest.files.filter((f) => f.relativePath !== toModify.relativePath);
+    const newerTargetFile = otherFiles.find((f) => f.sizeBytes > 0);
+    const sameMetadataFile = otherFiles.find((f) => f !== newerTargetFile && f.sizeBytes > 0);
+    const untouchedCandidates = otherFiles.filter((f) => f !== newerTargetFile && f !== sameMetadataFile);
+    const newerTargetRelOs = newerTargetFile.relativePath.split('/').join(path.sep);
+    fs.writeFileSync(path.join(targetRoot, newerTargetRelOs), crypto.randomBytes(newerTargetFile.sizeBytes));
+    const inTheFuture = new Date(Date.now() + 120_000);
+    fs.utimesSync(path.join(targetRoot, newerTargetRelOs), inTheFuture, inTheFuture);
+    console.log(`  target copy given different bytes (same size) and a newer mtime: ${newerTargetFile.relativePath}`);
+    // Different bytes, same size, and the target's mtime put back to exactly the source's - invisible to any
+    // size/date comparison.
+    const sameMetadataRelOs = sameMetadataFile.relativePath.split('/').join(path.sep);
+    const sameMetadataSourceStats = fs.statSync(path.join(sourceRoot, sameMetadataRelOs));
+    // Every byte inverted, so the content is guaranteed to differ (random bytes could, for a tiny file, happen to
+    // equal the original).
+    fs.writeFileSync(path.join(targetRoot, sameMetadataRelOs), Buffer.from(fs.readFileSync(path.join(sourceRoot, sameMetadataRelOs)).map((b) => b ^ 0xff)));
+    fs.utimesSync(path.join(targetRoot, sameMetadataRelOs), sameMetadataSourceStats.atime, sameMetadataSourceStats.mtime);
+    console.log(`  target copy given different bytes, same size and same mtime: ${sameMetadataFile.relativePath}`);
+
+    // Only meaningful where "name" and "NAME" are one file (NTFS by default). On a case-sensitive filesystem the
+    // uppercase name would be a genuinely different file, which the sync correctly copies and whose old spelling
+    // it correctly deletes - so there is nothing to protect there, and the scenario is skipped.
+    let caseRenameRelOs = null;
+    // A second file renamed in letter case only AND changed: the copy list names it in the source's spelling and
+    // the deletion list in the target's, so the component's exact-name overlap removal leaves it in the deletion
+    // list - and the worker's deletion step is what must refuse to delete it (the copy phase just rewrote it).
+    let caseRenameEditedFile = null;
+    let caseRenameEditedRelOs = null;
+    let caseRenameEditedSourceRelOs = null;
+    if (isCaseInsensitiveFilesystem(targetRoot)) {
+      const [caseRenameCandidate, caseRenameEditedCandidate] = untouchedCandidates.filter((f) => {
+        const baseName = path.basename(f.relativePath);
+        return baseName.toUpperCase() !== baseName;
+      });
+      caseRenameRelOs = caseRenameCandidate.relativePath.split('/').join(path.sep);
+      const caseRenamedSourceRelOs = path.join(path.dirname(caseRenameRelOs), path.basename(caseRenameRelOs).toUpperCase());
+      fs.renameSync(path.join(sourceRoot, caseRenameRelOs), path.join(sourceRoot, caseRenamedSourceRelOs));
+      console.log(`  renamed in source, letter case only: ${caseRenameCandidate.relativePath} -> ${caseRenamedSourceRelOs.split(path.sep).join('/')}`);
+
+      caseRenameEditedFile = caseRenameEditedCandidate;
+      caseRenameEditedRelOs = caseRenameEditedCandidate.relativePath.split('/').join(path.sep);
+      caseRenameEditedSourceRelOs = path.join(path.dirname(caseRenameEditedRelOs), path.basename(caseRenameEditedRelOs).toUpperCase());
+      fs.renameSync(path.join(sourceRoot, caseRenameEditedRelOs), path.join(sourceRoot, caseRenameEditedSourceRelOs));
+      fs.appendFileSync(path.join(sourceRoot, caseRenameEditedSourceRelOs), crypto.randomBytes(777));
+      console.log(`  renamed in source, letter case only, AND changed: ${caseRenameEditedCandidate.relativePath} -> ${caseRenameEditedSourceRelOs.split(path.sep).join('/')}`);
+    } else {
+      console.log('  (letter-case-only rename scenario skipped: this filesystem is case-sensitive)');
+    }
+
     printTree(sourceRoot, 'Source tree (before)');
     printTree(targetRoot, 'Target tree (before - includes the planted leftovers)');
 
     // 3. Compute copyPaths / deletePaths exactly the way sync-dirs.component.ts does.
     console.log('\nComputing copy/delete paths (mirrors sync-dirs.component.ts)...');
-    const copyDiff = await callWorker(win, 'diff', { source: sourceRoot, target: targetRoot });
+    const copyDiff = await callWorker(win, 'diff', { source: sourceRoot, target: targetRoot, comparison: 'any-difference-or-content' });
     const copyPaths = excludeMarkerFile(copyDiff.res);
-    const deleteDiff = await callWorker(win, 'diff', { source: targetRoot, target: sourceRoot });
+    const deleteDiff = await callWorker(win, 'diff', { source: targetRoot, target: sourceRoot, comparison: 'any-difference' });
     const deletePaths = deleteDiff.res.filter((p) => !copyPaths.includes(p));
 
-    const expectedCopyPaths = [toModify.relativePath, newSourceFileRel].map((p) => p.split('/').join(path.sep));
+    const expectedCopyPaths = [toModify.relativePath, newSourceFileRel, newerTargetFile.relativePath, sameMetadataFile.relativePath].map((p) => p.split('/').join(path.sep));
     const expectedDeletePaths = [leftoverInExistingDirRel, leftoverAloneDirRel];
-    results.copyPathsCorrect = main_assertSameSet(copyPaths, expectedCopyPaths, 'copyPaths == exactly the source-side changes');
-    results.deletePathsCorrect = main_assertSameSet(deletePaths, expectedDeletePaths, 'deletePaths == exactly the planted leftovers');
+    if (caseRenameEditedFile !== null) {
+      expectedCopyPaths.push(caseRenameEditedSourceRelOs);
+      expectedDeletePaths.push(caseRenameEditedRelOs); // listed - see caseRenameEditedFile's comment above
+    }
+    results.copyPathsCorrect = main_assertSameSet(copyPaths, expectedCopyPaths, 'copyPaths == the modified file, the new file, the files whose target copy differs (not the unchanged case-renamed one)');
+    results.deletePathsCorrect = main_assertSameSet(deletePaths, expectedDeletePaths, 'deletePaths == the planted leftovers (+ the target spelling of the case-renamed-and-changed file)');
 
     const mtimesBeforeAnyDeleteCall = snapshotMtimes(targetRoot);
 
@@ -213,7 +284,7 @@ async function main() {
     // 5. Copy the source-side changes across (same order sync-dirs.component.ts's commitAllSyncOperations uses:
     //    copy, then delete).
     console.log('\nCalling incremental-copy-files (the copy side of the sync)...');
-    await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: copyPaths, source: sourceRoot, target: targetRoot });
+    await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: copyPaths, source: sourceRoot, target: targetRoot, nameClash: 'replace' });
 
     // 6. The one real delete call in this whole script - guarded immediately before it's made.
     assertPathIsWithin(targetRoot, scratchRoot, 'delete target');
@@ -233,9 +304,11 @@ async function main() {
     const finalManifest = {
       ...manifest,
       files: [
-        ...manifest.files.filter((f) => f.relativePath !== toModify.relativePath),
+        ...manifest.files.filter((f) => f.relativePath !== toModify.relativePath && f !== caseRenameEditedFile),
         { relativePath: toModify.relativePath, sizeBytes: fs.statSync(path.join(sourceRoot, modifyRelOs)).size, sha256: sha256File(path.join(sourceRoot, modifyRelOs)) },
         { relativePath: newSourceFileRel, sizeBytes: fs.statSync(path.join(sourceRoot, newSourceFileRel)).size, sha256: sha256File(path.join(sourceRoot, newSourceFileRel)) },
+        // Under the target's (old) spelling - the sync mirrors content, not the letter case of a name.
+        ...(caseRenameEditedFile !== null ? [{ relativePath: caseRenameEditedFile.relativePath, sizeBytes: fs.statSync(path.join(sourceRoot, caseRenameEditedSourceRelOs)).size, sha256: sha256File(path.join(sourceRoot, caseRenameEditedSourceRelOs)) }] : []),
       ],
     };
     finalManifest.fileCount = finalManifest.files.length;
@@ -257,6 +330,52 @@ async function main() {
       !fs.existsSync(path.join(targetRoot, leftoverAloneDirRel)) &&
       !fs.existsSync(path.join(targetRoot, 'leftover-only-dir')); // the now-empty directory must be cleaned up too
     console.log(`\nLeftovers actually deleted (file + now-empty dir): ${results.leftoversActuallyDeleted}`);
+
+    // 9. The files that exist on both sides must still be in the target after the whole sync - deleting a file
+    //    the source still has would leave the "synchronized" target missing it - and the newer target copy must
+    //    have been overwritten with the source's bytes, not merely left alone.
+    results.newerTargetCopyOverwritten = sha256File(path.join(targetRoot, newerTargetRelOs)) === newerTargetFile.sha256;
+    console.log(`Target copy that was newer than the source's now has the source's bytes: ${results.newerTargetCopyOverwritten}`);
+    results.sameMetadataCopyOverwritten = sha256File(path.join(targetRoot, sameMetadataRelOs)) === sameMetadataFile.sha256;
+    console.log(`Target copy with the source's size and mtime but different bytes now has the source's bytes: ${results.sameMetadataCopyOverwritten}`);
+    if (caseRenameRelOs !== null) {
+      results.caseRenamedFileKept = fs.existsSync(path.join(targetRoot, caseRenameRelOs));
+      console.log(`File renamed only in letter case in the source still present in the target: ${results.caseRenamedFileKept}`);
+    }
+    if (caseRenameEditedFile !== null) {
+      results.caseRenamedEditedFileHasNewContent = fs.existsSync(path.join(targetRoot, caseRenameEditedRelOs))
+        && sha256File(path.join(targetRoot, caseRenameEditedRelOs)) === sha256File(path.join(sourceRoot, caseRenameEditedSourceRelOs));
+      console.log(`File renamed in letter case and changed in the source is in the target with the new content: ${results.caseRenamedEditedFileHasNewContent}`);
+    }
+
+    // 10. The same algorithm in a CASE-SENSITIVE folder (Windows per-directory case sensitivity - what Linux
+    //     filesystems always are): there "REPORT.TXT" in the source and "report.txt" in the target are two
+    //     different files, so the target must end up with REPORT.TXT and without report.txt. Skipped when Windows
+    //     won't enable case sensitivity on a folder here (it needs the "Windows Subsystem for Linux" feature).
+    const caseSensitiveRoot = path.join(scratchRoot, 'case-sensitive');
+    fs.mkdirSync(caseSensitiveRoot, { recursive: true });
+    let caseSensitiveEnabled = true;
+    try {
+      execFileSync('fsutil', ['file', 'setCaseSensitiveInfo', caseSensitiveRoot, 'enable'], { stdio: 'pipe' });
+    } catch { caseSensitiveEnabled = false; }
+    if (caseSensitiveEnabled && !isCaseInsensitiveFilesystem(caseSensitiveRoot)) {
+      console.log('\nCase-sensitive folder: source has REPORT.TXT, target has a different file report.txt...');
+      const csSource = path.join(caseSensitiveRoot, 'source');
+      const csTarget = path.join(caseSensitiveRoot, 'target');
+      fs.mkdirSync(csSource); fs.mkdirSync(csTarget);
+      fs.writeFileSync(path.join(csSource, 'REPORT.TXT'), 'the source file');
+      fs.writeFileSync(path.join(csTarget, 'report.txt'), 'a different file');
+      const csCopy = excludeMarkerFile((await callWorker(win, 'diff', { source: csSource, target: csTarget, comparison: 'any-difference-or-content' })).res);
+      const csDelete = (await callWorker(win, 'diff', { source: csTarget, target: csSource, comparison: 'any-difference' })).res.filter((p) => !csCopy.includes(p));
+      await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: csCopy, source: csSource, target: csTarget, nameClash: 'replace' });
+      assertPathIsWithin(csTarget, scratchRoot, 'case-sensitive delete target');
+      await callWorker(win, 'delete-files-and-dirs-for-dir-sync', { pathsMarkedForDeletion: csDelete, commit: DELETE_PARAM_THAT_ACTUALLY_COMMITS_DELETIONS, source: csSource, target: csTarget });
+      const csTargetNames = fs.readdirSync(csTarget).sort();
+      results.caseSensitiveFolderMirroredExactly = JSON.stringify(csTargetNames) === JSON.stringify(['REPORT.TXT']);
+      console.log(`  target now holds ${JSON.stringify(csTargetNames)} (expected ["REPORT.TXT"]): ${results.caseSensitiveFolderMirroredExactly}`);
+    } else {
+      console.log('\n(Case-sensitive folder scenario skipped: Windows would not enable case sensitivity on a folder here.)');
+    }
 
   } finally {
     if (app) { await app.close().catch(() => {}); }

@@ -40,7 +40,8 @@
  * Sizing (CD medium, the smallest real choice - same 700,000,000-byte large file worker-ipc/
  * test-large-file-split.js and ui/test-backup-to-optical-media.js already use)
  * ============================================================================================================
- * CD raw capacity 700,000,000 * the app's own 0.95 maxOpticalMediumRepletionRatio = 665,000,000 effective.
+ * CD raw capacity 700,000,000 * a 0.95 maxOpticalMediumRepletionRatio (pinned in appData/config.json for each
+ * phase - see OPTICAL_MEDIUM_REPLETION_RATIO) = 665,000,000 effective.
  * A 700,000,000-byte file's ESTIMATE (pure arithmetic, see estimateLargeFileSplitPartials) is exactly 2 pieces:
  * piece.001 = 524,288,000 (one full volume), piece.002 = 175,712,000 (the remainder). Both are bigger than half
  * of 665,000,000, so partitionBackupToOpticalMedia's bin-packing can never combine them - each is planned ALONE
@@ -81,6 +82,10 @@ const EXPECTED_PIECE_1_BYTES = VOLUME_SIZE_BYTES; // 524,288,000
 const EXPECTED_PIECE_2_BYTES = LARGE_FILE_BYTES - VOLUME_SIZE_BYTES; // 175,712,000
 
 const CD_CAPACITY_BYTES = 700_000_000;
+// Written into appData/config.json's maxOpticalMediumRepletionRatio for the duration of each phase (see
+// runPhase), not read from the app: the sizing below only works for one specific effective capacity, and the
+// app's own default ratio (DEFAULT_MAX_OPTICAL_MEDIUM_REPLETION_RATIO in worker.ts, 0.99) leaves disc 2 enough
+// room to absorb UNABSORBABLE_SURPLUS_BYTES - which turns the "overflow" phase into a second "absorption" one.
 const OPTICAL_MEDIUM_REPLETION_RATIO = 0.95;
 const EFFECTIVE_CAPACITY_BYTES = CD_CAPACITY_BYTES * OPTICAL_MEDIUM_REPLETION_RATIO; // 665,000,000
 const DISC_1_SPARE_BYTES = EFFECTIVE_CAPACITY_BYTES - EXPECTED_PIECE_1_BYTES; // 140,712,000
@@ -160,6 +165,12 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
   const createdIbbPaths = [];
   let sessionDir;
   try {
+    // Pinned before the app plans anything - both the disc plan and the capacity the wizard later checks a
+    // surplus piece against are computed from this ratio. See OPTICAL_MEDIUM_REPLETION_RATIO for why this script
+    // sets it instead of relying on the app's default. Restored, with everything else, in the finally block below.
+    console.log(`\nPinning maxOpticalMediumRepletionRatio to ${OPTICAL_MEDIUM_REPLETION_RATIO} for this run...`);
+    originalConfigContent = backupAndRedirectConfigField('maxOpticalMediumRepletionRatio', OPTICAL_MEDIUM_REPLETION_RATIO);
+
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
 
@@ -169,7 +180,7 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
       dialog.showSaveDialog = async () => ({ canceled: false, filePath: queue.shift() });
     }, [sourceRoot, metadataJsonPath]);
 
-    const WATCH_PAUSE_MS = 2000; // short - this script is about the mechanism, not a human-watchable demo
+    const WATCH_PAUSE_MS = 1000;
     const step = async (label, fn) => {
       process.stdout.write(`  [ ] ${label} ... `);
       try {
@@ -200,7 +211,7 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
     await step('type the cold storage collection name', () => win.getByPlaceholder('e.g. My Backup').fill(`Overflow-disc test (${phaseName})`));
     await step('click "Next" (expected to hit the "too large" error)', () => win.getByRole('button', { name: 'Next', exact: true }).click({ timeout: 30_000 }));
 
-    await step('wait for the "Error - Too large files found" dialog', () => win.getByText('Error - Too large files found', { exact: true }).waitFor({ timeout: 30_000 }));
+    await step('wait for the "Large files found" dialog', () => win.getByText('Large files found', { exact: true }).waitFor({ timeout: 30_000 }));
     await step('click "Yes, split the large files"', () => win.getByRole('button', { name: 'Yes, split the large files', exact: true }).click({ timeout: 30_000 }));
     await step('wait for the "Info" temp-directory notice', () => win.getByText('Info', { exact: true }).waitFor({ timeout: 30_000 }));
     await step('click "Ok, got it." (retries with splitting enabled)', () => win.getByRole('button', { name: 'Ok, got it.', exact: true }).click({ timeout: 30_000 }));
@@ -220,8 +231,8 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
     // only now, right before either is actually needed - see ui/test-backup-to-optical-media.js's own comment
     // on the same "keep the redirected window short" reasoning for ImgBurn.
     console.log('\nRedirecting the real 7-Zip and ImgBurn paths to harmless stubs for the "Send to ImgBurn" clicks below...');
-    originalConfigContent = backupAndRedirectConfigField('_7zipExecutablePath', stub7zPath);
-    backupAndRedirectConfigField('imgBurnExecutablePath', stubImgBurnPath); // 2nd redirect - true original already captured above
+    backupAndRedirectConfigField('_7zipExecutablePath', stub7zPath); // true original already captured above
+    backupAndRedirectConfigField('imgBurnExecutablePath', stubImgBurnPath);
 
     // --- send disc 1, then disc 2 (the natural order - see header comment for why order doesn't matter here) ---
 

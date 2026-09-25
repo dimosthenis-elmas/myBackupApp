@@ -4,8 +4,10 @@ import * as path from 'path';
 /** Once logs.txt exceeds this, rotateAndWriteSessionHeader below moves it to logs.txt.old (overwriting any
  *  previous one) and starts fresh - keeps at most ~2x this on disk (current + one previous rotation). Simple and
  *  bounded rather than unbounded growth or a more elaborate multi-generation scheme this single-user app has no
- *  real need for. */
-const MAX_LOG_FILE_SIZE_BYTES = 5 * 1024 * 1024;
+ *  real need for. Large because the worker logs every request in full (see onRequestFromMain in worker-communicator.ts),
+ *  and a job over a big tree is a request with every one of its paths in it - a few of those must not push a whole
+ *  session out of the log. The check only runs at startup, so a single session can still grow past it. */
+const MAX_LOG_FILE_SIZE_BYTES = 100 * 1024 * 1024;
 
 export type LogLevel = 'LOG' | 'WARN' | 'ERROR';
 

@@ -30,7 +30,10 @@
  * nothing else does: does a JSON metadata file correctly describe split-file pieces distributed across discs (the
  * pieces are just ordinary files as far as get-file-paths-with-stats/seedFromExternalMetadata are concerned - no
  * special-casing anywhere), and does the merge-offer flow still work when the file tree came from JSON rather than
- * physical enumeration. Same as test-recover-multi-disc.js, the real split pieces can come from either this
+ * physical enumeration. Unlike test-recover-multi-disc.js, this one DECLINES the offer: the wizard then shows one
+ * 7-Zip command per file for reassembling it by hand, and this script runs exactly that command - through cmd.exe,
+ * from an unrelated folder, the way a user would paste it - and checks the file comes out next to its parts with
+ * the original content. Same as test-recover-multi-disc.js, the real split pieces can come from either this
  * script splitting the file directly via real 7-Zip (random mode / --json-tree with no split-plan.json - see
  * test-recover-multi-disc.js's own comments for why this bypasses the app's own partitioning IPC entirely) OR
  * already be sitting in the tree from --json-tree's own split-plan.json (see tree-specs/
@@ -50,7 +53,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const os = require('os');
+const { execFileSync, execSync } = require('child_process');
 const { launchApp, callWorker } = require('../worker-ipc/call-worker');
 const { assertRealTempDataDirectoryIsSafeToUse } = require('../worker-ipc/temp-dir-guard');
 const { assertNoOpticalMediaAlreadyMounted, buildIso, mountIso, dismountIso } = require('./iso-disc');
@@ -156,6 +160,10 @@ async function main() {
   console.log('Checking the app\'s real temp/cache directory is safe to use...');
   assertRealTempDataDirectoryIsSafeToUse();
 
+  // Where the large file ends up once reassembled, and the manual reassembly command the wizard shows (step 4).
+  const expectedReassembledPath = largeFileEntry ? path.join(outputRoot, largeFileRelDirOs, largeFileName) : null;
+  let manualCommand = null;
+
   let app, win, tempPartDir, mountedIsoPath;
   try {
     console.log('\nLaunching the app...');
@@ -232,7 +240,7 @@ async function main() {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [queue.shift()] });
     }, [outputRoot, metadataJsonPath]);
 
-    const WATCH_PAUSE_MS = 5000;
+    const WATCH_PAUSE_MS = 1000;
     const step = async (label, fn) => {
       process.stdout.write(`  [ ] ${label} ... `);
       try {
@@ -322,11 +330,29 @@ async function main() {
     //     wizard now offers to reassemble them, exactly like test-recover-multi-disc.js, but with a JSON-seeded
     //     disc listing behind it this time instead of a physically-read one. ---
 
-    await step('wait for disc 2\'s files to be recovered, click "Yes, reassemble" on "Partial files detected" (up to 60s)', () =>
-      win.getByRole('button', { name: 'Yes, reassemble', exact: true }).click({ timeout: 60_000 }));
+    // Both merge dialogs list the reassembled file by its full path (scrollable lists - there can be many files).
+    await step('wait for disc 2\'s files to be recovered - "Partial files detected" lists the file to reassemble by its full path (up to 60s)', () =>
+      win.getByRole('dialog').filter({ hasText: 'Partial files detected' }).getByText(expectedReassembledPath).first().waitFor({ timeout: 60_000 }));
 
-    await step('wait for the merge to finish, click "Ok" on "Reassembly successful" (up to 60s)', () =>
-      win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 60_000 }));
+    // Declined here on purpose (test-recover-multi-disc.js accepts it): the wizard then lists one 7-Zip command per
+    // file for reassembling it by hand, which must name the folder to extract into (-o) - without it, a command
+    // run from any other folder writes the file there instead of next to its parts. The command is run below.
+    await step('click "No, leave them as they are"', () =>
+      win.getByRole('button', { name: 'No, leave them as they are', exact: true }).click({ timeout: 15_000 }));
+
+    await step('read the command in "How to reassemble manually" - it names the parts\' folder with -o', async () => {
+      const dialog = win.getByRole('dialog').filter({ hasText: 'How to reassemble manually' });
+      await dialog.waitFor({ timeout: 30_000 });
+      const lines = [...new Set((await dialog.getByText(/^7z x /).allTextContents()).map((l) => l.trim()))];
+      manualCommand = lines.length === 1 ? lines[0] : null;
+      const expectedSwitch = `-o"${path.join(outputRoot, largeFileRelDirOs)}"`;
+      if (!manualCommand || !manualCommand.includes(expectedSwitch) || !manualCommand.includes(`"${path.join(outputRoot, largeFileRelDirOs)}${path.sep}`)) {
+        throw new Error(`Expected one command with ${expectedSwitch} and the first part's full path, got: ${JSON.stringify(lines)}`);
+      }
+    });
+
+    await step('click "Ok" on "How to reassemble manually"', () =>
+      win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
 
     await step('click "Ok" on "Data recovery successful"', () =>
       win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
@@ -343,9 +369,28 @@ async function main() {
     // covered by scratchRoot's own pass/fail cleanup below - see test-recover-multi-disc.js's identical comment.
   }
 
-  // 4. Verify: recovered folder should exactly match the original combined manifest, including the large file
-  //    reassembled from its two cross-disc pieces (not the .part.NNN pieces themselves, which the app deletes
-  //    after a successful merge) - the manifest's entry for it already has the correct original hash/size.
+  // 4. Reassemble the large file by hand, with exactly the command the wizard showed - run through cmd.exe from an
+  //    unrelated folder, the way a user would paste it - then remove its parts (the app deletes them itself after
+  //    an automatic reassembly).
+  let manualReassemblyWorked = false;
+  if (manualCommand) {
+    console.log(`\nRunning the wizard's manual reassembly command from another folder:\n  ${manualCommand}`);
+    try {
+      execSync(`"${resolveSevenZipExecutablePath()}" ${manualCommand.replace(/^7z /, '')}`, { cwd: os.tmpdir(), stdio: ['ignore', 'inherit', 'inherit'] });
+      manualReassemblyWorked = fs.existsSync(expectedReassembledPath);
+    } catch (e) {
+      console.log(`  the command failed: ${e.message.split('\n')[0]}`);
+    }
+    const partsFolder = path.join(outputRoot, largeFileRelDirOs);
+    for (const name of fs.readdirSync(partsFolder)) {
+      if (name.startsWith(`${largeFileName}.part.`)) { fs.rmSync(path.join(partsFolder, name)); }
+    }
+  }
+  console.log(`The manual command reassembled the file next to its parts: ${manualReassemblyWorked}`);
+
+  // 5. Verify: recovered folder should exactly match the original combined manifest, including the large file
+  //    reassembled from its two cross-disc pieces by the manual command (the .part.NNN pieces themselves were
+  //    removed above) - the manifest's entry for it already has the correct original hash/size.
   printTree(outputRoot, 'Recovered tree (after)');
   console.log('\nVerifying recovered files against the manifest...');
   let verifyPassed = false;
@@ -360,14 +405,15 @@ async function main() {
     verifyPassed = false;
   }
 
-  if (verifyPassed) {
+  const pass = verifyPassed && manualReassemblyWorked;
+  if (pass) {
     fs.rmSync(scratchRoot, { recursive: true, force: true });
   } else {
     console.log(`\nLeaving scratch files in place for inspection: ${scratchRoot}`);
   }
 
-  console.log(`\n${verifyPassed ? 'PASS' : 'FAIL'} - JSON-metadata recovery ${verifyPassed ? 'correctly skipped disc enumeration and recovered every file (including the reassembled large file) with matching content.' : 'did not produce a correct result, see verify-manifest output above.'}`);
-  process.exitCode = verifyPassed ? 0 : 1;
+  console.log(`\n${pass ? 'PASS' : 'FAIL'} - JSON-metadata recovery ${pass ? 'correctly skipped disc enumeration and recovered every file (the large file reassembled with the wizard\'s own manual command) with matching content.' : 'did not produce a correct result, see above.'}`);
+  process.exitCode = pass ? 0 : 1;
 }
 
 main().catch((e) => {

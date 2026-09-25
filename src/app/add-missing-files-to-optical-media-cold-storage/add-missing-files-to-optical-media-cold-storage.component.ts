@@ -9,7 +9,6 @@ import { LoadingDialogComponent } from '../shared/components/loading-dialog/load
 import { Subject } from 'rxjs';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
-import { getDiscIdHash } from '../shared/utils/disc-id-hash';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
 
@@ -128,7 +127,6 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   odbr_ref!: OpticalDiscBackupDataRetriever;
   allFilesSelected = true;
   masterPathsWithStats!:filesMetadata[];
-  workerListener!: WorkerListener;
   /** Whether disc i (0-based within this.partitions, i.e. the NEW discs being added) has been sent to ImgBurn
    *  at least once yet - gates "Confirm disc burned". */
   public sentDiscs: boolean[] = [];
@@ -387,18 +385,19 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
 
   private replacePartialFileSplits(coldStoragePaths: filesMetadata[], masterPaths: filesMetadata[]): filesMetadata[] {
     this.opticalDiscVolumeLetter = coldStoragePaths[0].path.split('\\').slice(0)[0];
+    // Without a trailing backslash whether or not targetPath has one (a drive root such as "D:\" always does), so
+    // what is left after stripping it is "\dir\file" in every case - the form the cold storage paths take once
+    // their volume letter is stripped.
+    const targetPathWithoutTrailingBackslash = this.backup.targetPath.replace(/\\+$/, '');
     let r = coldStoragePaths.map((itm, i) => {
       const re = PART_FILE_PATTERN
       let completeLargeFilePathCandidate = itm.path.replace(this.opticalDiscVolumeLetter, "").replace(re, "");
       if(completeLargeFilePathCandidate === itm.path.replace(this.opticalDiscVolumeLetter, "")){
         return itm;
       }else{
-        console.log(masterPaths)
-        console.log(completeLargeFilePathCandidate)
-        console.log(this.backup.targetPath)
-        const largeFile = masterPaths.find((o)=> o.path.replace(this.backup.targetPath, "")==completeLargeFilePathCandidate)
+        const largeFile = masterPaths.find((o)=> o.path.replace(targetPathWithoutTrailingBackslash, "")==completeLargeFilePathCandidate)
         if(largeFile!== undefined){
-          largeFile.path = largeFile.path.replace(this.backup.targetPath, this.opticalDiscVolumeLetter)
+          largeFile.path = largeFile.path.replace(targetPathWithoutTrailingBackslash, this.opticalDiscVolumeLetter)
           return largeFile;
         }else{
           return itm;
@@ -464,7 +463,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       });
     });
     try {
-      return (await ipc.getFilePathsWithStats(this.backup.targetPath)).res;
+      // skipUnreadable: this is a backup SOURCE, so an entry that cannot be read is left out (and reported)
+      // rather than making the whole scan fail.
+      return (await ipc.getFilePathsWithStats(this.backup.targetPath, true)).res;
     } finally {
       listener.removeListener();
       loadingDialogRef.close();
@@ -501,7 +502,12 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       const b = coldStoragePathsWithoutPartials.find((o)=> o.path==file.path.replace(this.backup.targetPath, this.opticalDiscVolumeLetter));
       if (b == undefined) {
         missingFiles.push(file); // missing
-      } else if ((new Date(file.stats.mtime).getTime() > new Date(b.stats.mtime).getTime()) || (file.stats.size != b.stats.size)) {
+      } else if (file.stats.linkTarget !== undefined
+          // A link, backed up as a Windows shortcut (see linkAsShortcutEntry in worker.ts): its size here is only a
+          // planning estimate, so it is compared by where it points - when the cold storage side recorded that (a
+          // metadata JSON does; a physically read disc only has the shortcut file, which is then taken as in sync).
+          ? (b.stats.linkTarget !== undefined && b.stats.linkTarget !== file.stats.linkTarget)
+          : ((new Date(file.stats.mtime).getTime() > new Date(b.stats.mtime).getTime()) || (file.stats.size != b.stats.size))) {
         // Wrapped both sides in `new Date(...).getTime()`: file.stats.mtime (from a live ipc.getFilePathsWithStats
         // scan of the master directory) is always a real Date, but b.stats.mtime is only a Date when the cold
         // storage side came from physically re-inserting each disc - when it came from a loaded metadata JSON
@@ -908,21 +914,15 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         return;
       }
 
-      // Same disc-identification hash used during recovery (see getDiscIdHash / OpticalDiscBackupDataRetriever) -
-      // computed from the exact same normalization used when writing this disc's entry into the cold storage
-      // metadata JSON below (this.opticalDiscVolumeLetter), so the label the user writes on the physical disc now
-      // will match what the app later checks against when that disc is inserted for a recovery.
-      const discIdHash = getDiscIdHash(
-        finalStats.map((e) => this.opticalDiscVolumeLetter + e.path).sort().toString()
-      );
-
+      // Only the disc's number: during a recovery the app recognizes each inserted disc by itself (a hash of its
+      // contents, see getDiscIdHash) and asks for discs by this number.
       await new Promise<void>((resolve) => {
         const labelDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
         labelDialog.disableClose = true;
         labelDialog.componentInstance.title = "Disc label";
         labelDialog.componentInstance.message =
-          `Please physically label this disc as disc ${nextDiscNumber}, with ID hash: ${discIdHash}. Both are ` +
-          `needed to identify this disc correctly during a future recovery.`;
+          `Please physically label this disc as disc ${nextDiscNumber}. During a future recovery, the app asks for ` +
+          `each disc by this number.`;
         labelDialog.componentInstance.actionsNum = 1;
         labelDialog.componentInstance.action1Label = "Ok";
         labelDialog.componentInstance.action1Callback = () => {
@@ -959,7 +959,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         return;
       }
 
-      this.sentDiscPartPaths[i] = finalStats.filter(e => PART_FILE_PATTERN.test(e.path)).map(e => e.path);
+      // What this disc needed created in the temp folder - split partials, and links' shortcuts (linkTarget) - deleted
+      // again once the disc is confirmed burned (confirmDiscBurned).
+      this.sentDiscPartPaths[i] = finalStats.filter(e => PART_FILE_PATTERN.test(e.path) || e.stats.linkTarget !== undefined).map(e => e.path);
 
       // Awaited (previously fired-and-forgotten): see sendingDiscs's own doc comment for why this guard needs
       // this chain's real completion, not just its start, to reset on.
@@ -1072,11 +1074,14 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       const tempDirNormalized = rawTempDataDirectoryPath.replace(/\\$/, '') + '\\' + this.tempSessionId;
       const partialPaths = partRelativePaths.map(p => tempDirNormalized + '\\' + p);
       const response = await ipc.deletePartialsForDisc(partialPaths);
-      const result: { cleared: boolean; message: string; deletedItems: string[] } = response.res;
+      const result: { cleared: boolean; message: string; deletedItems: string[]; notClearedItems: string[] } = response.res;
       if (!result.cleared) {
-        const warnDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        const warnDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
         warnDialog.componentInstance.title = "Temp cleanup incomplete";
-        warnDialog.componentInstance.message = `Disc ${i + 1} was confirmed burned, but its temporary split-part files could not all be removed: ${result.message} You can safely ignore this - leftover temp files are cleaned up automatically the next time the app starts.`;
+        warnDialog.componentInstance.message = `Disc ${i + 1} was confirmed burned, but its temporary split-part files could not all be removed: ${result.message} You can safely ignore this - the app offers to clear leftover temp files the next time it starts.`;
+        if (result.notClearedItems?.length) {
+          warnDialog.componentInstance.lists = [{ label: `Not removed (${result.notClearedItems.length}):`, items: result.notClearedItems }];
+        }
         warnDialog.componentInstance.actionsNum = 1;
         warnDialog.componentInstance.action1Label = "Ok";
         warnDialog.componentInstance.action1Callback = () => { warnDialog.close(); };
@@ -1096,43 +1101,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     const collectionName = this.coldStorageCollectionName.trim();
     const volumeLabel = (collectionName ? collectionName + ' ' : '') + 'Disc ' + nextDiscNumber;
 
-    this.workerListener = ipc.onResponseFromWorker((event, response) => {
-      this.ngZone.run(() => {
-        switch (response.key) {
-          case 'create-IBB-file':
-            if(response.status == 'completed'){
-              console.log(response)
-            }
-            break;
-          case 'imgburn-launch-failed': {
-            // Pushed independently by invokeImgBurnOnIBBFile (worker.ts), asynchronously - by the time ImgBurn
-            // actually fails to launch, createIBB_file/openExistingIBBFile have already resolved successfully
-            // (see that function's own doc comment), so this can arrive well after either of those calls
-            // returned, not as part of their own response. Nothing about the sent/created/metadata-JSON
-            // state for this disc is trustworthy once ImgBurn itself never actually opened, so send the user
-            // back to the main menu rather than leaving them on a screen that looks like the send succeeded.
-            const failureDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
-            failureDialog.componentInstance.title = "Error";
-            failureDialog.componentInstance.message = `ImgBurn could not be launched: ${response.res.message}`;
-            failureDialog.componentInstance.actionsNum = 1;
-            failureDialog.componentInstance.action1Label = "Ok";
-            failureDialog.componentInstance.action1Callback = () => {
-              failureDialog.close();
-              goToMainMenuAndReload(this.router);
-            };
-            break;
-          }
-          default:
-            console.error('The app received an unexpected internal message and may be out of sync. It is best to restart it.', response)
-            break;
-        }
-      });
-    });
-
-    // Await (previously fired-and-forgotten): ipc.createIBB_file() only resolves once the worker has actually
-    // finished building the .ibb file and invoking ImgBurn. Without awaiting it, this method (and therefore the
-    // caller's .then()) resolved on the next microtick instead - closing the loading dialog and silently
-    // dropping any failure before the real work was done.
+    // A failure to START ImgBurn is not reported through this call: the worker shows it as an error dialog of its
+    // own (see invokeImgBurnOnIBBFile in worker.ts), and clicking "Send to ImgBurn" again reopens the same .ibb file.
+    // ipc.createIBB_file() resolves once the worker has finished building the .ibb file and invoking ImgBurn.
     await ipc.createIBB_file(disk_id, paths, sourcePath, this.tempSessionId, volumeLabel);
   }
 

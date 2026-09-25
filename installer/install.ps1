@@ -89,13 +89,11 @@ if (-not (Test-Path $installedExePath)) {
     exit 1
 }
 
-# resources\appData\tempFilesCanBeDeleted is disposable scratch space the app creates and owns itself, proven
-# by a marker file tied to the exact absolute path it was created at (see verifyOwnershipMarker in
-# app/workers/worker.ts). If $sourceDir already had one - e.g. the build being installed was run once directly
-# from release\win-unpacked before this install - the copy above just carried over a marker pointing at that
-# OLD path, which the app then refuses to trust here. Removing any copied-over instance means the app always
-# creates this directory fresh, right here, the first time it actually needs it - same final location inside
-# the installed app folder, just never inherited from wherever the source build happened to run before.
+# resources\appData\tempFilesCanBeDeleted is disposable scratch space the app creates and owns itself (see
+# ensureTempDataDirectoryIsAppOwned in app/workers/worker.ts). If $sourceDir already had one - e.g. the build
+# being installed was run once directly from release\win-unpacked before this install - the copy above carried
+# over whatever scratch files that run left in it. Removing any copied-over instance means the installed app
+# starts with a fresh, empty one, created right here the first time it actually needs it.
 $copiedTempDir = Join-Path $installDir 'resources\appData\tempFilesCanBeDeleted'
 if (Test-Path $copiedTempDir) {
     Remove-Item -Path $copiedTempDir -Recurse -Force

@@ -73,7 +73,8 @@ export class IncrementalCopyingComponent implements OnInit, OnDestroy {
   }
 
   ngAfterViewInit() {
-    this.copyingPromise = ipc.incrementalCopyFiles(this.selectedFiles, this.backup.sourcePath, this.backup.targetPath)
+    // 'keep-both': see the matching preview call in incremental.component.ts.
+    this.copyingPromise = ipc.incrementalCopyFiles(this.selectedFiles, this.backup.sourcePath, this.backup.targetPath, 'keep-both')
     
     this.copyingPromise.catch((err)=>{
       this.onError(err);

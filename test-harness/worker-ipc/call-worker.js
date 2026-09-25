@@ -18,12 +18,14 @@ const { _electron } = require('playwright');
 const path = require('path');
 
 /** @param extraLaunchOptions merged into the underlying `_electron.launch({...})` call - e.g. `{ recordVideo: {
- *  dir, size } }` (see ui/capture-recover-data-video.js). Every existing caller passes nothing, unaffected. */
-async function launchApp(extraLaunchOptions = {}) {
+ *  dir, size } }` (see ui/capture-recover-data-video.js). Every existing caller passes nothing, unaffected.
+ *  @param appRoot the folder holding the built app's app/ and dist/ folders - this repo by default; another folder
+ *  for running a copy of the app from somewhere else (see ui/test-install-path-special-characters.js). */
+async function launchApp(extraLaunchOptions = {}, appRoot = path.join(__dirname, '../..')) {
   const app = await _electron.launch({
     args: [
-      path.join(__dirname, '../../app/main.js'),
-      path.join(__dirname, '../../app/package.json'),
+      path.join(appRoot, 'app/main.js'),
+      path.join(appRoot, 'app/package.json'),
     ],
     ...extraLaunchOptions,
   });
@@ -160,4 +162,27 @@ async function callWorkerInner(win, key, params, timeoutMs, collectProgress) {
   }, { key, params, timeoutMs, collectProgress });
 }
 
-module.exports = { launchApp, callWorker, callWorkerWithProgress, sendToWorker };
+/** Starts recording every 'app-error' message the app window receives - what the app shows the user as an error
+ *  or warning dialog (worker/main-process errors, the "items could not be read" warning, "ImgBurn could not be
+ *  started" - see ErrorReporterService). Call once after launchApp; read what arrived with takeAppErrors. */
+async function startRecordingAppErrors(win) {
+  await win.evaluate(() => {
+    if (window.__recordedAppErrors) { return; }
+    window.__recordedAppErrors = [];
+    window.electronAPI.ipcRenderer_on('app-error', (event, arg) => { window.__recordedAppErrors.push(arg); });
+  });
+}
+
+/** Returns every 'app-error' message recorded since the previous call (see startRecordingAppErrors) and clears
+ *  the record. Each is `{ source, summary, details, title?, lists? }`. A worker's warning about a scan is sent
+ *  before that scan's own response, so it has always arrived by the time the call that triggered it settles; one
+ *  raised after a response (ImgBurn is launched without being waited for) may need a moment to arrive. */
+async function takeAppErrors(win) {
+  return win.evaluate(() => {
+    const recorded = window.__recordedAppErrors || [];
+    window.__recordedAppErrors = [];
+    return recorded;
+  });
+}
+
+module.exports = { launchApp, callWorker, callWorkerWithProgress, sendToWorker, startRecordingAppErrors, takeAppErrors };

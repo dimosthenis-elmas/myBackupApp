@@ -22,6 +22,20 @@
  *      reported by `diff` (a directory's own mtime says nothing about whether it is backed up), and neither is
  *      one that is empty in the source but has files in the target (it exists there, so it is backed up), while
  *      one that exists only in the source IS reported, and copying it creates it in the target.
+ *   5. Edge cases, each in its own small folder pair:
+ *      - A source folder whose name contains "$&" and "$$" (special in JavaScript's String.replace replacement
+ *        text) plus a Greek file name: only the new file is reported, copied, and a second diff is empty. A file
+ *        whose copy in the backup is NEWER, and a file that only exists in the backup, are both left alone.
+ *      - A folder renamed in letter case only in the source ("photos" -> "Photos") with one file inside edited:
+ *        only the edited file is reported, and it lands in the existing folder (no duplicate). Case-insensitive
+ *        filesystems only (NTFS by default) - skipped elsewhere.
+ *      - An unreadable entry (a folder Windows denies listing) in the source: with `skipUnreadable` - which is
+ *        how the Cumulative backup wizard calls diff - the rest is still compared and one warning lists the
+ *        skipped entry by full path; without it, diff fails.
+ *      - A file that disappears between diff and the copy makes incremental-copy-files report an error.
+ *      - A changed file whose earlier copy in the backup is read-only (a copy of a read-only file is read-only
+ *        too, and Windows refuses to copy over one) is replaced with the new version. Synchronize directories
+ *        copies through the same incremental-copy-files.
  *
  * Scope note: the source tree is generated with --no-edge-cases. generate-random-tree.js's built-in empty
  * directory case would also show up in diff's output (the worker's getAllFiles walks an empty directory as a
@@ -41,10 +55,24 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
-const { launchApp, callWorker } = require('./call-worker');
+const { launchApp, callWorker, startRecordingAppErrors, takeAppErrors } = require('./call-worker');
 const { MARKER_FILE_NAME } = require('../lib/safety');
 const { printTree } = require('../lib/print-tree');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
+const { isCaseInsensitiveFilesystem } = require('../lib/filesystem-case');
+
+/** Writes `text` to `filePath` (creating its folder) and sets its mtime to `minutes` after a fixed base time, so
+ *  "newer"/"older" is under this script's control rather than depending on how fast the lines run. */
+function writeFileAt(filePath, text, minutes) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, text);
+  const t = new Date(Date.UTC(2024, 0, 1) + minutes * 60_000);
+  fs.utimesSync(filePath, t, t);
+}
+
+function readOrNull(filePath) {
+  try { return fs.readFileSync(filePath, 'utf8'); } catch { return null; }
+}
 
 // diff() walks the entire source directory, so it correctly reports generate-random-tree.js's own ownership
 // marker file as "source-only" too - it genuinely is a real file sitting in the source root. That's harness
@@ -129,7 +157,7 @@ async function main() {
     results.firstDiffMatchesFullTree = assertSameSet(excludeMarkerFile(firstDiff.res), expectedAllRelPaths, 'diff (empty target) == every source file');
 
     console.log('Calling incremental-copy-files (first sync)...');
-    await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: excludeMarkerFile(firstDiff.res), source: sourceRoot, target: targetRoot });
+    await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: excludeMarkerFile(firstDiff.res), source: sourceRoot, target: targetRoot, nameClash: 'keep-both' });
 
     printTree(targetRoot, 'Target tree (after first sync)');
     console.log('\nVerifying first sync against the manifest...');
@@ -181,7 +209,7 @@ async function main() {
     results.secondDiffIsExactlyTheChanges = assertSameSet(excludeMarkerFile(secondDiff.res), expectedChangedRelPaths, 'diff (after mutation) == exactly the changed/new files');
 
     console.log('Calling incremental-copy-files (second sync)...');
-    await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: excludeMarkerFile(secondDiff.res), source: sourceRoot, target: targetRoot });
+    await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: excludeMarkerFile(secondDiff.res), source: sourceRoot, target: targetRoot, nameClash: 'keep-both' });
 
     printTree(targetRoot, 'Target tree (after second sync)');
     console.log('\nVerifying second sync against the updated manifest...');
@@ -238,10 +266,102 @@ async function main() {
     results.emptyDirDiffIsOnlyTheMissingOne = assertSameSet(excludeMarkerFile(emptyDirsDiff.res), [emptyOnlyInSourceRel + path.sep], 'diff (empty directories) == only the source-only empty directory');
 
     console.log('Calling incremental-copy-files (empty directories)...');
-    await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: excludeMarkerFile(emptyDirsDiff.res), source: sourceRoot, target: targetRoot });
+    await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: excludeMarkerFile(emptyDirsDiff.res), source: sourceRoot, target: targetRoot, nameClash: 'keep-both' });
     const createdInTarget = path.join(targetRoot, emptyOnlyInSourceRel);
     results.sourceOnlyEmptyDirCreatedInTarget = fs.existsSync(createdInTarget) && fs.statSync(createdInTarget).isDirectory();
     console.log(`  ${results.sourceOnlyEmptyDirCreatedInTarget ? 'OK' : 'FAILED'} - source-only empty directory ${results.sourceOnlyEmptyDirCreatedInTarget ? 'was created in the target' : 'is missing from the target'}.`);
+
+    // 7. Edge cases (see the header comment), each in its own folder pair so the exact-set checks above stay
+    //    about the generated tree only.
+    const edgeRoot = path.join(scratchRoot, 'edge-cases');
+    fs.mkdirSync(edgeRoot, { recursive: true });
+    await startRecordingAppErrors(win);
+
+    console.log('\nEdge case: "$&" / "$$" in the source folder name, a Greek file name, a newer copy in the backup, a backup-only file...');
+    const dollarSource = path.join(edgeRoot, 'source $& $$ φάκελος');
+    const dollarTarget = path.join(edgeRoot, 'target-dollar');
+    writeFileAt(path.join(dollarSource, 'αρχείο.txt'), 'new file', 0);
+    writeFileAt(path.join(dollarSource, 'backup is newer.txt'), 'older', 0);
+    writeFileAt(path.join(dollarTarget, 'backup is newer.txt'), 'NEWER', 30);
+    writeFileAt(path.join(dollarTarget, 'only in backup.txt'), 'keep me', 0);
+    const dollarDiff = await callWorker(win, 'diff', { source: dollarSource, target: dollarTarget });
+    results.dollarSourceDiffIsOnlyTheNewFile = assertSameSet(dollarDiff.res, ['αρχείο.txt'], 'diff ("$&" source folder) == only the new file');
+    await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: dollarDiff.res, source: dollarSource, target: dollarTarget, nameClash: 'keep-both' });
+    results.dollarSourceFileCopied = readOrNull(path.join(dollarTarget, 'αρχείο.txt')) === 'new file';
+    results.dollarSourceSecondDiffIsEmpty = (await callWorker(win, 'diff', { source: dollarSource, target: dollarTarget })).res.length === 0;
+    results.newerBackupCopyAndBackupOnlyFileLeftAlone = readOrNull(path.join(dollarTarget, 'backup is newer.txt')) === 'NEWER'
+      && readOrNull(path.join(dollarTarget, 'only in backup.txt')) === 'keep me';
+    console.log(`  copied: ${results.dollarSourceFileCopied}, second diff empty: ${results.dollarSourceSecondDiffIsEmpty}, newer/backup-only files left alone: ${results.newerBackupCopyAndBackupOnlyFileLeftAlone}`);
+
+    if (isCaseInsensitiveFilesystem(edgeRoot)) {
+      console.log('\nEdge case: a folder renamed in letter case only in the source, with one file inside edited...');
+      const caseSource = path.join(edgeRoot, 'source-case');
+      const caseTarget = path.join(edgeRoot, 'target-case');
+      writeFileAt(path.join(caseSource, 'Photos', 'a.jpg'), 'edited', 10);
+      writeFileAt(path.join(caseTarget, 'photos', 'a.jpg'), 'old', 0);
+      writeFileAt(path.join(caseSource, 'Photos', 'b.jpg'), 'same', 0);
+      writeFileAt(path.join(caseTarget, 'photos', 'b.jpg'), 'same', 0);
+      const caseDiff = await callWorker(win, 'diff', { source: caseSource, target: caseTarget });
+      results.caseRenamedFolderDiffIsOnlyTheEditedFile = assertSameSet(caseDiff.res, [path.join('Photos', 'a.jpg')], 'diff (case-renamed folder) == only the edited file');
+      await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: caseDiff.res, source: caseSource, target: caseTarget, nameClash: 'keep-both' });
+      results.caseRenamedFolderEditLandsInExistingFolder = readOrNull(path.join(caseTarget, 'photos', 'a.jpg')) === 'edited'
+        && fs.readdirSync(caseTarget).length === 1;
+      console.log(`  edit landed in the existing folder, no duplicate folder: ${results.caseRenamedFolderEditLandsInExistingFolder}`);
+    } else {
+      console.log('\n(Edge case "folder renamed in letter case only" skipped: this filesystem is case-sensitive.)');
+    }
+
+    console.log('\nEdge case: an unreadable entry (a folder Windows denies listing) in the source...');
+    const unreadableSource = path.join(edgeRoot, 'source-unreadable');
+    const unreadableTarget = path.join(edgeRoot, 'target-unreadable');
+    const lockedDir = path.join(unreadableSource, 'locked');
+    writeFileAt(path.join(unreadableSource, 'ok.txt'), 'ok', 0);
+    writeFileAt(path.join(lockedDir, 'secret.txt'), 's', 0);
+    fs.mkdirSync(unreadableTarget, { recursive: true });
+    execFileSync('icacls', [lockedDir, '/deny', '*S-1-1-0:(RD)'], { stdio: 'pipe' });
+    try {
+      await takeAppErrors(win); // start from an empty record
+      const skippingDiff = await callWorker(win, 'diff', { source: unreadableSource, target: unreadableTarget, skipUnreadable: true });
+      const warnings = await takeAppErrors(win);
+      results.unreadableEntrySkippedWhenAsked = assertSameSet(skippingDiff.res, ['ok.txt'], 'diff (skipUnreadable) == the readable file');
+      results.unreadableEntryReportedByFullPath = warnings.length === 1 && Array.isArray(warnings[0].lists)
+        && warnings[0].lists[0].items.some((item) => item.startsWith(lockedDir));
+      console.log(`  exactly one warning, listing the skipped entry by full path: ${results.unreadableEntryReportedByFullPath}`);
+      let failedWithoutSkipping = false;
+      try { await callWorker(win, 'diff', { source: unreadableSource, target: unreadableTarget }); } catch { failedWithoutSkipping = true; }
+      results.unreadableEntryFailsWhenNotAsked = failedWithoutSkipping;
+      console.log(`  without skipUnreadable, diff fails: ${failedWithoutSkipping}`);
+    } finally {
+      execFileSync('icacls', [lockedDir, '/remove:d', '*S-1-1-0'], { stdio: 'pipe' });
+    }
+
+    console.log('\nEdge case: a file that disappears between diff and the copy...');
+    const vanishSource = path.join(edgeRoot, 'source-vanish');
+    const vanishTarget = path.join(edgeRoot, 'target-vanish');
+    writeFileAt(path.join(vanishSource, 'will vanish.txt'), 'v', 0);
+    fs.mkdirSync(vanishTarget, { recursive: true });
+    const vanishDiff = await callWorker(win, 'diff', { source: vanishSource, target: vanishTarget });
+    fs.rmSync(path.join(vanishSource, 'will vanish.txt'));
+    let copyReportedError = false;
+    try { await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: vanishDiff.res, source: vanishSource, target: vanishTarget, nameClash: 'keep-both' }); } catch { copyReportedError = true; }
+    results.vanishedFileMakesCopyReportAnError = copyReportedError;
+    console.log(`  the copy reported an error: ${copyReportedError}`);
+
+    console.log('\nEdge case: a changed file whose earlier copy in the backup is read-only...');
+    const readOnlySource = path.join(edgeRoot, 'source-read-only');
+    const readOnlyTarget = path.join(edgeRoot, 'target-read-only');
+    writeFileAt(path.join(readOnlySource, 'form.pdf'), 'version 2, longer', 10);
+    writeFileAt(path.join(readOnlyTarget, 'form.pdf'), 'version 1', 0);
+    fs.chmodSync(path.join(readOnlyTarget, 'form.pdf'), 0o444); // on Windows this sets the read-only attribute
+    const readOnlyDiff = await callWorker(win, 'diff', { source: readOnlySource, target: readOnlyTarget });
+    let readOnlyCopyError = null;
+    try {
+      await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: readOnlyDiff.res, source: readOnlySource, target: readOnlyTarget, nameClash: 'keep-both' });
+    } catch (e) {
+      readOnlyCopyError = String(e.message).split('\n')[0];
+    }
+    results.readOnlyBackupCopyIsReplaced = readOnlyCopyError === null && readOrNull(path.join(readOnlyTarget, 'form.pdf')) === 'version 2, longer';
+    console.log(`  the read-only copy was replaced with the new version: ${results.readOnlyBackupCopyIsReplaced}${readOnlyCopyError ? ` (${readOnlyCopyError})` : ''}`);
 
   } finally {
     if (app) { await app.close().catch(() => {}); }

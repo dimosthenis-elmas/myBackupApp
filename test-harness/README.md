@@ -136,7 +136,7 @@ Here's what you'll see, and what each part means:
   see exactly what gets created on disk (`test-harness/generated-fixtures/` - go look at the folder yourself),
   without needing to launch the app at all.
 - Pick one script from `ui/README.md` and run it - this time you'll actually watch the real app's windows open
-  and get clicked through automatically (each script pauses 5 seconds after every click specifically so you can
+  and get clicked through automatically (each script pauses 1 second after every click specifically so you can
   watch it happen - see `ui/README.md`'s own intro).
 - If anything ever fails, or you interrupt a run partway (Ctrl+C, closing the app window): the scratch data is
   deliberately left in place under `test-harness/generated-fixtures/` for you to look at (see "Safety model"

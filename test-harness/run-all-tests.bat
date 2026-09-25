@@ -51,6 +51,9 @@ call :run "worker-ipc: test-large-file-split" "test-harness\worker-ipc\test-larg
 call :run "worker-ipc: test-large-file-split-boundary" "test-harness\worker-ipc\test-large-file-split-boundary.js"
 call :run "worker-ipc: test-multi-large-file-split" "test-harness\worker-ipc\test-multi-large-file-split.js"
 call :run "worker-ipc: test-split-piece-capacity-guard" "test-harness\worker-ipc\test-split-piece-capacity-guard.js"
+call :run "worker-ipc: test-scan-edge-cases" "test-harness\worker-ipc\test-scan-edge-cases.js"
+call :run "worker-ipc: test-temp-dir-and-imgburn" "test-harness\worker-ipc\test-temp-dir-and-imgburn.js"
+call :run "worker-ipc: test-sync-and-cumulative-rules" "test-harness\worker-ipc\test-sync-and-cumulative-rules.js"
 
 rem --- ui: drives the real on-screen app with Playwright, clicking through it like a person would ---
 call :run "ui: test-recover-single-disc" "test-harness\ui\test-recover-single-disc.js"
@@ -65,6 +68,10 @@ call :run "ui: test-backup-to-optical-media-sha256" "test-harness\ui\test-backup
 call :run "ui: test-recover-integrity-detects-corruption" "test-harness\ui\test-recover-integrity-detects-corruption.js"
 call :run "ui: test-verify-cold-storage-integrity" "test-harness\ui\test-verify-cold-storage-integrity.js"
 call :run "ui: test-startup-temp-snackbar" "test-harness\ui\test-startup-temp-snackbar.js"
+call :run "ui: test-sync-dirs-cancel" "test-harness\ui\test-sync-dirs-cancel.js"
+call :run "ui: test-wizard-error-dialogs" "test-harness\ui\test-wizard-error-dialogs.js"
+call :run "ui: test-recover-copy-failure" "test-harness\ui\test-recover-copy-failure.js"
+call :run "ui: test-install-path-special-characters" "test-harness\ui\test-install-path-special-characters.js"
 
 echo.
 echo ============================================================

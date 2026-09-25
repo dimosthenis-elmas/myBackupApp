@@ -261,7 +261,7 @@ async function main() {
       dialog.showSaveDialog = async () => ({ canceled: false, filePath: queue.shift() });
     }, [masterDir, existingMetadataJsonPath, existingMetadataJsonPath, updatedMetadataJsonPath]);
 
-    const WATCH_PAUSE_MS = 5000;
+    const WATCH_PAUSE_MS = 1000;
     const step = async (label, fn) => {
       process.stdout.write(`  [ ] ${label} ... `);
       try {
@@ -674,9 +674,11 @@ async function main() {
     const volumeLabelCorrect = actualVolumeLabel === expectedVolumeLabel;
     const dialogMentionsExpected = new RegExp(`\\bdisc ${expectedDiscNumber}\\b`, 'i').test(dialogText);
     const dialogWronglyMentions1 = expectedDiscNumber !== 1 && /\bdisc 1\b/i.test(dialogText);
+    // Only the disc's number is for the user - the app recognizes a disc by its content hash on its own.
+    const dialogShowsAHash = /hash/i.test(dialogText);
     console.log(`  Disc ${i + 1}/${createdIbbPaths.length}: real volume label = "${actualVolumeLabel}" (expected "${expectedVolumeLabel}") - ${volumeLabelCorrect ? 'OK' : 'WRONG'}`);
-    console.log(`    On-screen text: "${dialogText}" - mentions "disc ${expectedDiscNumber}": ${dialogMentionsExpected ? 'OK' : 'WRONG'}, wrongly mentions "disc 1": ${dialogWronglyMentions1 ? 'WRONG - regression!' : 'OK'}`);
-    if (!volumeLabelCorrect || !dialogMentionsExpected || dialogWronglyMentions1) { discNumberingCheckPassed = false; }
+    console.log(`    On-screen text: "${dialogText}" - mentions "disc ${expectedDiscNumber}": ${dialogMentionsExpected ? 'OK' : 'WRONG'}, wrongly mentions "disc 1": ${dialogWronglyMentions1 ? 'WRONG - regression!' : 'OK'}, shows a hash: ${dialogShowsAHash ? 'WRONG' : 'no - OK'}`);
+    if (!volumeLabelCorrect || !dialogMentionsExpected || dialogWronglyMentions1 || dialogShowsAHash) { discNumberingCheckPassed = false; }
   }
 
     const verifyPassed = normalCheckPassed && splitCheckPassed && confirmCheckPassed && jsonCheckPassed && discNumberingCheckPassed;
