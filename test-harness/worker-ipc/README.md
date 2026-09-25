@@ -119,8 +119,9 @@ match. The test also plants two files whose target copy has different bytes — 
 source's, one with exactly the source's size and mtime (only the byte comparison can see that one) — which the
 sync must overwrite with the source's version, and — only on a case-insensitive filesystem such as NTFS, where
 `name.txt` and `NAME.TXT` are one file (these scenarios are skipped on a case-sensitive one) — a file renamed in
-the source in letter case only, which is neither copied nor deleted, and one renamed in letter case only and
-changed, which must end up in the target with the new content. That last one stays in the deletion list under the
+the source in letter case only, which is neither copied nor deleted but renamed to the source's spelling by the
+step that ends a sync (`match-letter-case`), and one renamed in letter case only and changed, which must end up in
+the target with the new content and the new spelling. That last one stays in the deletion list under the
 target's spelling (the overlap removal compares names exactly), so it checks that the worker's deletion step never
 deletes a file the source has.
 **This is the one script here that can genuinely delete real files** (everything else in `worker-ipc/`
@@ -291,7 +292,9 @@ merely starts with the other's is not refused; the same folder twice is simply u
 is a file (or a junction) on one side and a folder on the other: Synchronize directories replaces the target's entry,
 folder contents and all; Cumulative backup deletes nothing - the backup's entry is renamed "<name> (old folder)" /
 "(old file)" (numbered if taken) and the source's entry backed up under the name - also for names that differ only in
-letter case. (6) The check Synchronize directories runs after a sync (`compare-folders`): after every sync above it
+letter case. (5b) Files and folders renamed only in capital letters end up with the source's exact spelling - also
+one that changed too, and an empty folder - and when the capitals are the only difference the sync still has the
+rename to do (it is not "already in sync"). (6) The check Synchronize directories runs after a sync (`compare-folders`): after every sync above it
 finds both folders identical and counts the same files and bytes as the script's own walk; on a pair built to
 differ it reports each difference once - a size, an entry only one side has (a whole folder as one line), a name
 that differs only in letter case, a file against a folder, a link pointing elsewhere - and nothing else. Everything

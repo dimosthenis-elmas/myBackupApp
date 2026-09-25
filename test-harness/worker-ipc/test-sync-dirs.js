@@ -18,9 +18,10 @@
  * sync has to overwrite both with the source's version, not leave them and above all not delete them. And - on a
  * case-insensitive filesystem such as NTFS, where "name.txt" and "NAME.TXT" are one file - a file renamed in the
  * source in letter case only ("name.txt" -> "NAME.TXT"), which is neither copied nor deleted since it is the same
- * file, and a second one renamed in letter case only AND changed, which has to end up in the target with the new
- * content: the deletion list names it in the target's spelling, which the exact-name overlap removal misses, so
- * this checks that the worker's deletion step refuses to delete a file the source has. Finally, the same algorithm
+ * file but renamed to the source's spelling by the letter-case step that ends a sync (match-letter-case), and a
+ * second one renamed in letter case only AND changed, which has to end up in the target with the new content and
+ * the new spelling: the deletion list names it in the target's spelling, which the exact-name overlap removal
+ * misses, so this checks that the worker's deletion step refuses to delete a file the source has. Finally, the same algorithm
  * in a case-sensitive folder, where those two spellings ARE different files: the target must end up with exactly
  * the source's spelling (skipped when Windows won't make a folder case-sensitive).
  *
@@ -205,6 +206,7 @@ async function main() {
     // uppercase name would be a genuinely different file, which the sync correctly copies and whose old spelling
     // it correctly deletes - so there is nothing to protect there, and the scenario is skipped.
     let caseRenameRelOs = null;
+    let caseRenamedSourceRelOs = null;
     // A second file renamed in letter case only AND changed: the copy list names it in the source's spelling and
     // the deletion list in the target's, so the component's exact-name overlap removal leaves it in the deletion
     // list - and the worker's deletion step is what must refuse to delete it (the copy phase just rewrote it).
@@ -217,7 +219,7 @@ async function main() {
         return baseName.toUpperCase() !== baseName;
       });
       caseRenameRelOs = caseRenameCandidate.relativePath.split('/').join(path.sep);
-      const caseRenamedSourceRelOs = path.join(path.dirname(caseRenameRelOs), path.basename(caseRenameRelOs).toUpperCase());
+      caseRenamedSourceRelOs = path.join(path.dirname(caseRenameRelOs), path.basename(caseRenameRelOs).toUpperCase());
       fs.renameSync(path.join(sourceRoot, caseRenameRelOs), path.join(sourceRoot, caseRenamedSourceRelOs));
       console.log(`  renamed in source, letter case only: ${caseRenameCandidate.relativePath} -> ${caseRenamedSourceRelOs.split(path.sep).join('/')}`);
 
@@ -296,6 +298,10 @@ async function main() {
       target: targetRoot,
     });
 
+    // The last step of a sync, as in commitAllSyncOperations: target entries get the source's letter case.
+    console.log('\nCalling match-letter-case (gives renames that only changed letter case the source\'s spelling)...');
+    await callWorker(win, 'match-letter-case', { source: sourceRoot, target: targetRoot, commit: true });
+
     // 7. Verify: target must now be an EXACT match for source's final state - byte-for-byte AND with zero
     //    extras. verify-manifest.js's own EXTRA detection is what actually proves the leftovers are gone (not
     //    just "the 2 files I expected"), since it independently lists everything under targetRoot.
@@ -304,11 +310,13 @@ async function main() {
     const finalManifest = {
       ...manifest,
       files: [
-        ...manifest.files.filter((f) => f.relativePath !== toModify.relativePath && f !== caseRenameEditedFile),
+        // The two files renamed only in letter case are listed under their new (source) spelling.
+        ...manifest.files.filter((f) => f.relativePath !== toModify.relativePath && f !== caseRenameEditedFile)
+          .map((f) => (caseRenameRelOs !== null && f.relativePath === caseRenameRelOs.split(path.sep).join('/'))
+            ? { ...f, relativePath: caseRenamedSourceRelOs.split(path.sep).join('/') } : f),
         { relativePath: toModify.relativePath, sizeBytes: fs.statSync(path.join(sourceRoot, modifyRelOs)).size, sha256: sha256File(path.join(sourceRoot, modifyRelOs)) },
         { relativePath: newSourceFileRel, sizeBytes: fs.statSync(path.join(sourceRoot, newSourceFileRel)).size, sha256: sha256File(path.join(sourceRoot, newSourceFileRel)) },
-        // Under the target's (old) spelling - the sync mirrors content, not the letter case of a name.
-        ...(caseRenameEditedFile !== null ? [{ relativePath: caseRenameEditedFile.relativePath, sizeBytes: fs.statSync(path.join(sourceRoot, caseRenameEditedSourceRelOs)).size, sha256: sha256File(path.join(sourceRoot, caseRenameEditedSourceRelOs)) }] : []),
+        ...(caseRenameEditedFile !== null ? [{ relativePath: caseRenameEditedSourceRelOs.split(path.sep).join('/'), sizeBytes: fs.statSync(path.join(sourceRoot, caseRenameEditedSourceRelOs)).size, sha256: sha256File(path.join(sourceRoot, caseRenameEditedSourceRelOs)) }] : []),
       ],
     };
     finalManifest.fileCount = finalManifest.files.length;
@@ -338,14 +346,16 @@ async function main() {
     console.log(`Target copy that was newer than the source's now has the source's bytes: ${results.newerTargetCopyOverwritten}`);
     results.sameMetadataCopyOverwritten = sha256File(path.join(targetRoot, sameMetadataRelOs)) === sameMetadataFile.sha256;
     console.log(`Target copy with the source's size and mtime but different bytes now has the source's bytes: ${results.sameMetadataCopyOverwritten}`);
+    // Exact spelling, read from the folder listing: on NTFS fs.existsSync would find the file under either spelling.
+    const hasExactName = (relOs) => fs.readdirSync(path.join(targetRoot, path.dirname(relOs))).includes(path.basename(relOs));
     if (caseRenameRelOs !== null) {
-      results.caseRenamedFileKept = fs.existsSync(path.join(targetRoot, caseRenameRelOs));
-      console.log(`File renamed only in letter case in the source still present in the target: ${results.caseRenamedFileKept}`);
+      results.caseRenamedFileKeptUnderTheSourcesSpelling = hasExactName(caseRenamedSourceRelOs);
+      console.log(`File renamed only in letter case in the source is in the target, under the source's spelling: ${results.caseRenamedFileKeptUnderTheSourcesSpelling}`);
     }
     if (caseRenameEditedFile !== null) {
-      results.caseRenamedEditedFileHasNewContent = fs.existsSync(path.join(targetRoot, caseRenameEditedRelOs))
-        && sha256File(path.join(targetRoot, caseRenameEditedRelOs)) === sha256File(path.join(sourceRoot, caseRenameEditedSourceRelOs));
-      console.log(`File renamed in letter case and changed in the source is in the target with the new content: ${results.caseRenamedEditedFileHasNewContent}`);
+      results.caseRenamedEditedFileHasNewContentAndSpelling = hasExactName(caseRenameEditedSourceRelOs)
+        && sha256File(path.join(targetRoot, caseRenameEditedSourceRelOs)) === sha256File(path.join(sourceRoot, caseRenameEditedSourceRelOs));
+      console.log(`File renamed in letter case and changed in the source is in the target with the new content and spelling: ${results.caseRenamedEditedFileHasNewContentAndSpelling}`);
     }
 
     // 10. The same algorithm in a CASE-SENSITIVE folder (Windows per-directory case sensitivity - what Linux
@@ -370,6 +380,7 @@ async function main() {
       await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: csCopy, source: csSource, target: csTarget, nameClash: 'replace' });
       assertPathIsWithin(csTarget, scratchRoot, 'case-sensitive delete target');
       await callWorker(win, 'delete-files-and-dirs-for-dir-sync', { pathsMarkedForDeletion: csDelete, commit: DELETE_PARAM_THAT_ACTUALLY_COMMITS_DELETIONS, source: csSource, target: csTarget });
+      await callWorker(win, 'match-letter-case', { source: csSource, target: csTarget, commit: true }); // must rename nothing here
       const csTargetNames = fs.readdirSync(csTarget).sort();
       results.caseSensitiveFolderMirroredExactly = JSON.stringify(csTargetNames) === JSON.stringify(['REPORT.TXT']);
       console.log(`  target now holds ${JSON.stringify(csTargetNames)} (expected ["REPORT.TXT"]): ${results.caseSensitiveFolderMirroredExactly}`);

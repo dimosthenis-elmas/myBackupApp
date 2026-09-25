@@ -558,9 +558,12 @@ and Synchronize directories with the target containing the template folder, are 
 says so in words and names both folders (worker errors used to reach dialogs as "[object Object]"), and nothing on
 disk changes - in particular the template folder inside the target is not deleted. And Cumulative backup with a
 source folder Windows refuses to list (a temporary "deny list folder" ACL): a "Some items were left out"
-warning names that folder by its full path, and the comparison still goes on to show everything else. And a sync
-after which the two folders still differ - a file renamed only in letter case, which the sync leaves as it is: the
-check afterwards shows "Directory synchronization - differences found" with that file in its scrollable list.
+warning names that folder by its full path, and the comparison still goes on to show everything else. A sync whose
+only difference is a file renamed in capital letters is not "already in sync": the preview says the file will be
+renamed, the sync ends successfully and the target has the template's spelling. And when the check after a sync
+finds a difference (made deterministic by pointing the check's request, in the main process, at a copy of the
+result with one extra file), it shows "Directory synchronization - differences found" with that file in its
+scrollable list.
 
 ## `test-recover-copy-failure.js`
 

@@ -39,6 +39,10 @@ export class SyncDirsComponent {
 
   pathsOfFilesToBeCopied!:Array<string>
   pathsOfFilesToBeDeleted!:Array<string>
+  /** Target entries whose name differs from the template's only in letter case, where the filesystem treats both
+   *  spellings as one name - they are given the template's spelling after the copy and delete phases (see
+   *  matchLetterCase in worker.ts). Found together with the two lists above. */
+  letterCaseRenames: Array<{ targetPath: string, to: string }> = [];
 
   copyFilesPromise!:Promise<any>
   deleteFilesPromise!:Promise<any>
@@ -265,6 +269,9 @@ export class SyncDirsComponent {
               });
               if (visibleLines.length > 0) { this.backup.previewLogsStream.next(visibleLines); }
             } else if (response.status == 'completed' || response.status == 'stopped') {
+              if (this.letterCaseRenames.length > 0) {
+                this.backup.previewLogsStream.next(this.letterCaseRenames.map((r) => `will rename to "${r.to}" :${r.targetPath}`));
+              }
               this.backup.previewLogsStream.complete();
               console.log('completed in delete-files-and-dirs-for-dir-sync')
             }
@@ -342,6 +349,7 @@ export class SyncDirsComponent {
     try {
       this.pathsOfFilesToBeCopied = await this.getPathsOfFilesToBeCopied();
       this.pathsOfFilesToBeDeleted = await this.getPathsOfFilesToBeDeleted();
+      this.letterCaseRenames = (await ipc.matchLetterCase(this.backup.sourcePath, this.backup.targetPath, false)).res;
     } catch (error) {
       if (!userCancelledOperation) {
         loadingDialogRef.close();
@@ -545,7 +553,7 @@ export class SyncDirsComponent {
               });
               if (visibleLines.length > 0) { this.backup.previewLogsStream.next(visibleLines); }
             } else if (response.status == 'completed' || response.status == 'stopped') {
-              this.backup.previewLogsStream.complete();
+              // The log stream is completed below, once the letter case has been matched too.
               status = response.status
             } else if(response.status == 'error'){
               // Intentionally no-op - see the identical comment on the copy phase's 'error' case above.
@@ -561,6 +569,15 @@ export class SyncDirsComponent {
     // Same cleanup as previewOperationsBeforeCommiting/the copy phase above - nothing after this reuses
     // this.workerListener, so leaving it registered would just leak for the rest of the component's lifetime.
     this.workerListener.removeListener();
+
+    // Last: renames that only change letter case (see letterCaseRenames) - not after a Cancel.
+    if (status === 'completed' && !this.commitCancelled) {
+      const renamed: Array<{ targetPath: string, to: string }> = (await ipc.matchLetterCase(this.backup.sourcePath, this.backup.targetPath, true)).res;
+      if (renamed.length > 0) {
+        this.backup.previewLogsStream.next(renamed.map((r) => `renamed to "${r.to}" :${r.targetPath}`));
+      }
+    }
+    this.backup.previewLogsStream.complete();
 
     return status;
 

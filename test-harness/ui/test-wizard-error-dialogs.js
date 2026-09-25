@@ -13,9 +13,13 @@
  *      ACL - the same thing that makes e.g. the legacy "My Music" junction inside Documents unreadable): a warning
  *      titled "Some items were left out" lists that folder by its full path, and the comparison still goes on
  *      to show everything else.
- *   4. Synchronize directories where, after the sync, the two folders still differ - a file renamed only in letter
- *      case ("Photo.jpg" / "photo.jpg"), which the sync leaves as it is: the check it runs afterwards shows
- *      "Directory synchronization - differences found" with that file in its scrollable list, saying what differs.
+ *   4a. Synchronize directories where the only difference is a file renamed in capital letters ("Photo.jpg" in the
+ *      template, "photo.jpg" in the target): it is not "already in sync" - the preview says the file will be renamed,
+ *      the sync ends with "Directory synchronization successful", and the target has the template's spelling.
+ *   4b. Synchronize directories where the check after the sync finds a difference - made deterministic by pointing
+ *      the check's request (in the main process, before it reaches the worker) at a copy of the result with one extra
+ *      file: it shows "Directory synchronization - differences found" with that file in its scrollable list,
+ *      saying what differs.
  *
  * NOTE: needs a real Windows desktop/window session (see worker-ipc/call-worker.js's top comment) - run from your
  * own interactive terminal.
@@ -64,7 +68,7 @@ async function withApp(label, runId, pickedPaths, body) {
       const queue = [...paths];
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [queue.shift()] });
     }, pickedPaths);
-    await body(win, step);
+    await body(win, step, app);
   } finally {
     if (app) { await app.close().catch(() => {}); }
   }
@@ -152,30 +156,69 @@ async function main() {
     }
   }
 
-  // ---- 4. Synchronize directories: the check after the sync finds a difference
+  // The Synchronize directories wizard up to its preview, for scenarios 4a and 4b.
+  const syncUpToPreview = async (win, step, target) => {
+    await step('main menu -> Synchronize directories', () => clickMainMenuButton(win, 'Synchronize directories'));
+    await step('pick the template folder', () => win.getByRole('button', { name: 'Path to the template directory' }).click({ timeout: 15_000 }));
+    await step('pick the folder to be synchronized', () => win.getByRole('button', { name: 'Path to the directory to be synchronized with the template' }).click({ timeout: 15_000 }));
+    await step('wait for the target path on screen', () => win.getByText(target, { exact: true }).waitFor({ timeout: 10_000 }));
+    await step('click "Next"', () => win.getByRole('button', { name: 'Next', exact: true }).click({ timeout: 15_000 }));
+    await step('click "Continue" on the warning', () => win.getByRole('button', { name: 'Continue', exact: true }).click({ timeout: 15_000 }));
+    await step('wait for the preview to finish (up to 60s)', () => win.getByRole('button', { name: 'Write to the backup' }).click({ timeout: 60_000, trial: true }));
+  };
+
+  // ---- 4a. Synchronize directories: a rename that only changed capital letters
+  {
+    const template = path.join(scratchRoot, 'sync-letter-case', 'template');
+    const target = path.join(scratchRoot, 'sync-letter-case', 'target');
+    fs.mkdirSync(template, { recursive: true }); fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(template, 'Photo.jpg'), 'p'); fs.writeFileSync(path.join(target, 'photo.jpg'), 'p');
+    console.log('\n=== Synchronize directories, the only difference is a rename that changed capital letters');
+    await withApp('sync-letter-case', runId, [template, target], async (win, step) => {
+      await syncUpToPreview(win, step, target);
+      const previewLines = await win.locator('app-incremental-dialog .example-item').allTextContents();
+      results['sync: the preview says the file will get the template\'s spelling'] = previewLines.some((l) => l.includes('will rename to "Photo.jpg"'));
+      await step('click "Write to the backup"', () => win.getByRole('button', { name: 'Write to the backup' }).click({ timeout: 15_000 }));
+      await step('click "Yes, continue"', () => win.getByRole('button', { name: 'Yes, continue', exact: true }).click({ timeout: 15_000 }));
+      const success = win.getByRole('dialog').filter({ hasText: 'Directory synchronization successful' });
+      await step('wait for "Directory synchronization successful" (up to 60s)', () => success.waitFor({ timeout: 60_000 }));
+      await step('click "Ok"', () => success.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
+    });
+    const names = fs.readdirSync(target);
+    results['sync: the target now has the template\'s spelling'] = JSON.stringify(names) === JSON.stringify(['Photo.jpg']);
+    if (!results['sync: the target now has the template\'s spelling']) { console.log(`  target holds ${JSON.stringify(names)}`); }
+  }
+
+  // ---- 4b. Synchronize directories: the check after the sync finds a difference
   {
     const template = path.join(scratchRoot, 'sync-difference', 'template');
     const target = path.join(scratchRoot, 'sync-difference', 'target');
     fs.mkdirSync(template, { recursive: true }); fs.mkdirSync(target, { recursive: true });
-    fs.writeFileSync(path.join(template, 'Photo.jpg'), 'p'); fs.writeFileSync(path.join(target, 'photo.jpg'), 'p');
     fs.writeFileSync(path.join(template, 'new.txt'), 'n');
-    console.log('\n=== Synchronize directories, the check afterwards finds a name that differs only in letter case');
-    await withApp('sync-difference', runId, [template, target], async (win, step) => {
-      await step('main menu -> Synchronize directories', () => clickMainMenuButton(win, 'Synchronize directories'));
-      await step('pick the template folder', () => win.getByRole('button', { name: 'Path to the template directory' }).click({ timeout: 15_000 }));
-      await step('pick the folder to be synchronized', () => win.getByRole('button', { name: 'Path to the directory to be synchronized with the template' }).click({ timeout: 15_000 }));
-      await step('wait for the target path on screen', () => win.getByText(target, { exact: true }).waitFor({ timeout: 10_000 }));
-      await step('click "Next"', () => win.getByRole('button', { name: 'Next', exact: true }).click({ timeout: 15_000 }));
-      await step('click "Continue" on the warning', () => win.getByRole('button', { name: 'Continue', exact: true }).click({ timeout: 15_000 }));
-      await step('wait for the preview, click "Write to the backup" (up to 60s)', () => win.getByRole('button', { name: 'Write to the backup' }).click({ timeout: 60_000 }));
+    // What the check is shown instead of the target: the synced result plus one file the template does not have.
+    const checkedFolder = path.join(scratchRoot, 'sync-difference', 'target as the check sees it');
+    fs.mkdirSync(checkedFolder, { recursive: true });
+    fs.writeFileSync(path.join(checkedFolder, 'new.txt'), 'n');
+    fs.writeFileSync(path.join(checkedFolder, 'appeared during the check.txt'), 'x');
+    console.log('\n=== Synchronize directories, the check after the sync finds a file the template does not have');
+    await withApp('sync-difference', runId, [template, target], async (win, step, app) => {
+      // A real difference, made deterministically: in the main process, ahead of its own relay to the worker, the
+      // check's request is pointed at checkedFolder - so the check compares the template with a folder that differs.
+      await app.evaluate(({ ipcMain }, folder) => {
+        ipcMain.prependListener('message-to-worker', (event, request) => {
+          if (request && request.key === 'compare-folders') { request.params.target = folder; }
+        });
+      }, checkedFolder);
+      await syncUpToPreview(win, step, target);
+      await step('click "Write to the backup"', () => win.getByRole('button', { name: 'Write to the backup' }).click({ timeout: 15_000 }));
       await step('click "Yes, continue"', () => win.getByRole('button', { name: 'Yes, continue', exact: true }).click({ timeout: 15_000 }));
       const differences = win.getByRole('dialog').filter({ hasText: 'differences found' });
       await step('wait for "Directory synchronization - differences found" (up to 60s)', () => differences.waitFor({ timeout: 60_000 }));
       results['sync: the check after the sync lists the difference by name, saying what differs'] =
-        (await differences.getByText('Photo.jpg  -  the name differs only in letter case: "photo.jpg" in the target').count()) > 0;
+        (await differences.getByText(/^appeared during the check\.txt {2}- {2}only in the target/).count()) > 0;
       await step('click "Ok"', () => differences.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
     });
-    results['sync: the other change was still made'] = fs.existsSync(path.join(target, 'new.txt'));
+    results['sync: the sync itself was still made'] = fs.existsSync(path.join(target, 'new.txt'));
   }
 
   const pass = Object.keys(results).length > 0 && Object.values(results).every(Boolean);

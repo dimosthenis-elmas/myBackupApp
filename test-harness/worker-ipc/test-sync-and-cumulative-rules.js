@@ -34,6 +34,9 @@
  *     (numbered if that name is taken too) with everything in it unchanged, and the source's entry is backed up
  *     under the name. Also for two names that differ only in letter case, on a case-insensitive filesystem. The
  *     rest of the folder, a folder outside both, and the source are unchanged, and a second run finds nothing to do.
+ *  5b. Synchronize directories with files and folders renamed only in capital letters (on a filesystem that ignores
+ *     letter case): the target ends up with the source's exact spelling - also for a file that changed too and an
+ *     empty folder - and when the capitals are the only difference the sync still has the rename to do.
  *  6. The check Synchronize directories runs after a sync (compare-folders): after every sync above it must find
  *     both folders identical, counting the same files and bytes as this script's own walk; and on a pair built to
  *     differ it reports each difference once, by path and with what differs - a size, an entry only one side has (a
@@ -87,14 +90,17 @@ async function cumulative(win, source, target) {
   return list.length;
 }
 
-/** Returns how many entries it copied plus deleted. */
+/** Called the way the Synchronize directories wizard does: copy, delete, then give target entries the source's
+ *  letter case (match-letter-case). Returns how many entries it copied, deleted and renamed. */
 async function sync(win, source, target) {
   const copyList = (await callWorker(win, 'diff', { source, target, comparison: 'any-difference-or-content' })).res;
   const copying = new Set(copyList);
   const deleteList = (await callWorker(win, 'diff', { source: target, target: source, comparison: 'any-difference' })).res.filter((p) => !copying.has(p));
+  const renames = (await callWorker(win, 'match-letter-case', { source, target, commit: false })).res;
   await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: copyList, source, target, nameClash: 'replace' });
   await callWorker(win, 'delete-files-and-dirs-for-dir-sync', { pathsMarkedForDeletion: deleteList, commit: true, source, target });
-  return copyList.length + deleteList.length;
+  await callWorker(win, 'match-letter-case', { source, target, commit: true });
+  return copyList.length + deleteList.length + renames.length;
 }
 
 const run = (win, mode, source, target) => (mode === 'sync' ? sync(win, source, target) : cumulative(win, source, target));
@@ -411,6 +417,43 @@ async function main() {
           problems = [String(e.message).split('\n')[0].slice(0, 200)];
         }
         report(`${mode}: ${label}`, problems.length === 0, problems.slice(0, 3).join(' | '));
+      }
+    }
+
+    // ---- 5b
+    if (isCaseInsensitiveFilesystem(scratchRoot)) {
+      console.log('\n5b. Sync: renames that only changed capital letters...');
+      {
+        const root = path.join(scratchRoot, 'letter-case');
+        const S = path.join(root, 'source'); const T = path.join(root, 'target');
+        write(path.join(S, 'Photos', 'IMG_001.JPG'), 'same picture', BASE_SECONDS); write(path.join(T, 'photos', 'img_001.jpg'), 'same picture', BASE_SECONDS);
+        write(path.join(S, 'Photos', 'Notes.txt'), 'new notes, longer', BASE_SECONDS + 600); write(path.join(T, 'photos', 'notes.txt'), 'old notes', BASE_SECONDS);
+        write(path.join(S, 'Readme.TXT'), 'readme', BASE_SECONDS); write(path.join(T, 'readme.txt'), 'readme', BASE_SECONDS);
+        fs.mkdirSync(path.join(S, 'Empty Folder')); fs.mkdirSync(path.join(T, 'empty folder'));
+        write(path.join(T, 'photos', 'only in target.txt'), 'x', BASE_SECONDS);
+        const sourceBefore = snapshot(S);
+        let problems = [];
+        try {
+          await sync(win, S, T);
+          problems = differences(sourceBefore, snapshot(T));
+          problems.push(...await checkAfterSync(win, S, T));
+          const secondRun = await sync(win, S, T);
+          if (secondRun) { problems.push(`a second run still found ${secondRun} item(s) to do`); }
+        } catch (e) {
+          problems = [String(e.message).split('\n')[0].slice(0, 200)];
+        }
+        report('sync: files and folders renamed only in capital letters (one also changed) end up with the source\'s spelling',
+          problems.length === 0, problems.slice(0, 3).join(' | '));
+      }
+      {
+        // When the capitals are the only difference, the sync still has something to do - it is not "already in sync".
+        const root = path.join(scratchRoot, 'letter-case-only');
+        const S = path.join(root, 'source'); const T = path.join(root, 'target');
+        write(path.join(S, 'Report.TXT'), 'same', BASE_SECONDS); write(path.join(T, 'report.txt'), 'same', BASE_SECONDS);
+        let found = null; let names = [];
+        try { found = await sync(win, S, T); names = fs.readdirSync(T); } catch (e) { found = String(e.message).split('\n')[0]; }
+        report('sync: when only the capitals differ, it is not "already in sync" - the rename is made',
+          found === 1 && JSON.stringify(names) === JSON.stringify(['Report.TXT']), `found ${found}, target holds ${JSON.stringify(names)}`);
       }
     }
 

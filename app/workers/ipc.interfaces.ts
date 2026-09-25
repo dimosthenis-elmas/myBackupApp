@@ -9,7 +9,7 @@ export type WorkerChannel =
 "get-effective-optical-medium-capacity" | "check-temp-data-directory-for-leftovers" |
 "open-existing-ibb-file" |
 "compute-sha256-for-backed-up-files" | "verify-file-hashes" | "delete-recovered-failed-files" |
-"compare-folders";
+"compare-folders" | "match-letter-case";
 
 /** How the worker's `diff` decides that a file which exists on both sides has to be reported (entries missing from
  *  the target altogether are always reported):

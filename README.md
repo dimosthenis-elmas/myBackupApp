@@ -47,7 +47,8 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   "... (old folder)" or "... (old file)", and the new one is backed up under the name.
 
 - **Synchronize dirs:** makes a "target" directory an exact copy of a "master" directory, adding and deleting files
-  as needed - including where a name is a file on one side and a folder on the other. Because it can delete files
+  as needed - including where a name is a file on one side and a folder on the other, and where a file or folder
+  was only renamed in capital letters (the target gets the master's spelling). Because it can delete files
   from the target, use it with care. When it finishes, it checks that both directories hold exactly the same files -
   by name and size in bytes - and tells you how many files there are and their total size, or lists every file that
   differs.

@@ -280,6 +280,13 @@ export class WorkerCommunicator {
         return this.sendAndAwaitResponse('compare-folders', { source, target });
     }
 
+    /** Gives target entries the source's letter case where the filesystem treats both spellings as one name - see
+     *  matchLetterCase in worker.ts. With commit false it only lists them. Resolves with
+     *  `res: Array<{ targetPath, to }>`. */
+    static matchLetterCase(source: string, target: string, commit: boolean): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('match-letter-case', { source, target, commit });
+    }
+
     /** `sessionId` (see SESSION_FOLDER_NAME_PATTERN's own comment in worker.ts) must be the one value generated
      *  once per job and reused consistently across every call this same job makes (this one, createIBB_file,
      *  and createOpticalMediaDiscPartials) - it is what keeps this job's real split partials and .ibb files

@@ -2086,6 +2086,45 @@ const haveSameContent = async function (pathA: string, pathB: string, buffers: [
   }
 }
 
+/** Gives entries in the target the letter case they have in the source, wherever the filesystem treats the two
+ *  spellings as one name (NTFS by default): "photos\img.jpg" becomes "Photos\IMG.JPG" when the source has that
+ *  spelling. "Synchronize directories" needs this because its copy writes into an existing entry and keeps that
+ *  entry's name, and diff treats the two spellings as the same entry - so a rename that only changed letter case
+ *  would otherwise never reach the target. Only an entry of the same kind (file, folder, link) is renamed; a link is
+ *  renamed as the link itself, never followed. In a folder where letter case matters the two spellings are two
+ *  entries, and nothing is renamed. With `commit` false, only lists what it would rename. Returns one
+ *  { targetPath, to } per rename: the entry's full path as it is in the target before the rename, and its new name. */
+const matchLetterCase = async function (source: string, target: string, commit: boolean): Promise<Array<{ targetPath: string, to: string }>> {
+  const renames: Array<{ targetPath: string, to: string }> = [];
+  const kindOf = (stats: any) => stats.isSymbolicLink() ? 'link' : stats.isDirectory() ? 'folder' : 'file';
+  // `relativeDir` is in the source's spelling; on a filesystem that ignores letter case it finds the target's folder
+  // whatever that folder's own spelling is.
+  const walk = async (relativeDir: string): Promise<void> => {
+    const sourceDir = node_path_module.join(source, relativeDir);
+    const targetDir = node_path_module.join(target, relativeDir);
+    if (!isRealDirectoryAt(targetDir)) { return; }
+    const targetNames: string[] = fs.readdirSync(targetDir);
+    const inTarget = new Set(targetNames);
+    for (const name of fs.readdirSync(sourceDir)) {
+      const sourceStats = fs.lstatSync(node_path_module.join(sourceDir, name));
+      if (!inTarget.has(name)) {
+        const variants = targetNames.filter((n) => n !== name && n.toLowerCase() === name.toLowerCase());
+        const variantStats = variants.length === 1 ? lstatOrNull(node_path_module.join(targetDir, variants[0])) : null;
+        // One entry of the same kind, which the source's spelling also reaches - i.e. the filesystem sees one name.
+        if (variantStats && kindOf(variantStats) === kindOf(sourceStats) && lstatOrNull(node_path_module.join(targetDir, name)) !== null) {
+          const targetPath = node_path_module.join(targetDir, variants[0]);
+          renames.push({ targetPath, to: name });
+          if (commit) { fs.renameSync(targetPath, node_path_module.join(targetDir, name)); }
+        }
+      }
+      if (sourceStats.isDirectory() && !sourceStats.isSymbolicLink()) { await walk(node_path_module.join(relativeDir, name)); }
+      await holdOnIfDue();
+    }
+  };
+  await walk('');
+  return renames;
+}
+
 /** Compares two folders entry by entry, the check "Synchronize directories" runs after a sync: by exact name (letter
  *  case included) and, for a file, exact size in bytes. A link is one entry - compared by where it points
  *  (linkTargetText), never followed. Returns whether everything matched, the source's totals (its files, links
@@ -3186,6 +3225,14 @@ const init = function() : void
     //console.log(JSON.stringify(arg.key));
     //console.log(JSON.stringify(arg))
     switch (arg.key) {
+      case 'match-letter-case':
+        matchLetterCase(asScanRoot(trimTrailingBackslash(arg.params.source)), asScanRoot(trimTrailingBackslash(arg.params.target)),
+          arg.params.commit === true).then((renames) => {
+          ipc.sendResponseToMain({ key: 'match-letter-case', res: renames, status: 'completed' });
+        }).catch((err) => {
+          ipc.sendResponseToMain({ key: 'match-letter-case', res: err, status: 'error' });
+        });
+        break;
       case 'compare-folders':
         logsBuffer.setChannel('compare-folders');
         compareFolders(asScanRoot(trimTrailingBackslash(arg.params.source)), asScanRoot(trimTrailingBackslash(arg.params.target)),
