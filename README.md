@@ -101,6 +101,10 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   every feature copies it as one.) Cumulative backup and Synchronize dirs also refuse two folders where one is
   inside the other.
 
+- **Tested only on Windows 11, with drives formatted as NTFS.** Other versions of Windows and other file systems
+  have not been tested. The app might not work on Linux (or macOS): parts of it assume Windows - its paths, and
+  ImgBurn, which only runs on Windows.
+
 - **Not supported: the FAT file system** (FAT, FAT32). Don't use the app with folders on a drive formatted as FAT -
   e.g. many USB sticks and memory cards; format such a drive as NTFS first.
 
