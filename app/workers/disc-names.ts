@@ -14,8 +14,9 @@ import { PIECE_ENDING } from './split-pieces';
 
 export const MAX_DISC_NAME_LENGTH = 127;
 
-/** The longest full path - drive letter included ("E:\...") - that Windows Explorer and most other programs can
- *  open. The app itself reads and writes longer ones. */
+/** The longest full path - drive letter included ("E:\...") - that every program can open. A program given a longer
+ *  path as it is fails, unless it is built for long paths; Windows Explorer shows such files, and opens one by handing
+ *  the program a shortened (8.3) path or one starting "\\?\". The app itself reads and writes longer ones. */
 export const MAX_OPENABLE_PATH_LENGTH = 259;
 
 /** The room a shortened piece's name keeps for its ending (PIECE_ENDING, kept whole so the pieces of one file still

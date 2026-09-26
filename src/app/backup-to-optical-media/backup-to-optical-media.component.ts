@@ -343,7 +343,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   
           loadingDialogRef.close();
 
-          // Names too long for a disc, and paths too long for most programs: the user is told about every one, and
+          // Names too long for a disc, and paths too long for some programs: the user is told about every one, and
           // recommended to shorten them in their own folder first - planning again picks the new names up.
           if (!(await confirmDiscNameAndPathLimits(this.dialog, opticalDiskPartitioningTrimmed.flat().map(x => x.path),
             this.backup.sourcePath, 'click "Next" again'))) {

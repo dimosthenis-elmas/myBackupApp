@@ -27,10 +27,10 @@ function askToContinue(dialog: MatDialog, title: string, message: string, lists:
 
 /** Before discs are burned: tells the user about every item among `relativePaths` (relative to the disc's root, as
  *  planned - a split piece's included) whose name is too long for a disc, then about every file whose path on the
- *  disc is too long for Windows Explorer and most programs - each in a dialog of its own, listing them all by their
- *  full path under `sourceRoot`. Both dialogs recommend cancelling and shortening the names in the user's own folder
- *  (then `howToRetry`); continuing is the other choice - shortened names on the disc only (see disc-names.ts), or long
- *  paths burned as they are. Resolves true only if the user continued past every dialog shown (none: true). */
+ *  disc is too long for some programs - each in a dialog of its own, listing them all by their full path under
+ *  `sourceRoot`. Both dialogs recommend cancelling and shortening the names in the user's own folder (then
+ *  `howToRetry`); continuing is the other choice - shortened names on the disc only (see disc-names.ts), or long paths
+ *  burned as they are. Resolves true only if the user continued past every dialog shown (none: true). */
 export async function confirmDiscNameAndPathLimits(dialog: MatDialog, relativePaths: string[], sourceRoot: string, howToRetry: string): Promise<boolean> {
   const root = sourceRoot.endsWith('\\') ? sourceRoot : sourceRoot + '\\';
   const cancelLabel = `Cancel - I'll shorten them myself`;
@@ -54,7 +54,7 @@ export async function confirmDiscNameAndPathLimits(dialog: MatDialog, relativePa
   if (pathsTooLong.length > 0 && !(await askToContinue(dialog, 'Paths too long for some programs',
     `On the disc, the ${pathsTooLong.length === 1 ? 'file' : `${pathsTooLong.length} files`} below would have a full path ` +
     `of more than ${MAX_OPENABLE_PATH_LENGTH} characters, counting the drive (such as "E:\\"). The app burns and recovers ` +
-    `such files without trouble, but Windows Explorer and many other programs cannot open a file with a path that long - ` +
+    `such files without trouble, but some programs cannot open a file with a path that long - ` +
     `on the disc, or wherever it is recovered to.\n\n` +
     `We recommend that you cancel, shorten some of the folder or file names on the way to ${pathsTooLong.length === 1 ? 'it' : 'them'} ` +
     `in your folder, and then ${howToRetry}.\n\n` +
@@ -67,7 +67,7 @@ export async function confirmDiscNameAndPathLimits(dialog: MatDialog, relativePa
 }
 
 /** Before recovering: tells the user about every file among `relativePaths` whose recovered path - in `targetFolder` -
- *  would be longer than Windows Explorer and most programs can open, listing them all. Resolves 'recover' to go on,
+ *  would be too long for some programs to open, listing them all. Resolves 'recover' to go on,
  *  'choose-folder' when the user would rather pick a folder with a shorter path (the recommended choice), and
  *  'recover' at once when there is no such file. */
 export async function confirmRecoveredPathLengths(dialog: MatDialog, relativePaths: string[], targetFolder: string): Promise<'recover' | 'choose-folder'> {
@@ -77,7 +77,7 @@ export async function confirmRecoveredPathLengths(dialog: MatDialog, relativePat
   const recover = await askToContinue(dialog, 'Paths too long for some programs',
     `Recovered into "${targetFolder}", the ${tooLong.length === 1 ? 'file' : `${tooLong.length} files`} below would have a ` +
     `full path of more than ${MAX_OPENABLE_PATH_LENGTH} characters. The app recovers such files without trouble, but ` +
-    `Windows Explorer and many other programs cannot open a file with a path that long.\n\n` +
+    `some programs cannot open a file with a path that long.\n\n` +
     `We recommend that you choose a folder with a shorter path, such as "D:\\Recovered".\n\n` +
     `If you continue instead, ${tooLong.length === 1 ? 'it is' : 'they are'} recovered into "${targetFolder}" anyway.`,
     [{ label: `Paths over ${MAX_OPENABLE_PATH_LENGTH} characters (${tooLong.length}):`, items: tooLong }],

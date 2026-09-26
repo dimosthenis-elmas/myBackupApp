@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * Names too long for a disc (over 127 characters) and paths too long for most programs (over 259), end to end in
+ * Names too long for a disc (over 127 characters) and paths too long for some programs (over 259), end to end in
  * the real app - the disc in between built by the real ImgBurn from the project the app wrote:
  *
  *  A. Backup to optical media: "Next" shows "Names too long for a disc", listing every such item (a file, a folder) by

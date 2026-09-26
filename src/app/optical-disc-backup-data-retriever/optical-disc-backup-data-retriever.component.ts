@@ -570,7 +570,7 @@ import { parsePiece } from '../../../app/workers/split-pieces';
           if (folderState === 'choose-folder') { await chooseAnotherFolderAndStartAgain(); }
           return;
         }
-        // Recovered paths too long for most programs: the user is told about every one, and recommended to pick a
+        // Recovered paths too long for some programs: the user is told about every one, and recommended to pick a
         // folder with a shorter path - then asked again, for that folder.
         if ((await confirmRecoveredPathLengths(this.dialog, selected.map(x => x.path), this.backup.targetPath)) === 'choose-folder') {
           await chooseAnotherFolderAndStartAgain();

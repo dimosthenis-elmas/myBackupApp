@@ -695,7 +695,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       this.partitions =  (await ipc.partitionBackupToOpticalMedia(this.backup.targetPath, this.selected_optical_medium.capacity, this.selected_optical_medium.maxRepletionRatio, true, this.tempSessionId, selectedPathsWithMetadata, false, incompleteSplitFilesSelected)).res;
       console.log(this.partitions)
 
-      // Names too long for a disc, and paths too long for most programs: the user is told about every one before
+      // Names too long for a disc, and paths too long for some programs: the user is told about every one before
       // anything is written, and recommended to shorten them in the master first. The planned paths, relative to the
       // disc's root, trimmed the same way sendToImgBurn trims them.
       loadingDialogRef.close();

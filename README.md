@@ -218,10 +218,10 @@ These apply to more than one feature, or to the app as a whole.
   shorter names on the disc. A disc burned by an older version of the app has such a name cut by ImgBurn itself, and
   its metadata JSON does not match it: recover that disc by reading the discs, not from the JSON.
 
-  A whole path has no such limit on a disc, but Windows Explorer and many other programs cannot open a file whose
-  full path is over 259 characters. The app lists such files before burning (by their path on the disc) and before
-  recovering (by their path in the folder you recover to), and recommends shortening folder names, or recovering
-  into a folder with a shorter path. It burns and recovers them either way.
+  A whole path has no such limit on a disc, but some programs cannot open a file whose full path is over 259
+  characters. The app lists such files before burning (by their path on the disc) and before recovering (by their
+  path in the folder you recover to), and recommends shortening folder names, or recovering into a folder with a
+  shorter path. It burns and recovers them either way.
 
 - **Tested only on Windows 11, with drives formatted as NTFS.** Other versions of Windows and other file systems
   have not been tested. The app might not work on Linux (or macOS): parts of it assume Windows - its paths, and
