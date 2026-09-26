@@ -8,8 +8,9 @@
  *   Cumulative backup: every source file that is missing from the backup or updated (newer in the source, or a
  *                      different size) ends up in the backup with the source's content; nothing else in the
  *                      backup changes, and nothing is deleted.
- *   Synchronize dirs:  afterwards the target holds exactly the source's files, folders and links.
- *   Both:              nothing outside the two chosen folders is read into them, written to, or deleted.
+ *   Synchronize dirs:  afterwards the target holds exactly the source's files and folders - and no links.
+ *   Both:              nothing outside the two chosen folders is read into them, written to, or deleted; a link is
+ *                      never copied into the target.
  *
  *  1. Random folder pairs (fixed seeds): missing files, target-only files and folders, empty folders, a target copy
  *     that is newer / older / a different size / the same size and date with different bytes. Each pair is run
@@ -18,17 +19,21 @@
  *     replaced with the new version, in both features. (Hidden: Windows only - skipped elsewhere.) And Synchronize
  *     directories' 2-second allowance for modified times (a FAT drive stores them to 2 seconds): identical bytes
  *     with times 1 second apart are left alone, 3 seconds apart are copied again.
- *  3. Links (junctions - the kind of link anyone can create on Windows): a link is one entry, never followed. A
- *     link in the source is copied as a link pointing to the same place, not as a copy of what it points to; a
- *     link in the target is replaced or deleted as the link itself - also where the source has a folder or a
- *     file at that path, so nothing is ever written through it. For every scenario, in both features: a folder
- *     outside both (what the links point to) must be unchanged, the result must follow the rules, and a second
- *     run must find nothing left to do.
+ *  3. Links (junctions - the kind of link anyone can create on Windows): a link is never followed and never copied.
+ *     A link in the source is left out and written to logs.txt, with where it points - not to the "Some items were
+ *     left out" warning; a link in the target is replaced as the link itself where the source has a folder or a file at that
+ *     path, deleted as the link itself by Synchronize directories otherwise, and left alone by Cumulative backup
+ *     (which never deletes). For every scenario, in both features: a folder outside both (what the links point to)
+ *     must be unchanged, the result must follow the rules, and a second run must find nothing left to do.
  *  4. Folders inside each other: both features refuse the pair with a message and change nothing - the target
- *     containing the source, the source containing the target, a target that is a junction to a folder inside
- *     the source, and differently cased paths. A sibling whose name merely starts with the other's ("S" and
- *     "S-sibling") is not refused, and the same folder twice is simply already up to date / in sync.
- *  5. A name that is a file (or a junction) on one side and a folder on the other: Synchronize directories
+ *     containing the source, the source containing the target, and differently cased paths. A sibling whose name
+ *     merely starts with the other's ("S" and "S-sibling") is not refused, and the same folder twice is simply
+ *     already up to date / in sync.
+ *  4b. A chosen folder that is a link, or inside one: both features refuse it, naming the folder it leads to, and
+ *     change nothing - also a target that is a junction to a folder inside the source; so does recovery's copy (no
+ *     comparison first) into a folder that is a junction. A folder on a SUBST drive is not taken for a link
+ *     (skipped if no drive letter is free).
+ *  5. A name that is a file on one side and a folder on the other: Synchronize directories
  *     replaces the target's entry, folder contents and all, so the target ends up identical to the source;
  *     Cumulative backup deletes nothing - the backup's old entry is renamed "<name> (old folder)" / "(old file)"
  *     (numbered if that name is taken too) with everything in it unchanged, and the source's entry is backed up
@@ -40,12 +45,11 @@
  *  6. The check Synchronize directories runs after a sync (compare-folders): after every sync above it must find
  *     both folders identical, counting the same files and bytes as this script's own walk; and on a pair built to
  *     differ it reports each difference once, by path and with what differs - a size, an entry only one side has (a
- *     whole folder as one line), a name that differs only in letter case, a file against a folder, a link pointing
- *     elsewhere - and nothing else.
- *  7. Synchronize directories' delete step never deletes through a link: its list is made before the copy step, which
- *     can replace a folder of the target with a link from the source (a relative symbolic link then points
- *     elsewhere from the target) - the delete step is given exactly that state, with a junction to a folder outside
- *     both, and must leave that folder alone while still deleting the rest of the list.
+ *     whole folder as one line), a name that differs only in letter case, a file against a folder, a link in the
+ *     target - and nothing else; a link in the source is not a difference (a sync does not copy it).
+ *  7. Synchronize directories' delete step never deletes through a link: its list is made before the copy step, and a
+ *     folder of the target can have become a link since - the delete step is given exactly that state, with a
+ *     junction to a folder outside both, and must leave that folder alone while still deleting the rest of the list.
  *  8. A copy that fails part way - another program holds part of the source file locked - leaves the target's earlier
  *     copy exactly as it was, and no temporary file behind, in both features (Windows only: the lock is PowerShell's).
  *
@@ -63,11 +67,13 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync, spawn } = require('child_process');
-const { launchApp, callWorker } = require('./call-worker');
+const { launchApp, callWorker, startRecordingAppErrors, takeAppErrors } = require('./call-worker');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { isCaseInsensitiveFilesystem } = require('../lib/filesystem-case');
 
 const IS_WINDOWS = process.platform === 'win32';
+// The app's log, which the worker's console.warn lines go to (appData/logs.txt, next to config.json).
+const LOGS_TXT = path.resolve(__dirname, '../../appData/logs.txt');
 const BASE_SECONDS = Date.UTC(2025, 0, 1) / 1000;
 
 const results = {};
@@ -103,6 +109,23 @@ function lockByteRange(filePath, offset, length) {
   });
 }
 
+/** True if logs.txt has the line leaveOutLink (worker.ts) writes for the link at `linkPath`, pointing to `pointsTo`. */
+function linkIsLogged(linkPath, pointsTo) {
+  try { return fs.readFileSync(LOGS_TXT, 'utf8').includes(`Left out a link: ${linkPath}  -  a link to "${pointsTo}"`); } catch { return false; }
+}
+
+/** The worker's own message from a failed callWorker: its error payload is one line of JSON after 'Worker returned
+ *  status "error" for "<key>": ' (see callWorkerInner in call-worker.js). Falls back to the whole message. */
+function workerErrorMessage(e) {
+  const text = String(e.message);
+  const marker = /Worker returned status "error" for "[^"]+": /.exec(text);
+  if (marker) {
+    const json = text.slice(marker.index + marker[0].length).split('\n')[0];
+    try { const payload = JSON.parse(json); if (payload && payload.message) { return payload.message; } } catch { /* not JSON */ }
+  }
+  return text;
+}
+
 // ---- the two features, called the way their wizards call the worker
 
 async function cumulative(win, source, target) {
@@ -116,7 +139,7 @@ async function cumulative(win, source, target) {
 async function sync(win, source, target) {
   const copyList = (await callWorker(win, 'diff', { source, target, comparison: 'any-difference-or-content' })).res;
   const copying = new Set(copyList);
-  const deleteList = (await callWorker(win, 'diff', { source: target, target: source, comparison: 'any-difference' })).res.filter((p) => !copying.has(p));
+  const deleteList = (await callWorker(win, 'diff', { source: target, target: source, comparison: 'any-difference', listLinks: true })).res.filter((p) => !copying.has(p));
   const renames = (await callWorker(win, 'match-letter-case', { source, target, commit: false })).res;
   await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: copyList, source, target, nameClash: 'replace' });
   await callWorker(win, 'delete-files-and-dirs-for-dir-sync', { pathsMarkedForDeletion: deleteList, commit: true, source, target });
@@ -127,10 +150,10 @@ async function sync(win, source, target) {
 const run = (win, mode, source, target) => (mode === 'sync' ? sync(win, source, target) : cumulative(win, source, target));
 
 /** The check the Synchronize directories wizard runs after a sync (compare-folders): it must find the two folders
- *  identical and count the source's files (links included) and their bytes the way this script's own walk does.
+ *  identical and count the source's files (not its links) and their bytes the way this script's own walk does.
  *  Returns what is wrong, if anything. */
 async function checkAfterSync(win, source, target) {
-  const sourceEntries = snapshot(source);
+  const sourceEntries = withoutLinks(snapshot(source));
   const expectedFiles = [...sourceEntries.values()].filter((e) => e.kind !== 'dir').length;
   const expectedBytes = [...sourceEntries.values()].reduce((sum, e) => sum + (e.kind.startsWith('file') ? e.size : 0), 0);
   const check = (await callWorker(win, 'compare-folders', { source, target })).res;
@@ -160,6 +183,11 @@ function snapshot(root) {
   return entries;
 }
 
+/** A snapshot without its links - what a sync leaves in the target: links are never copied. */
+function withoutLinks(entries) {
+  return new Map([...entries].filter(([, v]) => !v.kind.startsWith('link')));
+}
+
 function differences(expected, actual) {
   const lines = [];
   for (const [k, v] of expected) { if (!actual.has(k) || actual.get(k).kind !== v.kind) { lines.push(`${k}: expected ${v.kind.slice(0, 40)}, got ${actual.has(k) ? actual.get(k).kind.slice(0, 40) : 'nothing'}`); } }
@@ -167,20 +195,19 @@ function differences(expected, actual) {
   return lines;
 }
 
-/** What Cumulative backup must leave in the target: the target as it was, plus every source entry that was missing
- *  or updated (source newer, or a different size); a source entry replaces what was at its path (and, if that was
- *  a link or a file where the source has a folder, it simply becomes that folder). */
+/** What Cumulative backup must leave in the target: the target as it was, plus every source file or folder that was
+ *  missing or updated (source newer, or a different size) - never a source link; a source entry replaces what was at
+ *  its path (and, if that was a link or a file where the source has a folder, it simply becomes that folder). */
 function expectedAfterCumulative(sourceBefore, targetBefore) {
   const expected = new Map(targetBefore);
-  for (const [k, v] of sourceBefore) {
+  for (const [k, v] of withoutLinks(sourceBefore)) {
     const before = targetBefore.get(k);
     if (v.kind === 'dir') {
       if (!before || before.kind !== 'dir') { expected.set(k, v); }
       continue;
     }
-    const updated = !before || before.kind !== v.kind.split(' ')[0] && !(before.kind.startsWith('file') && v.kind.startsWith('file'))
-      || (v.kind.startsWith('file') && before.kind.startsWith('file') && (v.mtimeMs > before.mtimeMs || v.size !== before.size))
-      || (v.kind.startsWith('link') && before.kind !== v.kind);
+    const updated = !before || !before.kind.startsWith('file')
+      || v.mtimeMs > before.mtimeMs || v.size !== before.size;
     if (updated) { expected.set(k, v); }
   }
   return expected;
@@ -251,7 +278,7 @@ async function main() {
         const sourceBefore = snapshot(source); const targetBefore = snapshot(target);
         try {
           await run(win, mode, source, target);
-          const expected = mode === 'sync' ? sourceBefore : expectedAfterCumulative(sourceBefore, targetBefore);
+          const expected = mode === 'sync' ? withoutLinks(sourceBefore) : expectedAfterCumulative(sourceBefore, targetBefore);
           const problems = differences(expected, snapshot(target));
           if (differences(sourceBefore, snapshot(source)).length) { problems.push('the SOURCE changed'); }
           if (mode === 'sync') { problems.push(...await checkAfterSync(win, source, target)); }
@@ -294,10 +321,11 @@ async function main() {
     }
 
     // ---- 3
-    console.log('\n3. Links (junctions) - one entry each, never followed...');
+    console.log('\n3. Links (junctions) - never followed, never copied...');
+    await startRecordingAppErrors(win);
     const linkScenarios = [
       ['a junction in the target pointing outside, the source has nothing there', ({ S, T, O }) => { write(path.join(S, 'a.txt'), 'a'); fs.symlinkSync(O, path.join(T, 'link'), 'junction'); }],
-      ['a junction in the source pointing outside is copied as a link, not as what it points to', ({ S, O }) => { write(path.join(S, 'a.txt'), 'a'); fs.symlinkSync(O, path.join(S, 'link'), 'junction'); }],
+      ['a junction in the source pointing outside is left out, not copied', ({ S, O }) => { write(path.join(S, 'a.txt'), 'a'); fs.symlinkSync(O, path.join(S, 'link'), 'junction'); }],
       ['a junction in the source that points to nothing', ({ S, root }) => { const gone = path.join(root, 'gone'); fs.mkdirSync(gone); fs.symlinkSync(gone, path.join(S, 'dangling'), 'junction'); fs.rmdirSync(gone); }],
       ['the same junction on both sides', ({ S, T, O }) => { fs.symlinkSync(O, path.join(S, 'link'), 'junction'); fs.symlinkSync(O, path.join(T, 'link'), 'junction'); }],
       ['junctions on both sides pointing to different places', ({ S, T, O }) => { fs.symlinkSync(O, path.join(S, 'link'), 'junction'); fs.symlinkSync(path.join(O, 'sub'), path.join(T, 'link'), 'junction'); }],
@@ -305,6 +333,7 @@ async function main() {
       ['a junction in the target where the source has a file', ({ S, T, O }) => { write(path.join(S, 'd'), 'a file named d'); fs.symlinkSync(O, path.join(T, 'd'), 'junction'); }],
       ['a junction in the target where the source has an empty folder', ({ S, T, O }) => { fs.mkdirSync(path.join(S, 'd')); fs.symlinkSync(O, path.join(T, 'd'), 'junction'); }],
       ['a file in the target where the source has a junction', ({ S, T, O }) => { fs.symlinkSync(O, path.join(S, 'd'), 'junction'); write(path.join(T, 'd'), 'old file'); }],
+      ['a folder with files in the target where the source has a junction', ({ S, T, O }) => { fs.symlinkSync(O, path.join(S, 'd'), 'junction'); write(path.join(T, 'd', 'a.txt'), 'a'); fs.mkdirSync(path.join(T, 'd', 'empty')); }],
       ['a junction inside a folder only the target has', ({ S, T, O }) => { write(path.join(S, 'a.txt'), 'a'); write(path.join(T, 'old', 'x.txt'), 'x'); fs.symlinkSync(O, path.join(T, 'old', 'link'), 'junction'); }],
     ];
     let scenarioNumber = 0;
@@ -317,12 +346,18 @@ async function main() {
         write(path.join(O, 'precious.txt'), 'keep me'); write(path.join(O, 'sub', 'deep.txt'), 'deep');
         build({ S, T, O, root });
         const outsideBefore = snapshot(O); const sourceBefore = snapshot(S); const targetBefore = snapshot(T);
+        // The source's links, as logs.txt must name them: by full path, with where each points.
+        const sourceLinks = [...sourceBefore].filter(([, v]) => v.kind.startsWith('link')).map(([k, v]) => [path.join(S, k), v.kind.slice('link -> '.length)]);
         let problems = [];
         try {
+          await takeAppErrors(win);
           await run(win, mode, S, T);
-          const expected = mode === 'sync' ? sourceBefore : expectedAfterCumulative(sourceBefore, targetBefore);
+          const warnings = await takeAppErrors(win);
+          const expected = mode === 'sync' ? withoutLinks(sourceBefore) : expectedAfterCumulative(sourceBefore, targetBefore);
           problems = differences(expected, snapshot(T));
           if (differences(outsideBefore, snapshot(O)).length) { problems.unshift('the folder OUTSIDE source and target changed'); }
+          if (warnings.length) { problems.push(`a "left out" warning appeared: ${JSON.stringify(warnings[0].lists ? warnings[0].lists[0].items : warnings[0])}`); }
+          if (!sourceLinks.every(([linkPath, pointsTo]) => linkIsLogged(linkPath, pointsTo))) { problems.push('not every source link is in logs.txt with where it points'); }
           const secondRun = await run(win, mode, S, T);
           if (secondRun) { problems.push(`a second run still found ${secondRun} item(s) to do`); }
         } catch (e) {
@@ -331,17 +366,13 @@ async function main() {
         report(`${mode}: ${label}`, problems.length === 0, problems.slice(0, 2).join(' | '));
       }
     }
+    await takeAppErrors(win);
 
     // ---- 4
     console.log('\n4. Folders inside each other...');
     const nestedPairs = [
       ['the target contains the source', (root) => ({ S: path.join(root, 'T', 'Photos'), T: path.join(root, 'T') })],
       ['the source contains the target', (root) => ({ S: path.join(root, 'S'), T: path.join(root, 'S', 'backup') })],
-      ['the target is a junction to a folder inside the source', (root) => {
-        const S = path.join(root, 'S'); fs.mkdirSync(path.join(S, 'inner'), { recursive: true });
-        const T = path.join(root, 'T-link'); fs.symlinkSync(path.join(S, 'inner'), T, 'junction');
-        return { S, T };
-      }],
     ];
     if (IS_WINDOWS) { nestedPairs.push(['differently cased paths, the target inside the source', (root) => ({ S: path.join(root, 'S'), T: path.join(root, 's', 'Backup') })]); }
     scenarioNumber = 0;
@@ -374,6 +405,82 @@ async function main() {
         `cumulative: ${cumulativeOutcome}, sync: ${syncOutcome}`);
     }
 
+    // ---- 4b
+    console.log('\n4b. A chosen folder that is a link, or inside one...');
+    // [label, make the pair (and the folder the linked one leads to) under `root`]
+    const linkedPairs = [
+      ['the target is a junction', (root) => {
+        const real = path.join(root, 'real target'); fs.mkdirSync(real, { recursive: true });
+        const T = path.join(root, 'T-link'); fs.symlinkSync(real, T, 'junction');
+        return { S: path.join(root, 'S'), T, leadsTo: real };
+      }],
+      ['the target is inside a junction', (root) => {
+        const real = path.join(root, 'real'); fs.mkdirSync(path.join(real, 'backup'), { recursive: true });
+        const link = path.join(root, 'link'); fs.symlinkSync(real, link, 'junction');
+        return { S: path.join(root, 'S'), T: path.join(link, 'backup'), leadsTo: path.join(real, 'backup') };
+      }],
+      ['the source is a junction', (root) => {
+        const real = path.join(root, 'real source'); fs.mkdirSync(real, { recursive: true });
+        const S = path.join(root, 'S-link'); fs.symlinkSync(real, S, 'junction');
+        return { S, T: path.join(root, 'T'), leadsTo: real };
+      }],
+      ['the target is a junction to a folder inside the source', (root) => {
+        const S = path.join(root, 'S'); fs.mkdirSync(path.join(S, 'inner'), { recursive: true });
+        const T = path.join(root, 'T-link'); fs.symlinkSync(path.join(S, 'inner'), T, 'junction');
+        return { S, T, leadsTo: path.join(S, 'inner') };
+      }],
+    ];
+    scenarioNumber = 0;
+    for (const [label, makePair] of linkedPairs) {
+      scenarioNumber++;
+      for (const mode of ['cumulative', 'sync']) {
+        const root = path.join(scratchRoot, `linked-${scenarioNumber}-${mode}`);
+        fs.mkdirSync(root, { recursive: true });
+        const { S, T, leadsTo } = makePair(root);
+        write(path.join(S, 'a.txt'), 'a'); write(path.join(T, 't.txt'), 't');
+        const before = snapshot(root);
+        let error = null;
+        try { await run(win, mode, S, T); } catch (e) { error = workerErrorMessage(e); }
+        const refused = error !== null && error.includes('a link to') && error.toLowerCase().includes(`choose the folder it leads to instead: "${leadsTo.toLowerCase()}"`);
+        const unchanged = differences(before, snapshot(root)).length === 0;
+        report(`${mode}: refused when ${label}, naming the folder it leads to`, refused && unchanged,
+          !refused ? `not refused as a link (${error ? error.slice(0, 200) : 'it ran'})` : (!unchanged ? 'files changed' : ''));
+      }
+    }
+    {
+      // Recovery copies straight from the disc, with no comparison first - its copy step refuses the folder itself.
+      const root = path.join(scratchRoot, 'linked-recovery');
+      const disc = path.join(root, 'disc'); write(path.join(disc, 'a.txt'), 'a');
+      const real = path.join(root, 'real recovery folder'); fs.mkdirSync(real, { recursive: true });
+      const T = path.join(root, 'recovery-link'); fs.symlinkSync(real, T, 'junction');
+      let error = null;
+      try { await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: ['a.txt'], source: disc, target: T }); } catch (e) { error = workerErrorMessage(e); }
+      report('recovery (a copy with no comparison first): refused when its folder is a junction, nothing copied',
+        error !== null && error.includes('a link to') && fs.readdirSync(real).length === 0, error ? error.slice(0, 200) : 'it ran');
+    }
+    if (IS_WINDOWS) {
+      let substLetter = null;
+      for (const letter of 'YXWVUTSRQP') { if (!fs.existsSync(`${letter}:\\`)) { substLetter = letter; break; } }
+      if (substLetter) {
+        const root = path.join(scratchRoot, 'subst');
+        write(path.join(root, 'S', 'a.txt'), 'a'); fs.mkdirSync(path.join(root, 'on the drive', 'T'), { recursive: true });
+        execFileSync('subst', [`${substLetter}:`, path.join(root, 'on the drive')]);
+        try {
+          const T = `${substLetter}:\\T`;
+          let outcome;
+          try { outcome = await cumulative(win, path.join(root, 'S'), T); } catch (e) { outcome = String(e.message).split('\n')[0]; }
+          let syncOutcome;
+          try { syncOutcome = await sync(win, path.join(root, 'S'), T); } catch (e) { syncOutcome = String(e.message).split('\n')[0]; }
+          report(`a folder on a SUBST drive (${substLetter}:) is not taken for a link`, outcome === 1 && syncOutcome === 0 && fs.existsSync(path.join(T, 'a.txt')),
+            `cumulative: ${outcome}, then sync: ${syncOutcome}`);
+        } finally {
+          try { execFileSync('subst', [`${substLetter}:`, '/D']); } catch { /* already gone */ }
+        }
+      } else {
+        console.log('  (SUBST drive check skipped: no free drive letter.)');
+      }
+    }
+
     // ---- 5
     console.log('\n5. A name that is a file on one side and a folder on the other...');
     // [label, build, the name in the target that clashes, the name Cumulative sets it aside as]
@@ -389,9 +496,6 @@ async function main() {
       }, 'x', 'x (old file)'],
       ['a file in the source, an empty folder in the target', ({ S, T }) => {
         write(path.join(S, 'x'), 'the file'); fs.mkdirSync(path.join(T, 'x'));
-      }, 'x', 'x (old folder)'],
-      ['a junction in the source, a folder in the target', ({ S, T, O }) => {
-        fs.symlinkSync(O, path.join(S, 'x'), 'junction'); write(path.join(T, 'x', 'a.txt'), 'a');
       }, 'x', 'x (old folder)'],
       ['a file in the source, a folder in the target, and "x (old folder)" already taken', ({ S, T }) => {
         write(path.join(S, 'x'), 'the file'); write(path.join(T, 'x', 'a.txt'), 'a'); write(path.join(T, 'x (old folder)', 'older.txt'), 'older');
@@ -500,7 +604,8 @@ async function main() {
         ['only in target.txt', 'only in the target'],
         ['Photo.jpg', 'the name differs only in letter case: "photo.jpg" in the target'],
         ['clash', 'a file, 6 bytes in the source, a folder in the target'],
-        ['link', 'a link to'],
+        // The source's link is left out - a sync does not copy it - so the target's is only in the target.
+        ['link', `only in the target (a link to "${path.join(O, 'sub')}")`],
       ];
       const missing = expectedLines.filter(([p, why]) => !check.mismatches.some((line) => line.startsWith(`${p}  -  ${why}`)));
       report('the check finds the two folders different', check.matched === false);
@@ -513,9 +618,9 @@ async function main() {
     // ---- 7
     console.log('\n7. The delete step never deletes through a link...');
     {
-      // A relative symbolic link needs administrator rights or Developer Mode to create, so this sets up directly the
-      // state the delete step meets after the copy step: the target's folder "L" is now a link (a junction) to a
-      // folder outside both, and the list still holds what "L" contained, next to ordinary target-only entries.
+      // Sets up directly the state the delete step can meet: the target's folder "L" has become a link (a junction) to
+      // a folder outside both since the list was made, and the list still holds what "L" contained, next to ordinary
+      // target-only entries.
       const root = path.join(scratchRoot, 'delete-through-link');
       const S = path.join(root, 'source'); const T = path.join(root, 'target'); const O = path.join(root, 'outside');
       write(path.join(S, 'a.txt'), 'a'); write(path.join(T, 'a.txt'), 'a');

@@ -476,7 +476,7 @@ the real saved metadata JSON, independently re-hashes every real source file, an
 written (`stats.sha256`) - not just that SOME string is present - and confirms no directory entry has one at all
 (hashing a directory makes no sense).
 
-Confirming a disc deletes only its split pieces and shortcuts (none here), never its `.ibb` file, so the job's
+Confirming a disc deletes only its split pieces (none here), never its `.ibb` file, so the job's
 real `.ibb` file and temp-dir session subfolder would otherwise be left sitting in the app's REAL temp/cache
 directory forever - breaking the NEXT script's (or your own next real use of the app's)
 `assertRealTempDataDirectoryIsSafeToUse` check. Cleaned up explicitly at the end, best-effort (logged, not thrown,

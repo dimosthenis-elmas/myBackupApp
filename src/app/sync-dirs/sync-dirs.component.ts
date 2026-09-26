@@ -13,6 +13,7 @@ import { error } from 'console';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/progress-line';
 import { formatBytes } from '../shared/utils/format-bytes';
+import { LINKS_NOT_BACKED_UP_NOTE } from '../shared/utils/links-note';
 import { isDriveRoot } from '../shared/utils/drive-root';
 
 
@@ -135,7 +136,7 @@ export class SyncDirsComponent {
       then the file will be copied from ${this.backup.sourcePath} to ${this.backup.targetPath}. Also in case there is a file in
       ${this.backup.targetPath} which does not exist in ${this.backup.sourcePath} then this file will be DELETED. So be careful as this
       option may delete files from ${this.backup.targetPath}. If you are not sure you want to proceed press 'cancel'.
-      Otherwise press 'continue'.`;
+      Otherwise press 'continue'.\n\n${LINKS_NOT_BACKED_UP_NOTE} Links in ${this.backup.targetPath} are deleted - only the link itself, never what it points to.`;
     confirmDialog.componentInstance.title = "Warning"
     confirmDialog.componentInstance.actionsNum = 2;
     confirmDialog.componentInstance.action1Label = "Cancel";
@@ -210,7 +211,9 @@ export class SyncDirsComponent {
     // directories and differs by size or date shows up in both lists, and syncDirs() removes it from this one
     // (it is overwritten by the copy phase, not deleted). This call never reports an existing file that the copy
     // side's call does not, which is what makes that removal sufficient.
-    this.getAllPathsMarkedForDeletionPromise = ipc.diff(this.backup.targetPath, this.backup.sourcePath, 'any-difference');
+    // listLinks: the target's links are listed, so the target loses them - links are never copied, so the template
+    // never has one. Only the link itself is deleted, never what it points to.
+    this.getAllPathsMarkedForDeletionPromise = ipc.diff(this.backup.targetPath, this.backup.sourcePath, 'any-difference', false, true);
     return (await this.getAllPathsMarkedForDeletionPromise).res;
   }
 

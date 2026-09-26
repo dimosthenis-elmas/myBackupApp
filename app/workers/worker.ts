@@ -66,7 +66,7 @@ const holdOnIfDue = async () => {
 const SCAN_PROGRESS_REPORT_INTERVAL = 25;
 
 /** An entry a directory scan left out, and why: one it could not read (a folder Windows denies listing, e.g.
- *  "System Volume Information" at a drive's root), or a link a disc scan cannot back up as a shortcut (see linkAsShortcutEntry). */
+ *  "System Volume Information" at a drive's root). */
 type SkippedScanEntry = { path: string, reason: string };
 
 const scanErrorMessage = function (error: any): string {
@@ -76,9 +76,9 @@ const scanErrorMessage = function (error: any): string {
 /** Tells the user which entries a scan left out, as a dialog with every left-out path and the reason in a scrollable
  *  list (sent over 'app-error' directly, with a title and the list - console.error's own dialog only has room for a
  *  summary and collapsed technical details), and logs the same list to logs.txt. Only scans that collect such
- *  entries (their `skipped` list) ever get here: unreadable entries a scan was asked to skip, and the rare link a disc
- *  scan cannot back up as a shortcut (linkAsShortcutEntry). Left-out entries are not part of that scan's result, so for a backup source this is
- *  exactly the list of things that will NOT be backed up - which is why it is reported rather than silently
+ *  entries (their `skipped` list) ever get here: unreadable entries a scan was asked to skip. (Links left out are not
+ *  listed here - see leaveOutLink.) Left-out entries are not part of that scan's result, so for a backup source this
+ *  is exactly the list of things that will NOT be backed up - which is why it is reported rather than silently
  *  dropped. */
 const reportSkippedScanEntries = function (skipped: SkippedScanEntry[]): void {
   if (skipped.length === 0) {
@@ -94,128 +94,20 @@ const reportSkippedScanEntries = function (skipped: SkippedScanEntry[]): void {
   });
 }
 
-/** A disc cannot hold a link (symbolic link or junction), and burning a link's path would burn what it points to -
- *  outside the folder being backed up. So a link is backed up to a disc as a Windows shortcut instead: one small
- *  "<link name>.lnk" file pointing where the link points, and nothing else. Opened from the disc, it says it is
- *  broken unless its target is there; recovered to where its target exists, it opens it. */
-const LINK_SHORTCUT_EXTENSION = '.lnk';
-
-/** How big a link's shortcut is assumed to be while planning discs - a real one is 1-2 KB. The shortcut itself is
- *  only created when its disc is sent (createOpticalMediaDiscPartials), so planning needs a safe upper bound. */
-const LINK_SHORTCUT_PLANNED_SIZE_BYTES = 64 * 1024;
-
-/** The disc-scan entry for the link at `linkPath` (see LINK_SHORTCUT_EXTENSION): "<link path>.lnk", with the link's
- *  own modified time and `linkTarget` - where it points, as a full path (a relative link is resolved against its own
- *  folder). The link is never followed. Returns null, with the reason recorded in `skipped` when the scan collects
- *  left-out entries (otherwise in logs.txt), when the link cannot be read or a real "<link name>.lnk" already sits
- *  next to it. */
-const linkAsShortcutEntry = function (linkPath: string, linkStats: any, skipped?: SkippedScanEntry[]):
-  { path: string, stats: { size: number, mtime: Date, isDirectory: boolean, linkTarget: string } } | null {
-  const leaveOut = (reason: string) => {
-    const entry = { path: node_path_module.normalize(linkPath), reason };
-    if (skipped) { skipped.push(entry); } else { console.warn(`Left out a link: ${entry.path}  -  ${entry.reason}`); }
-    return null;
-  };
+/** Leaves the link (symbolic link or junction) at `linkPath` out of a backup: no feature backs up a link or what it
+ *  points to, which is outside the folder being backed up - a disc cannot hold a link, and a link copied into a
+ *  backup would lead out of it. Every backup wizard says so once, in a dialog it shows before copying or burning
+ *  anything; each link left out - with where it points, and `why` - goes to logs.txt only. Listing them in the
+ *  "Some items were left out" warning instead would show Windows' own links (e.g. "My Music" in Documents) on every
+ *  run, and a warning that always appears stops being read. */
+const leaveOutLink = function (linkPath: string, why: string): void {
   let pointsTo: string;
   try {
-    pointsTo = fs.readlinkSync(linkPath);
+    pointsTo = `a link to "${linkTargetText(linkPath)}"`;
   } catch (error) {
-    return leaveOut(`a link whose target could not be read (${scanErrorMessage(error)})`);
+    pointsTo = `a link (where it points could not be read: ${scanErrorMessage(error)})`;
   }
-  const shortcutPath = node_path_module.normalize(linkPath) + LINK_SHORTCUT_EXTENSION;
-  if (lstatOrNull(shortcutPath) !== null) {
-    return leaveOut(`a link to "${pointsTo}" - it is backed up as the shortcut "${node_path_module.basename(shortcutPath)}", ` +
-      `but a file with that name is already next to it, so it is not backed up`);
-  }
-  return {
-    path: shortcutPath,
-    stats: {
-      size: LINK_SHORTCUT_PLANNED_SIZE_BYTES,
-      mtime: linkStats.mtime,
-      isDirectory: false,
-      linkTarget: node_path_module.resolve(node_path_module.dirname(linkPath), pointsTo),
-    },
-  };
-}
-
-/** If `shortcutPath` is the path a disc scan gave a link (see linkAsShortcutEntry) - it ends in ".lnk", nothing is
- *  there, and a link is there without the ".lnk" - returns that link's target (full path) and modified time. */
-const linkBehindShortcutPath = function (shortcutPath: string): { target: string, mtime: Date } | null {
-  if (!shortcutPath.toLowerCase().endsWith(LINK_SHORTCUT_EXTENSION) || lstatOrNull(shortcutPath) !== null) { return null; }
-  const linkPath = shortcutPath.slice(0, -LINK_SHORTCUT_EXTENSION.length);
-  const linkStats = lstatOrNull(linkPath);
-  if (!linkStats || !linkStats.isSymbolicLink()) { return null; }
-  try {
-    return { target: node_path_module.resolve(node_path_module.dirname(linkPath), fs.readlinkSync(linkPath)), mtime: linkStats.mtime };
-  } catch (error) {
-    return null;
-  }
-}
-
-/** PowerShell script behind createShortcutFiles: Windows' own shortcut object through its Unicode interface
- *  (IShellLinkW) - WScript.Shell's shortcut object refuses paths with characters outside the system code page (e.g.
- *  Greek). Reads its jobs, [{shortcut, target}], from the UTF-8 JSON file named by the SHORTCUT_JOBS variable. */
-const CREATE_SHORTCUTS_SCRIPT = String.raw`
-$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ComTypes;
-using System.Text;
-[ComImport, Guid("00021401-0000-0000-C000-000000000046")] class CShellLink { }
-[ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F9-0000-0000-C000-000000000046")]
-interface IShellLinkW {
-  void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cch, IntPtr pfd, int fFlags);
-  void GetIDList(out IntPtr ppidl);
-  void SetIDList(IntPtr pidl);
-  void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cch);
-  void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
-  void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cch);
-  void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
-  void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cch);
-  void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
-  void GetHotkey(out short pwHotkey);
-  void SetHotkey(short wHotkey);
-  void GetShowCmd(out int piShowCmd);
-  void SetShowCmd(int iShowCmd);
-  void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cch, out int piIcon);
-  void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
-  void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, int dwReserved);
-  void Resolve(IntPtr hwnd, int fFlags);
-  void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
-}
-public static class ShortcutMaker {
-  public static void Make(string shortcutPath, string targetPath) {
-    IShellLinkW link = (IShellLinkW)new CShellLink();
-    link.SetPath(targetPath);
-    ((IPersistFile)link).Save(shortcutPath, true);
-  }
-}
-'@
-$jobs = Get-Content -Raw -Encoding UTF8 -LiteralPath $env:SHORTCUT_JOBS | ConvertFrom-Json
-foreach ($j in @($jobs)) { [ShortcutMaker]::Make($j.shortcut, $j.target) }
-`;
-
-/** Creates one Windows shortcut (.lnk) per job, pointing to `target` - which does not have to exist (the shortcut
- *  then says it is broken when opened, until something is there) - and gives it `mtime`. One PowerShell process for
- *  all of them. Windows only, like burning a disc with ImgBurn. */
-const createShortcutFiles = async function (jobs: Array<{ shortcut: string, target: string, mtime: Date }>): Promise<void> {
-  if (jobs.length === 0) { return; }
-  if (process.platform !== 'win32') { throw new Error('Links can only be backed up to a disc (as Windows shortcuts) on Windows.'); }
-  const jobsDirectory = fs.mkdtempSync(node_path_module.join(require('os').tmpdir(), 'my-backup-shortcuts-'));
-  try {
-    const jobsFile = node_path_module.join(jobsDirectory, 'jobs.json');
-    fs.writeFileSync(jobsFile, JSON.stringify(jobs.map((j) => ({ shortcut: j.shortcut, target: j.target }))), 'utf8');
-    const execFile = require('util').promisify(require('child_process').execFile);
-    await execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', CREATE_SHORTCUTS_SCRIPT],
-      { env: { ...process.env, SHORTCUT_JOBS: jobsFile }, windowsHide: true });
-  } finally {
-    fs.rmSync(jobsDirectory, { recursive: true, force: true });
-  }
-  for (const job of jobs) {
-    if (!fs.existsSync(job.shortcut)) { throw new Error(`The shortcut "${job.shortcut}" for a link could not be created.`); }
-    fs.utimesSync(job.shortcut, job.mtime, job.mtime);
-  }
+  console.warn(`Left out a link: ${node_path_module.normalize(linkPath)}  -  ${pointsTo} - ${why}`);
 }
 
 /** A bare drive ("D:") means "the current directory on drive D", not its root - so a scan starting there would
@@ -303,13 +195,16 @@ const scanSubdirectoryOrSkip = async function <T>(subdirectoryPath: string, skip
  * @param skipped optional - when given, an entry below `dirPath` that cannot be read (see statEntryOrSkip and the
  *  recursive readdir below) is recorded here and left out instead of failing the whole scan; `dirPath` itself
  *  must still be readable. Left undefined, the first unreadable entry throws, as it always did.
- *  A link (symbolic link or junction) below `dirPath` is listed as one entry, like a file, and never looked inside
- *  - so nothing outside `dirPath` is listed. */
-const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string> = [], onProgress?: (itemsFoundSoFar: number) => void, skipped?: SkippedScanEntry[]): Promise<string[]> {
+ * @param leaveOutLinks true to leave out a link (symbolic link or junction) below `dirPath` (see leaveOutLink);
+ *  false lists it as one entry, like a file. Either way it is never looked inside - so nothing outside `dirPath` is
+ *  listed. */
+const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string> = [], onProgress?: (itemsFoundSoFar: number) => void, skipped?: SkippedScanEntry[], leaveOutLinks: boolean = false): Promise<string[]> {
   let files: Array<string> = fs.readdirSync(dirPath)
 
   arrayOfFiles = arrayOfFiles || []
 
+  // A directory holding nothing but links that are left out is listed as empty, like one holding nothing at all.
+  let linksHere = 0;
   if (files.length > 0) {
     let file: string;
     for (let i = 0; i < files.length; i++) {
@@ -320,8 +215,11 @@ const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string>
         await holdOnIfDue();
         continue;
       }
-      if (entryStats.isDirectory()) {
-        arrayOfFiles = await scanSubdirectoryOrSkip(dirPath + "/" + file, skipped, () => getAllFiles(dirPath + "/" + file, arrayOfFiles, onProgress, skipped), arrayOfFiles)
+      if (leaveOutLinks && entryStats.isSymbolicLink()) {
+        leaveOutLink(node_path_module.join(dirPath, "/", file), 'links are not copied');
+        linksHere++;
+      } else if (entryStats.isDirectory()) {
+        arrayOfFiles = await scanSubdirectoryOrSkip(dirPath + "/" + file, skipped, () => getAllFiles(dirPath + "/" + file, arrayOfFiles, onProgress, skipped, leaveOutLinks), arrayOfFiles)
       } else {
         arrayOfFiles.push(node_path_module.join(dirPath, "/", file))
         //print_line(arrayOfFiles.length + "")
@@ -329,7 +227,8 @@ const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string>
       }
       await holdOnIfDue();
     }
-  } else {
+  }
+  if (linksHere === files.length) {
     arrayOfFiles.push(node_path_module.join(dirPath, "/"))
     //print_line(arrayOfFiles.length + "")
   }
@@ -485,9 +384,8 @@ const assertValidSessionId = function (sessionId: string): void {
 /** True if `entryPath` is safe for clearTempDataDirectory to delete, given ownership of its containing temp
  *  directory has already been established (ensureTempDataDirectoryIsAppOwned): a symlink/junction (always
  *  safe - deleting it only ever removes the link entry itself, never follows it into whatever it points to);
- *  a file whose name matches PART_FILE_PATTERN or IBB_PROJECT_FILE_PATTERN, or a shortcut (".lnk" - how a link is
- *  burned, see LINK_SHORTCUT_EXTENSION); or a directory all of whose contents, recursively, are themselves safe
- *  by this same rule.
+ *  a file whose name matches PART_FILE_PATTERN or IBB_PROJECT_FILE_PATTERN; or a directory all of whose contents,
+ *  recursively, are themselves safe by this same rule.
  *
  *  This exists on top of the ownership guarantee, not instead of it: ownership proves the directory *started*
  *  out empty, but nothing about that guarantee stops something unexpected from having been written into it
@@ -517,8 +415,7 @@ const isRecognizedTempContent = function (entryPath: string, isSymlink: boolean)
     return children.every((child) => isRecognizedTempContent(node_path_module.join(entryPath, child.name), child.isSymbolicLink()));
   }
   const baseName = node_path_module.basename(entryPath);
-  return PART_FILE_PATTERN.test(baseName) || IBB_PROJECT_FILE_PATTERN.test(baseName)
-    || baseName.toLowerCase().endsWith(LINK_SHORTCUT_EXTENSION);
+  return PART_FILE_PATTERN.test(baseName) || IBB_PROJECT_FILE_PATTERN.test(baseName);
 }
 
 /** Fallback used only for the cache/temp directory name when it is missing from config.json - this is what
@@ -1052,18 +949,17 @@ const writeJSONtoDisk = async function(path: string, json:Object): Promise<void>
     }
    ]
  * This is the scan behind every disc: planning a backup to optical media, the source scan of "Add missing files",
- * and reading a disc back. A link (symbolic link or junction) is never followed: a disc cannot hold a link, and what
- * one points to is outside the folder being backed up - so it is listed as the Windows shortcut it will be burned
- * as, "<link path>.lnk", with `linkTarget` (see linkAsShortcutEntry).
+ * and reading a disc back. A link (symbolic link or junction) is left out and never followed: a disc cannot hold a
+ * link, and what one points to is outside the folder being backed up (see leaveOutLink).
  * @param dirPath the directory for which you want to list the files.
  * @param arrayOfFiles <empty> (used internally for recursion)
- * @param skipped optional - see the identical parameter of getAllFiles. A link that cannot be backed up as a shortcut is recorded here too. */
+ * @param skipped optional - see the identical parameter of getAllFiles. */
 const getAllFilePathsWithStats = async function (
   dirPath: string,
-  arrayOfFiles: Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean, "linkTarget"?: string}}> = [],
+  arrayOfFiles: Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}> = [],
   onProgress?: (itemsFoundSoFar: number) => void,
   skipped?: SkippedScanEntry[]
-): Promise<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean, "linkTarget"?: string}}>> {
+): Promise<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}>> {
 
   // This resets the stop signal in case the user canceled the operation previously.
   process.env._stop = 'NoStop'
@@ -1071,6 +967,8 @@ const getAllFilePathsWithStats = async function (
 
   arrayOfFiles = arrayOfFiles || []
 
+  // A directory holding nothing but links (all left out) is listed as empty, like one holding nothing at all.
+  let linksHere = 0;
   if (files.length > 0) {
     let file: string;
     for (let i = 0; i < files.length; i++) {
@@ -1085,11 +983,8 @@ const getAllFilePathsWithStats = async function (
         continue;
       }
       if (entryStats.isSymbolicLink()) {
-        const shortcutEntry = linkAsShortcutEntry(node_path_module.join(dirPath, "/", file), entryStats, skipped);
-        if (shortcutEntry) {
-          arrayOfFiles.push(shortcutEntry);
-          if (onProgress && arrayOfFiles.length % SCAN_PROGRESS_REPORT_INTERVAL === 0) { onProgress(arrayOfFiles.length); }
-        }
+        leaveOutLink(node_path_module.join(dirPath, "/", file), 'a disc cannot hold a link');
+        linksHere++;
       } else if (entryStats.isDirectory()) {
         arrayOfFiles = await scanSubdirectoryOrSkip(dirPath + "/" + file, skipped, () => getAllFilePathsWithStats(dirPath + "/" + file, arrayOfFiles, onProgress, skipped), arrayOfFiles)
       } else {
@@ -1102,7 +997,8 @@ const getAllFilePathsWithStats = async function (
       }
       await holdOnIfDue();
     }
-  } else {
+  }
+  if (linksHere === files.length) {
     // Empty directory. fs.statSync on the directory itself (not statEntryOrSkip's lstat): this is the folder being
     // listed, which is only ever a link when it is the folder the scan was started on - and then it is followed.
     let dirStats: any = null;
@@ -1262,7 +1158,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
   // partition() call, which always supplies filesMetadata).
   let filePathsAndStats: Awaited<ReturnType<typeof getAllFilePathsWithStats>>;
   // Only a scan that was asked to (the caller's backup source - see the request's skipUnreadable) leaves out
-  // entries it cannot read, and it then tells the user which ones - along with the links it leaves out.
+  // entries it cannot read, and it then tells the user which ones.
   let skipped: SkippedScanEntry[] | undefined = undefined;
   if (filesMetadata !== undefined) {
     filePathsAndStats = filesMetadata;
@@ -1501,8 +1397,6 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
  *     splitting, so its stats were already correct.
  *   - An already-created split partial (exists under the temp directory from an earlier call): also just a
  *     pass-through.
- *   - A link's shortcut ("<link path>.lnk" - see linkAsShortcutEntry): created in the temp directory, pointing
- *     where the link points, the first time it is asked for; returned with its `linkTarget`.
  *   - A predicted-but-not-yet-real split partial (matches PART_FILE_PATTERN, exists under neither): reconstructs
  *     the original file's real path by stripping the ".part.NNN" suffix, runs the real 7-Zip split for that
  *     original file if not already done (idempotent - same "does a part file already exist" check
@@ -1548,23 +1442,6 @@ const createOpticalMediaDiscPartials = async function (dirPath: string, paths: A
   const alreadyProcessedOriginalFiles = new Set<string>();
   const surplusPartials: filesMetadata[] = [];
 
-  // A link is burned as a Windows shortcut (see LINK_SHORTCUT_EXTENSION): create, in one go, every shortcut these
-  // paths need that does not exist yet - in this job's session folder, like split partials, so nothing is ever
-  // written into the source. `linkTargets` also marks those entries in the results below.
-  const linkTargets = new Map<string, string>();
-  const shortcutJobs: Array<{ shortcut: string, target: string, mtime: Date }> = [];
-  for (const relPath of paths) {
-    const link = linkBehindShortcutPath(node_path_module.join(dirPath, relPath));
-    if (link === null) { continue; }
-    linkTargets.set(relPath, link.target);
-    const shortcut = node_path_module.join(tempDataDirectoryPath, relPath);
-    if (!fs.existsSync(shortcut)) {
-      fs.mkdirSync(node_path_module.dirname(shortcut), { recursive: true });
-      shortcutJobs.push({ shortcut, target: link.target, mtime: link.mtime });
-    }
-  }
-  await createShortcutFiles(shortcutJobs);
-
   const results: filesMetadata[] = [];
   for (const relPath of paths) {
     // Same existence-based disambiguation insertBranch_for_IBB_creation already uses when resolving a path to
@@ -1578,10 +1455,9 @@ const createOpticalMediaDiscPartials = async function (dirPath: string, paths: A
 
     const tempAbsolutePath = node_path_module.join(tempDataDirectoryPath, relPath);
     if (fs.existsSync(tempAbsolutePath)) {
-      // Already created (this call or an earlier one) - a split partial, or a link's shortcut.
+      // Already created (this call or an earlier one) - a split partial.
       const s = fs.statSync(tempAbsolutePath);
-      const linkTarget = linkTargets.get(relPath);
-      results.push({ path: relPath, stats: { size: s.size, mtime: s.mtime, isDirectory: false, ...(linkTarget !== undefined ? { linkTarget } : {}) } });
+      results.push({ path: relPath, stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
       continue;
     }
 
@@ -1902,17 +1778,14 @@ const deleteRecoveredFailedFiles = async function (failedAbsolutePaths: Array<st
 }
 
 
-/** @return an array that contains the absolute paths of all files in "dirPath" (in a recursive fashion).
- *  It also takes into account empty directories. 
- * @param dirPath the directory for which you want to list the files. 
- * @param arrayOfFiles <empty> (used internally for recursion) */
-/** Same recursive scan as getAllFiles, into a Set instead of an Array (see diff's own use of both - the target
- *  side only ever needs membership checks). `onProgress` follows the same "every SCAN_PROGRESS_REPORT_INTERVAL
- *  items" convention. `skipped` is the same optional parameter as getAllFiles's. */
-/** getAllFiles, collected into a Set - see getAllFiles for the parameters. */
+/** Same recursive scan as getAllFiles, into a Set instead of an Array - diff's second directory, which only ever
+ *  needs membership checks. A link (symbolic link or junction) is left out, unrecorded, and never looked inside: in
+ *  diff, a link in the second directory never counts as present. `onProgress` and `skipped` are getAllFiles's. */
 const getAllFilesSet = async function (dirPath: string, arrayOfFiles: Set<string> = new Set<string>(), onProgress?: (itemsFoundSoFar: number) => void, skipped?: SkippedScanEntry[]): Promise<Set<string>> {
   let files: Array<string> = fs.readdirSync(dirPath)
 
+  // As in getAllFiles: a directory holding nothing but links is listed as empty.
+  let linksHere = 0;
   if (files.length > 0) {
     let file: string;
     for (let i = 0; i < files.length; i++) {
@@ -1923,7 +1796,9 @@ const getAllFilesSet = async function (dirPath: string, arrayOfFiles: Set<string
         await holdOnIfDue();
         continue;
       }
-      if (entryStats.isDirectory()) {
+      if (entryStats.isSymbolicLink()) {
+        linksHere++; // left out - see this function's doc comment
+      } else if (entryStats.isDirectory()) {
         arrayOfFiles = await scanSubdirectoryOrSkip(dirPath + "/" + file, skipped, () => getAllFilesSet(dirPath + "/" + file, arrayOfFiles, onProgress, skipped), arrayOfFiles)
       } else {
         arrayOfFiles.add(node_path_module.join(dirPath, "/", file))
@@ -1932,7 +1807,8 @@ const getAllFilesSet = async function (dirPath: string, arrayOfFiles: Set<string
       }
       await holdOnIfDue();
     }
-  } else {
+  }
+  if (linksHere === files.length) {
     arrayOfFiles.add(node_path_module.join(dirPath, "/"))
     //print_line(arrayOfFiles.length + "")
   }
@@ -2107,9 +1983,9 @@ const haveSameContent = async function (pathA: string, pathB: string, buffers: [
  *  spellings as one name (NTFS by default): "photos\img.jpg" becomes "Photos\IMG.JPG" when the source has that
  *  spelling. "Synchronize directories" needs this because its copy writes into an existing entry and keeps that
  *  entry's name, and diff treats the two spellings as the same entry - so a rename that only changed letter case
- *  would otherwise never reach the target. Only an entry of the same kind (file, folder, link) is renamed; a link is
- *  renamed as the link itself, never followed. In a folder where letter case matters the two spellings are two
- *  entries, and nothing is renamed. With `commit` false, only lists what it would rename. Returns one
+ *  would otherwise never reach the target. Only an entry of the same kind (file or folder) is renamed; the source's
+ *  links are left out, as diff leaves them out of the copy. In a folder where letter case matters the two spellings
+ *  are two entries, and nothing is renamed. With `commit` false, only lists what it would rename. Returns one
  *  { targetPath, to } per rename: the entry's full path as it is in the target before the rename, and its new name. */
 const matchLetterCase = async function (source: string, target: string, commit: boolean): Promise<Array<{ targetPath: string, to: string }>> {
   const renames: Array<{ targetPath: string, to: string }> = [];
@@ -2124,6 +2000,7 @@ const matchLetterCase = async function (source: string, target: string, commit: 
     const inTarget = new Set(targetNames);
     for (const name of fs.readdirSync(sourceDir)) {
       const sourceStats = fs.lstatSync(node_path_module.join(sourceDir, name));
+      if (sourceStats.isSymbolicLink()) { continue; }
       if (!inTarget.has(name)) {
         const variants = targetNames.filter((n) => n !== name && n.toLowerCase() === name.toLowerCase());
         const variantStats = variants.length === 1 ? lstatOrNull(node_path_module.join(targetDir, variants[0])) : null;
@@ -2134,7 +2011,7 @@ const matchLetterCase = async function (source: string, target: string, commit: 
           if (commit) { fs.renameSync(targetPath, node_path_module.join(targetDir, name)); }
         }
       }
-      if (sourceStats.isDirectory() && !sourceStats.isSymbolicLink()) { await walk(node_path_module.join(relativeDir, name)); }
+      if (sourceStats.isDirectory()) { await walk(node_path_module.join(relativeDir, name)); }
       await holdOnIfDue();
     }
   };
@@ -2143,10 +2020,10 @@ const matchLetterCase = async function (source: string, target: string, commit: 
 }
 
 /** Compares two folders entry by entry, the check "Synchronize directories" runs after a sync: by exact name (letter
- *  case included) and, for a file, exact size in bytes. A link is one entry - compared by where it points
- *  (linkTargetText), never followed. Returns whether everything matched, the source's totals (its files, links
- *  included, and their bytes) and one line per difference, "<relative path>  -  <what differs>". A folder only one
- *  side has is one line, not one per file in it; two names that differ only in letter case are one line too.
+ *  case included) and, for a file, exact size in bytes. The source's links are left out - a sync does not copy them
+ *  (see diff); a link in the target is one entry, never followed. Returns whether everything matched, the source's
+ *  totals (its files and their bytes) and one line per difference, "<relative path>  -  <what differs>". A folder only
+ *  one side has is one line, not one per file in it; two names that differ only in letter case are one line too.
  *  Reports "Comparing items (i of N)" through `onProgress`, N being both folders' probed item counts together. */
 const compareFolders = async function (source: string, target: string, onProgress?: (line: string) => void):
   Promise<{ matched: boolean, fileCount: number, totalBytes: number, mismatches: string[] }> {
@@ -2167,7 +2044,7 @@ const compareFolders = async function (source: string, target: string, onProgres
   const walk = async (relativeDir: string): Promise<void> => {
     const sourceDir = node_path_module.join(source, relativeDir);
     const targetDir = node_path_module.join(target, relativeDir);
-    const sourceNames: string[] = fs.readdirSync(sourceDir);
+    const sourceNames: string[] = fs.readdirSync(sourceDir, { withFileTypes: true }).filter((e: Dirent) => !e.isSymbolicLink()).map((e: Dirent) => e.name);
     const targetNames: string[] = fs.readdirSync(targetDir);
     const inSource = new Set(sourceNames);
     const inTarget = new Set(targetNames);
@@ -2193,19 +2070,13 @@ const compareFolders = async function (source: string, target: string, onProgres
       if (kindOf(sourceStats) !== kindOf(targetStats)) {
         mismatches.push(`${relativePath}  -  ${describe(sourceStats, sourcePath)} in the source, ${describe(targetStats, targetPath)} in the target`);
         await visit(2);
-      } else if (sourceStats.isDirectory() && !sourceStats.isSymbolicLink()) {
+      } else if (sourceStats.isDirectory()) {
         await walk(relativePath);
       } else {
         fileCount++;
-        if (sourceStats.isSymbolicLink()) {
-          if (linkTargetText(sourcePath) !== linkTargetText(targetPath)) {
-            mismatches.push(`${relativePath}  -  ${describe(sourceStats, sourcePath)} in the source, ${describe(targetStats, targetPath)} in the target`);
-          }
-        } else {
-          totalBytes += sourceStats.size;
-          if (sourceStats.size !== targetStats.size) {
-            mismatches.push(`${relativePath}  -  the size differs: ${sourceStats.size} bytes in the source, ${targetStats.size} bytes in the target`);
-          }
+        totalBytes += sourceStats.size;
+        if (sourceStats.size !== targetStats.size) {
+          mismatches.push(`${relativePath}  -  the size differs: ${sourceStats.size} bytes in the source, ${targetStats.size} bytes in the target`);
         }
         await visit(2);
       }
@@ -2242,10 +2113,31 @@ const refuseFoldersInsideEachOther = function (first: string, second: string): v
   }
 }
 
-/** Where the link at `linkPath` points, as text to compare - without a trailing backslash (or slash): the same
- *  junction reads back with or without one depending on what created it (Electron's Node writes one, Windows'
- *  mklink and newer Node do not), so a junction copyLink made would otherwise never match its original. A drive
- *  root ("C:\") keeps its backslash. */
+/** Throws if `folder`, or a folder above it, is a link (symbolic link or junction). Cumulative backup and
+ *  "Synchronize directories" work in wherever a chosen folder leads, so through a link they would change - and Sync
+ *  delete - files in a folder other than the one the user sees. Each folder on the path is looked at as itself
+ *  (lstat), so a SUBST drive or a mapped network drive is not mistaken for a link. */
+const refuseLinkedFolder = function (folder: string): void {
+  const absolute = node_path_module.resolve(folder);
+  const root = node_path_module.parse(absolute).root;
+  let current = root;
+  for (const name of absolute.slice(root.length).split(node_path_module.sep).filter((n) => n !== '')) {
+    current = node_path_module.join(current, name);
+    const stats = lstatOrNull(current);
+    if (stats === null) { return; } // nothing there - the scan reports that
+    if (!stats.isSymbolicLink()) { continue; }
+    let pointsTo = '';
+    try { pointsTo = ` to "${linkTargetText(current)}"`; } catch (error) { /* where it points could not be read */ }
+    let leadsTo = '';
+    try { leadsTo = `: "${fs.realpathSync.native(absolute)}"`; } catch (error) { /* it leads nowhere */ }
+    const what = current === absolute ? `"${absolute}" is a link${pointsTo}` : `"${absolute}" is inside "${current}", which is a link${pointsTo}`;
+    throw new Error(`${what}. Choose the folder it leads to instead${leadsTo}.`);
+  }
+}
+
+/** Where the link at `linkPath` points, as text - without a trailing backslash (or slash), which the same junction
+ *  reads back with or without depending on what created it (Electron's Node writes one, Windows' mklink and newer
+ *  Node do not). A drive root ("C:\") keeps its backslash. */
 const linkTargetText = function (linkPath: string): string {
   const text = fs.readlinkSync(linkPath);
   return /^[A-Za-z]:\\$/.test(text) ? text : text.replace(/[\\/]+$/, '');
@@ -2286,15 +2178,21 @@ const linkTargetText = function (linkPath: string): string {
  *  backup asks for this. "Synchronize directories" must not: it deletes whatever is missing from the source, so an
  *  unreadable source entry that was merely skipped would look like "not in the source" and the target's copy of
  *  it would be deleted.
+ *  @param listLinks how a link (symbolic link or junction) in the FIRST directory is treated. False (Cumulative backup,
+ *  and Sync's copy list): it is left out - links are never copied - and named in logs.txt (see leaveOutLink). True
+ *  (only Sync's delete list, where the first directory is the target): it is listed
+ *  as one entry, like a file, so the target loses it - the link itself (unlinkSync), never what it points to.
  *
- *  A link (symbolic link or junction) inside either directory is one entry, like a file, and is never followed:
- *  it is reported when the other side has no link at that path pointing to the same place, and createTree /
- *  deleteFilesAndDirsForDirSync then copy or delete the link itself. That keeps both features to what is inside
- *  the two directories - nothing a link points to elsewhere is read, copied, overwritten or deleted.
+ *  A link in the SECOND directory never counts as present. No link is ever followed, so neither feature reads,
+ *  copies, overwrites or deletes anything a link points to - and neither puts a link into a target, so nothing in a
+ *  backup leads outside it.
  *
- *  Throws if one directory is inside the other - see refuseFoldersInsideEachOther. */
-const diff = async function (source: string, target: string, onProgress?: (line: string) => void, comparison: DiffComparison = 'source-newer-or-different-size', skipUnreadable: boolean = false): Promise<string[]> {
+ *  Throws if either directory is a link or inside one (see refuseLinkedFolder), or if one directory is inside the
+ *  other (see refuseFoldersInsideEachOther). */
+const diff = async function (source: string, target: string, onProgress?: (line: string) => void, comparison: DiffComparison = 'source-newer-or-different-size', skipUnreadable: boolean = false, listLinks: boolean = false): Promise<string[]> {
   process.env._stop = "noStop";
+  refuseLinkedFolder(source);
+  refuseLinkedFolder(target);
   refuseFoldersInsideEachOther(source, target);
 
   if (source[source.length - 1] != '\\') { source += "\\"; }
@@ -2312,7 +2210,7 @@ const diff = async function (source: string, target: string, onProgress?: (line:
     combinedProbedTotal = sourceProbedTotal + targetProbedTotal;
   }
   const skipped: SkippedScanEntry[] | undefined = skipUnreadable ? [] : undefined;
-  let source_files = await getAllFiles(source, [], onProgress ? (count) => onProgress(`Scanning items (${Math.min(count, combinedProbedTotal)} of ${combinedProbedTotal})`) : undefined, skipped)
+  let source_files = await getAllFiles(source, [], onProgress ? (count) => onProgress(`Scanning items (${Math.min(count, combinedProbedTotal)} of ${combinedProbedTotal})`) : undefined, skipped, !listLinks)
   console.log("\nReading paths of: " + target)
   let target_files = await getAllFilesSet(target, new Set<string>(), onProgress ? (count) => onProgress(`Scanning items (${Math.min(sourceProbedTotal + count, combinedProbedTotal)} of ${combinedProbedTotal})`) : undefined, skipped)
   if (skipped) { reportSkippedScanEntries(skipped); }
@@ -2359,12 +2257,8 @@ const diff = async function (source: string, target: string, onProgress?: (line:
       }
     }
     if (!b && isEmptyDirectoryEntry) {
-      try {
-        // Without the trailing backslash, and lstat: a link at that path is not the directory.
-        b = fs.lstatSync(trimTrailingBackslash(targetPath)).isDirectory();
-      } catch (error) {
-        b = false; // no such directory in the target
-      }
+      // A real directory, reached through no link - a link in the second directory never counts as present.
+      b = isRealDirectoryAllTheWay(target, targetPath.slice(target.length));
     }
     if (!b) {
       source_only.push(file); // source only
@@ -2376,8 +2270,10 @@ const diff = async function (source: string, target: string, onProgress?: (line:
       const targetStats = fs.lstatSync(targetPath);
       let differs: boolean;
       if (sourceStats.isSymbolicLink() || targetStats.isSymbolicLink()) {
-        // A link is the same only as a link pointing to the same place. What it points to is never compared.
-        differs = !(sourceStats.isSymbolicLink() && targetStats.isSymbolicLink() && linkTargetText(sourcePath) === linkTargetText(targetPath));
+        // A link listed from the first directory (listLinks) against a file or folder in the second - a link in the
+        // second directory never counts as present, so it is never against another link. What it points to is never
+        // compared.
+        differs = true;
       } else if (sourceStats.isDirectory() !== targetStats.isDirectory()) {
         // A file on one side and a folder on the other, found through a name that differs only in letter case - see
         // NameClash for how the copy resolves it.
@@ -2484,11 +2380,14 @@ const newNameTree = (): any => Object.create(null);
 /** True if `tree` (see newNameTree) already has `name`. */
 const treeHasName = (tree: any, name: string): boolean => Object.prototype.hasOwnProperty.call(tree, name);
 
-/** Copies (doCopy) or previews every path diff reported, one at a time - see insertBranch.
+/** Copies (doCopy) or previews every path diff reported, one at a time - see insertBranch. Recovery from discs copies
+ *  through here too. Throws if the target is a link or inside one (see refuseLinkedFolder) - for Cumulative backup
+ *  and Sync, diff has already refused that; recovery has no diff.
  *  @param nameClash see NameClash (ipc.interfaces.ts). */
 const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boolean, source: string, target: string, nameClash?: NameClash): Promise<void> {
   process.env._stop = "noStop";
-  
+  refuseLinkedFolder(target);
+
   if (source[source.length - 1] != '\\') { source += "\\"; }
   if (target[target.length - 1] != '\\') { target += "\\"; }
   let tree = newNameTree()
@@ -2566,12 +2465,12 @@ const deleteFilesAndDirsForDirSync = async function (pathsMarkedForDeletion: Arr
         let path_to_be_checked = tokens_common_slice.concat(tokens_diff_slice);
         let subTree = getSubTree(tree, path_to_be_checked);  
         let subTreeContents = getContentsFromTree(subTree);
-        let mp = source + path_to_be_checked.join("\\") + ("\\");
         let tp = target + path_to_be_checked.join("\\") + ("\\");
-        let exists_in_master = isRealDirectoryAt(mp);
+        // Reached through a link, the template's folder does not count - links are not copied (see diff).
+        let exists_in_master = isRealDirectoryAllTheWay(source, path_to_be_checked.join("\\"));
 
         // Not a real folder in the target any more, or only reached through a link: the copy phase replaced it, or a
-        // folder above it, with a file or link of the template's (see NameClash, isRealDirectoryAllTheWay).
+        // folder above it, with a file of the template's (see NameClash), or it became a link since the list was made.
         if (isRealDirectoryAllTheWay(target, path_to_be_checked.join("\\"))) {
           // Replace any trailing '\' characters. This is because the listing does not add '\' to the end of a directory path.
           subTreeContents = subTreeContents.map((d)=>{return d.replace(/\\+$/, "");});
@@ -2605,18 +2504,16 @@ const deleteFilesAndDirsForDirSync = async function (pathsMarkedForDeletion: Arr
     while(tokens.length > 0){
       let dir_name = tokens.pop();
       let full_path_to_be_checked_target:string;
-      let full_path_to_be_checked_master:string;
       if(!tokens.length){
         full_path_to_be_checked_target = target +  dir_name + "\\";
-        full_path_to_be_checked_master = source + dir_name + "\\";
       }else{
         full_path_to_be_checked_target = target + tokens.join("\\") + "\\" + dir_name + "\\";
-        full_path_to_be_checked_master = source + tokens.join("\\") + "\\" + dir_name + "\\";
       }
       // Not a real folder in the target any more, or only reached through a link: see the same check in the loop above.
       if(dir_name && isRealDirectoryAllTheWay(target, tokens.concat([dir_name]).join("\\"))){
         let subTree = getSubTree(tree, tokens.concat([dir_name]))
-        let dir_exists_in_master = isRealDirectoryAt(full_path_to_be_checked_master);
+        // As in the loop above: reached through a link, the template's folder does not count.
+        let dir_exists_in_master = isRealDirectoryAllTheWay(source, tokens.concat([dir_name]).join("\\"));
 
         let dir_emptied_in_target: boolean;
         dir_emptied_in_target = (sameMembers(
@@ -2706,8 +2603,9 @@ const isRealDirectoryAt = function (absolutePath: string): boolean {
 /** True if `relativeDir` ('\'-separated, relative to `root`) is a real directory below `root` and so is every
  *  directory on the way to it - no link anywhere on the path. An empty `relativeDir` is `root` itself: true. The
  *  delete step of "Synchronize directories" checks this before deleting anything: its list was made before the copy
- *  step, which can replace a folder of the target with a link from the source (see NameClash) - a path from the
- *  list below that folder would then lead through the link, to what it points to, outside the target. */
+ *  step, which can replace a folder of the target with a file (see NameClash), and a folder may have become a link
+ *  since - a path from the list below it would then lead through the link, to what it points to, outside the target.
+ *  For the template directory it tells whether it has a folder as diff sees it, which never looks through a link. */
 const isRealDirectoryAllTheWay = function (root: string, relativeDir: string): boolean {
   let directory = root;
   for (const name of relativeDir.split('\\').filter((n) => n !== '')) {
@@ -2739,11 +2637,12 @@ tree: any, tokens: Array<string>, index: number, commit: boolean, target: string
       let source_path = source + path_suffix
       let target_path = target + path_suffix
       if (!isRealDirectoryAllTheWay(target, tokens.slice(0, index).join('\\'))) {
-        // Nothing to delete: the folder it was in is gone, or is now a link (the copy phase replaced it with the
-        // template's link) - deleting through that would delete outside the target.
+        // Nothing to delete: the folder it was in is gone, or is not a real folder any more - deleting through a link
+        // would delete outside the target.
         return;
       }
-      if (lstatOrNull(source_path) !== null) {
+      const sourceEntry = isRealDirectoryAllTheWay(source, tokens.slice(0, index).join('\\')) ? lstatOrNull(source_path) : null;
+      if (sourceEntry !== null && !sourceEntry.isSymbolicLink()) {
         // Never delete a target entry that the template directory also has, as the filesystem sees it - the copy
         // phase has already made it match. "Synchronize directories" removes every file it is about to copy from its
         // deletion list, but by exact name: on a case-insensitive filesystem (NTFS) a file that was renamed in
@@ -2751,7 +2650,8 @@ tree: any, tokens: Array<string>, index: number, commit: boolean, target: string
         // one and the same file - and deleting it here would delete what the copy phase just wrote. On a
         // case-sensitive filesystem those are two different files, the template has no "report.txt", and the
         // deletion goes ahead. Likewise a link in the target where the template has a folder: the copy phase
-        // has replaced that link with the folder. Not added to `tree` either, since `tree` records what gets deleted.
+        // has replaced that link with the folder. A link in the template, or an entry reached through one, does not
+        // count - links are not copied (see diff). Not added to `tree` either, since `tree` records what gets deleted.
         return;
       }
       const existingTarget = lstatOrNull(target_path);
@@ -2876,15 +2776,14 @@ const renameReplacingReadOnlyFile = function (fromPath: string, toPath: string):
   }
 }
 
-/** Makes `targetPath` what the source has at `sourcePath` - a copy of the file, or, if `sourceIsLink`, a link pointing
- *  where that link points (copyLink) - without ever leaving the target with neither the old nor the new version: the
- *  new entry is made under a temporary name in the same folder first, and only once it is complete does it take the
- *  old entry's place. A copy that fails part way (the drive is full, the source cannot be read, the drive is
- *  unplugged) leaves the old entry exactly as it was, and the temporary file is removed. An old file keeps its name,
- *  letter case included - as a copy onto it did - and is replaced even if it is read-only or hidden; an old link is
- *  removed as the link itself, never followed, once the new entry is complete. Needs room for the new copy next to
- *  the old one until it is complete. */
-const copyEntryReplacingTarget = function (sourcePath: string, targetPath: string, sourceIsLink: boolean): void {
+/** Makes `targetPath` a copy of the file at `sourcePath` without ever leaving the target with neither the old nor the
+ *  new version: the copy is made under a temporary name in the same folder first, and only once it is complete does
+ *  it take the old entry's place. A copy that fails part way (the drive is full, the source cannot be read, the drive
+ *  is unplugged) leaves the old entry exactly as it was, and the temporary file is removed. An old file keeps its
+ *  name, letter case included - as a copy onto it did - and is replaced even if it is read-only or hidden; an old link
+ *  is removed as the link itself, never followed, once the copy is complete. Needs room for the new copy next to the
+ *  old one until it is complete. */
+const copyEntryReplacingTarget = function (sourcePath: string, targetPath: string): void {
   const existing = lstatOrNull(targetPath);
   let finalPath = targetPath;
   if (existing && existing.isFile()) {
@@ -2894,14 +2793,14 @@ const copyEntryReplacingTarget = function (sourcePath: string, targetPath: strin
   const temporaryPath = unusedTemporaryPathNextTo(targetPath);
   const removeTemporary = () => { try { fs.rmSync(temporaryPath, { force: true }); } catch (error) { /* reported below */ } };
   try {
-    if (sourceIsLink) { copyLink(sourcePath, temporaryPath, targetPath); } else { fs.copyFileSync(sourcePath, temporaryPath); }
+    fs.copyFileSync(sourcePath, temporaryPath);
   } catch (error) {
     removeTemporary();
     throw error;
   }
-  if (existing && (existing.isSymbolicLink() || sourceIsLink)) {
-    // A link cannot take a file's place by a rename, nor a file a link-to-a-folder's: the old entry is removed first -
-    // the new one is complete by now.
+  if (existing && existing.isSymbolicLink()) {
+    // A file cannot take a link-to-a-folder's place by a rename: the old link is removed first - the copy is complete
+    // by now.
     try {
       fs.unlinkSync(finalPath);
     } catch (error) {
@@ -2923,38 +2822,12 @@ const copyEntryReplacingTarget = function (sourcePath: string, targetPath: strin
   }
 }
 
-/** Makes `targetPath` a link pointing where the link at `sourcePath` points - the same text, so a relative link
- *  stays relative. Nothing it points to is read or copied. A link to a folder given by its full path is made a
- *  junction, which Windows lets anyone create; any other link has to be a symbolic link, which Windows lets only
- *  administrators create unless Developer Mode is on. On Linux every link is a symbolic link. A link that points to
- *  nothing (what it pointed to was deleted) does not say whether that was a folder; given by its full path, it is
- *  made a junction - that is what such a link on Windows almost always is. `nameInMessage` is the path an error names
- *  (the link's final place, when it is made under a temporary name first - see copyEntryReplacingTarget). */
-const copyLink = function (sourcePath: string, targetPath: string, nameInMessage: string = targetPath): void {
-  const pointsTo = fs.readlinkSync(sourcePath);
-  let pointsToFolder: boolean | null = null;
-  try {
-    pointsToFolder = fs.statSync(sourcePath).isDirectory();
-  } catch (error) {
-    // points to nothing that exists
-  }
-  const type = (pointsToFolder !== false && node_path_module.isAbsolute(pointsTo)) ? 'junction' : (pointsToFolder ? 'dir' : 'file');
-  try {
-    fs.symlinkSync(pointsTo, targetPath, type);
-  } catch (error: any) {
-    if (error?.code === 'EPERM' && process.platform === 'win32') {
-      throw new Error(`Could not create the link "${nameInMessage}" (a copy of the link "${sourcePath}"): Windows lets only administrators create this kind of link, unless Developer Mode is turned on.`);
-    }
-    throw error;
-  }
-}
-
 /** Copies (doCopy) or previews one path from diff: creates the folders on its way that the target lacks, then copies
- *  the file - or, if the source has a link there, the link itself - never leaving the target with neither version
- *  (copyEntryReplacingTarget). Never writes through a link in the target: a link where a folder is needed is removed
- *  first, and one where a file or link is being copied is replaced as the link itself (what it points to is left
- *  alone), so everything created stays inside the target. A real folder where a file or link is being copied, or a
- *  file where a folder is needed, is dealt with by resolveNameClash. */
+ *  the file, never leaving the target with neither version (copyEntryReplacingTarget). A link is never copied - diff
+ *  leaves the source's links out, and one that appeared at a listed path since is refused. Never writes through a
+ *  link in the target: a link where a folder is needed is removed first, and one where a file is being copied is
+ *  replaced as the link itself (what it points to is left alone), so everything created stays inside the target. A
+ *  real folder where a file is being copied, or a file where a folder is needed, is dealt with by resolveNameClash. */
 const insertBranch = function (tree: any, tokens: Array<string>, index: number, doCopy: boolean, source: string, target: string, nameClash?: NameClash): void {
   if ((tokens.length - index) == 1) {
     tree[tokens[index]] = newNameTree()
@@ -2964,25 +2837,26 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
       let target_path = target + path_suffix
       let source_path = source + path_suffix
       let existingTarget = lstatOrNull(target_path);
-      const sourceIsLink = lstatOrNull(source_path)?.isSymbolicLink() === true;
-      const kind = sourceIsLink ? 'link' : 'file';
+      if (lstatOrNull(source_path)?.isSymbolicLink()) {
+        throw new Error(`"${source_path}" became a link after the folders were compared - links are not copied. Compare the folders again.`);
+      }
       if (existingTarget && existingTarget.isDirectory()) {
-        // A real folder where the source has a file or a link (lstat: a link to a folder is not a directory here).
+        // A real folder where the source has a file (lstat: a link to a folder is not a directory here).
         resolveNameClash(target_path, 'folder', nameClash, doCopy);
         existingTarget = null;
       }
       if (doCopy) {
-        copyEntryReplacingTarget(source_path, target_path, sourceIsLink);
+        copyEntryReplacingTarget(source_path, target_path);
         if(existingTarget){
-          logsBuffer.push(`updated existing ${kind} :` + target_path);
+          logsBuffer.push(`updated existing file :` + target_path);
         }else{
-          logsBuffer.push(`copied ${kind} :` + target_path);
+          logsBuffer.push(`copied file :` + target_path);
         }
       } else {
         if(existingTarget){
-          logsBuffer.push(`will update existing ${kind} :` + target_path);
+          logsBuffer.push(`will update existing file :` + target_path);
         }else{
-          logsBuffer.push(`will copy ${kind} :` + target_path);
+          logsBuffer.push(`will copy file :` + target_path);
         }
       }
     }
@@ -3015,9 +2889,9 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
   }
 }
 
-/** A name that is a folder in the target where the source has a file or a link, or a file where the source has a
- *  folder: makes room at `targetPath` for the source's entry the way `nameClash` says (see NameClash) - or, with no
- *  `nameClash` (recovery), throws an error naming the clash. With doCopy false it only says what it would do. */
+/** A name that is a folder in the target where the source has a file, or a file where the source has a folder: makes
+ *  room at `targetPath` for the source's entry the way `nameClash` says (see NameClash) - or, with no `nameClash`
+ *  (recovery), throws an error naming the clash. With doCopy false it only says what it would do. */
 const resolveNameClash = function (targetPath: string, existing: 'folder' | 'file', nameClash: NameClash | undefined, doCopy: boolean): void {
   const incoming = existing === 'folder' ? 'a file' : 'a folder';
   if (nameClash === 'replace') {
@@ -3344,7 +3218,7 @@ const init = function() : void
         logsBuffer.setChannel('diff');
         diff(arg.params.source, arg.params.target, (line) => logsBuffer.push(line),
           (arg.params.comparison === 'any-difference' || arg.params.comparison === 'any-difference-or-content') ? arg.params.comparison : undefined,
-          arg.params.skipUnreadable === true).then((d)=>{
+          arg.params.skipUnreadable === true, arg.params.listLinks === true).then((d)=>{
           logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'diff', res: d, status: "completed" });

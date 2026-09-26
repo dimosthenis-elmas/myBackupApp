@@ -368,13 +368,16 @@ export class WorkerCommunicator {
      *  ipc.interfaces.ts. The default is what Cumulative backup wants; "Synchronize directories" passes
      *  'any-difference-or-content' for its copy list and 'any-difference' for its delete list.
      *  @param skipUnreadable true to leave out (and warn about) entries that cannot be read instead of failing -
-     *  see the parameter of the same name of diff in worker.ts; Synchronize directories must not use it. */
-    static diff(sourcePath: string, targetPath: string, comparison: DiffComparison = 'source-newer-or-different-size', skipUnreadable: boolean = false): Promise<WorkerResponse> {
+     *  see the parameter of the same name of diff in worker.ts; Synchronize directories must not use it.
+     *  @param listLinks true to list the first folder's links instead of leaving them out (and warning about them) -
+     *  only for Synchronize directories' delete list, so the target loses its links; see diff in worker.ts. */
+    static diff(sourcePath: string, targetPath: string, comparison: DiffComparison = 'source-newer-or-different-size', skipUnreadable: boolean = false, listLinks: boolean = false): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('diff', {
             source: sourcePath,
             target: targetPath,
             comparison: comparison,
-            skipUnreadable: skipUnreadable
+            skipUnreadable: skipUnreadable,
+            listLinks: listLinks
         }, 'response.res');
     }
 

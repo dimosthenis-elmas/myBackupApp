@@ -11,8 +11,8 @@
  * byte-for-byte in a finally block (see lib/ibb-tools.js).
  *
  *  1. A fresh folder is created and marked as the app's own; the marker records its exact path.
- *  2. Clearing it deletes the app's own scratch content (split parts, and the shortcuts links are burned as) and
- *     keeps anything it doesn't recognize - which comes back
+ *  2. Clearing it deletes the app's own scratch content (split parts) and keeps anything it doesn't recognize -
+ *     which comes back
  *     as a list of full paths (notClearedItems), shown as a scrollable list in the "Temp directory not fully
  *     cleared" dialog.
  *  3. A folder whose marker records a different path - what the app folder being copied or moved leaves behind -
@@ -98,7 +98,6 @@ async function main() {
     console.log('\nClearing a temp folder that also holds a file the app did not create...');
     fs.mkdirSync(path.join(cacheA, 'session-1'), { recursive: true });
     fs.writeFileSync(path.join(cacheA, 'session-1', 'movie.mkv.part.001'), 'p');
-    fs.writeFileSync(path.join(cacheA, 'session-1', 'My Music.lnk'), 'a link\'s shortcut, made for a disc');
     fs.writeFileSync(path.join(cacheA, 'notes.txt'), 'not the app\'s');
     let cleared = (await callWorker(win, 'clear-temp-data-directory', {})).res;
     report(results, 'clearDeletesOwnContentAndListsTheRestByFullPath',

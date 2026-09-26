@@ -36,6 +36,7 @@ import { filesMetadata } from '../../types/interface';
 import { compileSchema, JsonSchema, SchemaNode } from "json-schema-library";
 import { ColdStorageMetadata } from '../../../app/workers/ipc.interfaces';
 import { SerialQueue } from '../shared/utils/serial-queue';
+import { LINKS_NOT_BACKED_UP_NOTE } from '../shared/utils/links-note';
 import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
 import { OPTICAL_MEDIA } from '../shared/utils/optical-media';
 import { linkedDiscGroup, discsLabel, linkedDiscsNoticeMessage } from '../shared/utils/linked-discs';
@@ -508,12 +509,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       const b = coldStoragePathsWithoutPartials.find((o)=> o.path==file.path.replace(this.backup.targetPath, this.opticalDiscVolumeLetter));
       if (b == undefined) {
         missingFiles.push(file); // missing
-      } else if (file.stats.linkTarget !== undefined
-          // A link, backed up as a Windows shortcut (see linkAsShortcutEntry in worker.ts): its size here is only a
-          // planning estimate, so it is compared by where it points - when the cold storage side recorded that (a
-          // metadata JSON does; a physically read disc only has the shortcut file, which is then taken as in sync).
-          ? (b.stats.linkTarget !== undefined && b.stats.linkTarget !== file.stats.linkTarget)
-          : ((new Date(file.stats.mtime).getTime() > new Date(b.stats.mtime).getTime()) || (file.stats.size != b.stats.size))) {
+      } else if ((new Date(file.stats.mtime).getTime() > new Date(b.stats.mtime).getTime()) || (file.stats.size != b.stats.size)) {
         // Wrapped both sides in `new Date(...).getTime()`: file.stats.mtime (from a live ipc.getFilePathsWithStats
         // scan of the master directory) is always a real Date, but b.stats.mtime is only a Date when the cold
         // storage side came from physically re-inserting each disc - when it came from a loaded metadata JSON
@@ -699,7 +695,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       let loadingDialogRef2 = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '600px'});
       loadingDialogRef2.componentInstance.title = "Cold storage metadata prepared";
       loadingDialogRef2.componentInstance.message = `A scaffold for the updated cold storage metadata (containing placeholders for the new missing files' discs) has been saved to ${this.coldStorageMetadataJSONPathToSave}.
-      It will be filled in as you confirm each new disc burned below (discs holding pieces of the same large file are recorded together, once all of them are confirmed) - once every disc is confirmed, you may keep this .json file for future updates to your cold storage without having to input all the optical discs one by one again.`;
+      It will be filled in as you confirm each new disc burned below (discs holding pieces of the same large file are recorded together, once all of them are confirmed) - once every disc is confirmed, you may keep this .json file for future updates to your cold storage without having to input all the optical discs one by one again.\n\n${LINKS_NOT_BACKED_UP_NOTE}`;
     } finally {
       this.isPartitioning = false;
       partitionProgressListener?.removeListener();
@@ -956,9 +952,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         return { path: this.opticalDiscVolumeLetter + e.path, stats: e.stats };
       });
 
-      // What this disc needed created in the temp folder - split partials, and links' shortcuts (linkTarget) - deleted
-      // again once the disc is confirmed burned (confirmDiscBurned).
-      this.sentDiscPartPaths[i] = finalStats.filter(e => PART_FILE_PATTERN.test(e.path) || e.stats.linkTarget !== undefined).map(e => e.path);
+      // What this disc needed created in the temp folder - split partials - deleted again once the disc is confirmed
+      // burned (confirmDiscBurned).
+      this.sentDiscPartPaths[i] = finalStats.filter(e => PART_FILE_PATTERN.test(e.path)).map(e => e.path);
 
       // Awaited (previously fired-and-forgotten): see sendingDiscs's own doc comment for why this guard needs
       // this chain's real completion, not just its start, to reset on.

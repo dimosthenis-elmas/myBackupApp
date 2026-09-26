@@ -175,7 +175,7 @@ async function main() {
     if (app) { await app.close().catch(() => {}); }
     if (originalConfigContent !== undefined) { restoreConfig(originalConfigContent); }
 
-    // Confirming the disc deletes only its split pieces and shortcuts (none here), never its .ibb file - so its
+    // Confirming the disc deletes only its split pieces (none here), never its .ibb file - so its
     // real .ibb file, and the session-<id> subfolder createIBB_file made for it, would otherwise be left sitting in
     // the app's REAL temp/cache directory forever, which would make the NEXT script
     // (or your own next real use of the app) fail assertRealTempDataDirectoryIsSafeToUse's "is it empty?" check.

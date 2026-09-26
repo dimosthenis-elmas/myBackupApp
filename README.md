@@ -136,14 +136,23 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   automatically, hashes every file on it, and reports Verified/FAILED/no-data for each, with a running tally. If
   the JSON has no checksums recorded at all, it tells you up front instead of asking you to insert anything.
 
-- **Links, in every feature:** a link (a symbolic link or a junction) is always one single entry and is never
-  followed, so nothing outside the folders you chose is ever read, copied, overwritten or deleted. Cumulative
-  backup and Synchronize dirs copy a link as a link pointing to the same place. A disc cannot hold a link, so
-  "Backup to optical media" and "Add missing files" burn each one as a Windows shortcut instead - one small
-  `<name>.lnk` file pointing to the same place: opened from the disc it says it is broken unless that place exists,
-  and recovered to where it exists, it works. (A Windows shortcut you already have is an ordinary small file, and
-  every feature copies it as one.) Cumulative backup and Synchronize dirs also refuse two folders where one is
-  inside the other.
+- **Links, in every feature:** a link (a symbolic link or a junction) is never followed and never backed up, so
+  nothing outside the folders you chose is ever read, copied, overwritten or deleted, and nothing in a backup leads
+  outside it. Every backup feature leaves links out, and says so in a dialog it shows before copying or burning
+  anything (Cumulative backup's "Confirm", Synchronize dirs' "Warning", and the "discs needed" / "metadata prepared"
+  dialogs of the two disc features). Each link left out, with where it points, is listed in `logs.txt`, in the
+  app's `appData` folder - not in the "Some items were left out" warning, which would otherwise show Windows' own
+  hidden links on every run: e.g. "My Music", "My Pictures" and "My Videos" inside Documents, which lead to your
+  Music, Pictures and Videos folders and are backed up through those. What a link points to is not backed up
+  through it: back up that folder itself if you need it. Synchronize dirs deletes the links it finds in the target -
+  the link itself, never what it points to - since the master's links are not copied; Cumulative backup never
+  deletes anything, so a link already in the backup stays there. (A Windows shortcut you already have is an ordinary
+  small file, and every feature copies it as one.)
+
+- **The folders you choose, in Cumulative backup, Synchronize dirs and recovery:** a folder that is a link, or is
+  inside one, is refused - the app would otherwise work in wherever it leads, not in the folder you see - and the
+  message names the folder it leads to; choose that one instead. (Recovery says so when it starts copying from the
+  first disc.) Cumulative backup and Synchronize dirs also refuse two folders where one is inside the other.
 
 - **Tested only on Windows 11, with drives formatted as NTFS.** Other versions of Windows and other file systems
   have not been tested. The app might not work on Linux (or macOS): parts of it assume Windows - its paths, and

@@ -27,8 +27,8 @@ export type WorkerChannel =
  *     that overlap), and 'any-difference' never reports more than this mode does. */
 export type DiffComparison = 'source-newer-or-different-size' | 'any-difference' | 'any-difference-or-content';
 
-/** What incremental-copy-files (and its preview) does when a name is a file (or link) in the source but a folder in
- *  the target, or the other way round:
+/** What incremental-copy-files (and its preview) does when a name is a file in the source but a folder in the target,
+ *  or the other way round:
  *   - 'replace' (Synchronize directories - the target has to match the source): the target's folder (with
  *     everything in it) or file is deleted, and the source's entry copied in its place.
  *   - 'keep-both' (Cumulative backup - never deletes anything): the target's entry is renamed to
@@ -56,9 +56,8 @@ export type ColdStorageMetadata =
   // "sha256" is optional on this type - every file backed up by a current version of the app always gets one
   // (SHA-256 integrity data is mandatory, not a toggle), but the field stays optional here for backward
   // compatibility with cold storage JSONs written before this feature existed, where it's absent entirely.
-  // Never present on a directory entry. "linkTarget" is only on a link burned as a Windows shortcut - see
-  // filesMetadata (src/types/interface.d.ts).
-  Array<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean, "sha256"?: string, "linkTarget"?: string}}>>
+  // Never present on a directory entry.
+  Array<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean, "sha256"?: string}}>>
 
 export type OpticalMediaPartitioning<WorkerResponse> = {
   [K in keyof WorkerResponse]:

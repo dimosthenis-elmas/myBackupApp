@@ -151,8 +151,8 @@ Every worker operation that scans a folder (`get-file-paths-with-stats`, `get-fi
 against it, which the UI turns into its progress circle. This collects those lines (via `callWorkerWithProgress` in
 `call-worker.js`) and checks the things that would silently break the circle: N equals an independent count of
 what's really in the folder (the source tree includes a directory junction to a second folder: no scan ever follows
-a link, so neither may the probe - every scan lists the junction as one entry, the scan behind every disc as
-`linked-folder.lnk`, the Windows shortcut it is burned as); a leftover cancel from an earlier operation doesn't zero
+a link, so neither may the probe - it counts the junction as one entry, as `get-file-paths` lists it, and the scan
+behind every disc and `diff`'s scan leave it out, since links are never backed up); a leftover cancel from an earlier operation doesn't zero
 the total or turn the scan into "stopped"; `diff` reports its scan phase and then its comparison
 phase in order, ending exactly on its last item; and `partition-backup-to-optical-media` reports its scan phase
 and then one "Packing items" line per disc — and, when handed the file list up front, doesn't scan at all (proved
@@ -242,18 +242,15 @@ node test-harness/worker-ipc/test-scan-edge-cases.js
 ```
 Plants a junction to a folder outside the scanned one, a dangling junction, and a folder Windows denies listing (a
 temporary "deny list folder" ACL). The scan behind every disc (`get-file-paths-with-stats`, backup planning) never
-follows a link: a disc cannot hold one, so each link is listed and planned as the one small Windows shortcut it is
-burned as (`<name>.lnk`, recording where it points), and nothing it points to ever appears in the result or the
-plan. When the disc is sent (with the app's temp folder pointed at a scratch folder for the run), each shortcut is
-created in the temp folder - never in the source - Windows itself reads it as pointing where the link points (also
-when that place no longer exists), and it is hashed like any other file; the folder the links point to is untouched.
-A backup-source scan (`skipUnreadable`, how the Backup to optical media and Add missing files wizards call it) names
-the folder that cannot be listed in **one** "Some items were left out" warning; the same scan without it (reading a
-disc) fails on it, and so does Synchronize directories' comparison - it must never skip (a skipped source entry
-would look "missing" and get deleted from the target). Planning a backup without splitting reports **every** file
-too large for one disc by full path, not just the first - and a plan that stops there shows no "left out" warning
-(the wizard plans again once splitting is agreed to), while one that goes ahead names the link it had to leave out
-because a real file already has its shortcut's name. And with a temporary `SUBST` drive letter onto a scratch folder: planning a backup of
+follows a link: a disc cannot hold one, so each link is left out, and nothing it points to ever appears in the
+result or the plan; each link is written to the app's `logs.txt` with where it points, and is not in the "Some items
+were left out" warning. A backup-source scan (`skipUnreadable`, how the Backup to optical media and Add missing
+files wizards call it) names the folder that cannot be listed in **one** such warning; the same scan without it
+(reading a disc) fails on that folder, and so does Synchronize directories' comparison - it must never skip (a
+skipped source entry would look "missing" and get deleted from the target). Planning a backup without splitting
+reports **every** file too large for one disc by full path, not just the first - and a plan that stops there shows
+no "left out" warning (the wizard plans again once splitting is agreed to), while one that goes ahead names the
+folder it could not list. And with a temporary `SUBST` drive letter onto a scratch folder: planning a backup of
 `X:\`, scanning a bare `X:` (what the disc readers pass), and resolving and hashing a file under the drive root all
 work (skipped if no drive letter is free). Uses `startRecordingAppErrors`/`takeAppErrors` from `call-worker.js` to
 see the warning dialogs. The ACL and the drive letter are removed again in a `finally` block; nothing is written
@@ -265,8 +262,8 @@ node test-harness/worker-ipc/test-temp-dir-and-imgburn.js
 ```
 Points `config.json`'s `cacheDataDirectoryPath` at scratch folders for the run (restored byte-for-byte afterwards),
 so the app's real temp/cache folder is never touched. Proves: a fresh folder is created and marked; clearing it
-deletes the app's own scratch content (split parts, and the shortcuts links are burned as) and keeps (and lists, by
-full path) anything it doesn't recognize; a folder
+deletes the app's own scratch content (split parts) and keeps (and lists, by full path) anything it doesn't
+recognize; a folder
 whose marker records a different path - what copying or moving the app folder leaves behind - is adopted when it
 only holds the app's own content, but refused (and left untouched) when it holds anything else; the per-disc and
 recovery clean-up steps list what they refuse by full path. And ImgBurn, via `imgBurnExecutablePath` pointed at a
@@ -281,18 +278,23 @@ node test-harness/worker-ipc/test-sync-and-cumulative-rules.js
 Calls the worker exactly the way the Cumulative backup and Synchronize directories wizards do, and checks the
 results against the rules: Cumulative backup copies every source file that is missing from the backup or updated
 (newer in the source, or a different size) and never deletes or changes anything else; Synchronize directories
-leaves the target holding exactly the source's files, folders and links. (1) 20 random folder pairs per feature -
+leaves the target holding exactly the source's files and folders, and no links. (1) 20 random folder pairs per feature -
 missing files, target-only files and folders, empty folders, target copies that are newer, older, a different size,
 or the same size and date with different bytes - and the source must not change. (2) An earlier copy that Windows
 refuses to copy over (read-only, or hidden while the source file is not) is replaced; and sync's 2-second allowance
 for modified times (identical bytes 1 second apart are left alone, 3 seconds apart copied again). (3) Links
-(junctions): a link is one entry, never followed - copied as a link pointing to the same place, replaced or deleted
-as the link itself, also where the other side has a folder or a file at that path - and for every scenario a folder
-outside both, which the links point to, must be unchanged, and a second run must find nothing left to do.
-(4) Folders inside each other are refused with a message and nothing changes (the target containing the source, the
-reverse, a target that is a junction to a folder inside the source, differently cased paths); a sibling whose name
-merely starts with the other's is not refused; the same folder twice is simply up to date / in sync. (5) A name that
-is a file (or a junction) on one side and a folder on the other: Synchronize directories replaces the target's entry,
+(junctions): never followed, never copied - a link in the source is left out and written to the app's `logs.txt`, with
+where it points, and no "Some items were left out" warning appears for it; a link in the target is replaced as the link itself where the source has a
+folder or a file at that path, deleted as the link itself by Synchronize directories otherwise, and left alone by
+Cumulative backup - and for every scenario a folder outside both, which the links point to, must be unchanged, and a
+second run must find nothing left to do. (4) Folders inside each other are refused with a message and nothing
+changes (the target containing the source, the reverse, differently cased paths); a sibling whose name merely starts
+with the other's is not refused; the same folder twice is simply up to date / in sync. (4b) A chosen folder that is
+a junction, or inside one, is refused by both features, naming the folder it leads to, and nothing changes - also a
+target that is a junction to a folder inside the source - and so is recovery's copy (no comparison first) into a
+folder that is a junction; a folder on a temporary `SUBST` drive is not taken for a link (skipped if no drive letter
+is free). (5) A name that
+is a file on one side and a folder on the other: Synchronize directories replaces the target's entry,
 folder contents and all; Cumulative backup deletes nothing - the backup's entry is renamed "<name> (old folder)" /
 "(old file)" (numbered if taken) and the source's entry backed up under the name - also for names that differ only in
 letter case. (5b) Files and folders renamed only in capital letters end up with the source's exact spelling - also
@@ -300,10 +302,10 @@ one that changed too, and an empty folder - and when the capitals are the only d
 rename to do (it is not "already in sync"). (6) The check Synchronize directories runs after a sync (`compare-folders`): after every sync above it
 finds both folders identical and counts the same files and bytes as the script's own walk; on a pair built to
 differ it reports each difference once - a size, an entry only one side has (a whole folder as one line), a name
-that differs only in letter case, a file against a folder, a link pointing elsewhere - and nothing else. (7) Synchronize
-directories' delete step never deletes through a link: its list is made before the copy step, which can replace a
-folder of the target with the source's link (a relative symbolic link then points elsewhere from the target) - the
-delete step is given that state directly, with a junction to a folder outside both, and must leave that folder
+that differs only in letter case, a file against a folder, a link in the target - and nothing else (a link in the
+source is not a difference: a sync does not copy it). (7) Synchronize directories' delete step never deletes through
+a link: its list is made before the copy step, and a folder of the target can have become a link since - the delete
+step is given that state directly, with a junction to a folder outside both, and must leave that folder
 unchanged while still deleting the list's other, target-only entries. (8) A copy that fails part way leaves the
 target's earlier copy as it was: PowerShell holds 1 MB of a newer source file locked, so reading it fails mid-copy;
 in both features the run must fail, the earlier copy must be unchanged, and no temporary file may be left behind

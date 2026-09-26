@@ -166,7 +166,7 @@ from this file (and test it if it needs one - see "Working on these" below), and
 
 - **What happens:** `ngAfterViewInit` in `src/app/incremental-copying/incremental-copying.component.ts` attaches
   `.catch(onError)` and a separate `.then(...)` to the same `copyingPromise`. When the copy fails (disk full, a locked
-  file - issue 3 - a link that needs administrator rights), the promise returned by `.then` rejects with no handler,
+  file - issue 3), the promise returned by `.then` rejects with no handler,
   so GlobalErrorHandler adds "Something unexpected went wrong in the app" on top of the "Error" dialog.
 - **Fix:** one chain - `.then(...).catch(...)`.
 - **Test idea:** in `test-wizard-error-dialogs.js`, make a Cumulative copy fail (delete a source file after the
@@ -233,9 +233,6 @@ from this file (and test it if it needs one - see "Working on these" below), and
   mounted into a folder is not recognized as a drive root.
 - **FAT file systems (FAT, FAT32) are not supported** - stated in the README. Sync still allows 2 seconds of
   difference in modified times (`MIRROR_MTIME_TOLERANCE_MS`).
-- **Symbolic links other than junctions** can only be recreated by Cumulative backup and Sync with administrator
-  rights or Developer Mode on; otherwise the copy stops with a clear message. A link that points to nothing, given by
-  a full path, is recreated as a junction.
 - **A large file is split when its disc is sent, not when the discs are planned** - possibly hours later in the same
   session. If its size has changed enough since planning to need a different number of 500 MiB pieces, sending the
   first disc with one of its pieces is refused ("... has changed since the discs were planned ... plan the discs
@@ -261,14 +258,25 @@ from this file (and test it if it needs one - see "Working on these" below), and
   sent (or is being sent), a change that disagrees with it is refused with a message and set back. Recovery always
   selects a file's pieces together too (`groupPartialFiles`; the old "Group partials" checkbox is gone). Tested in
   `ui/test-backup-to-optical-media.js`.
-- **Links on discs** are burned as Windows shortcuts (`<name>.lnk`, created with PowerShell and `IShellLinkW`);
-  recovery restores the shortcut file, not a real link. A link whose shortcut name is already taken by a real file is
-  left out and listed in the "Some items were left out" warning.
+- **Links are never backed up, by any feature:** each scan leaves them out (`leaveOutLink` in `app/workers/worker.ts`
+  - from `getAllFilePathsWithStats` for discs, from `diff` for Cumulative backup and Sync) and writes each one, with
+  where it points, to logs.txt only. Every backup wizard says once, in a dialog it already shows before copying or
+  burning, that links are not backed up (`LINKS_NOT_BACKED_UP_NOTE` in `src/app/shared/utils/links-note.ts`) - the
+  "Some items were left out" warning would otherwise name Windows' own links ("My Music" in Documents, ...) on every
+  run. What a link points to is not backed up through it, and no link is ever put into a backup, so nothing in one
+  leads outside it. Sync deletes the target's links (the link itself - `diff`'s `listLinks` on its delete list);
+  Cumulative backup never deletes, so a link already in a backup stays. A folder holding only links counts as empty.
+  Tested in `worker-ipc/test-scan-edge-cases.js` (discs) and `worker-ipc/test-sync-and-cumulative-rules.js` section 3.
+- **Cumulative backup, Sync and recovery refuse a chosen folder that is a link, or inside one**
+  (`refuseLinkedFolder`, called by `diff` and `createTree`): they would otherwise work in, and Sync delete in,
+  wherever it leads. Each folder on the path is checked with `lstat`, so a SUBST drive or a mapped network drive is
+  not taken for a link. Recovery only finds out when it starts copying from the first disc (it has no comparison
+  step). Tested in `test-sync-and-cumulative-rules.js` section 4b.
 - **Recovery** stops with an error on a name that is a file in the recovery folder but a folder on the disc (or the
   other way round) - it passes no `NameClash`.
 - **A Linux build is not ready:** the sync and copy code joins paths with `\\` throughout (`diff`, `createTree`,
   `deleteFilesAndDirsForDirSync`); `fs.copyFileSync` on Linux does not keep modified times, which Sync's comparison
-  relies on (add `fs.utimesSync` after copying); ImgBurn and the disc shortcuts are Windows-only.
+  relies on (add `fs.utimesSync` after copying); ImgBurn is Windows-only.
 
 ## Working on these
 

@@ -10,8 +10,9 @@
  *   - The probed total N equals what the real scan actually finds - counted here by an independent walk, not
  *     taken from the worker's own answer. The source tree deliberately contains a directory junction to a
  *     second folder (a link to a directory): no scan ever follows a link, so neither may the probe - counting what
- *     is behind it would make N far too big. Every scan lists the junction as one entry (the scan behind every
- *     disc as "linked-folder.lnk", the Windows shortcut it is burned as).
+ *     is behind it would make N far too big. The probe counts the junction as one entry, as get-file-paths lists
+ *     it; the scan behind every disc and diff's scan leave it out (links are never backed up), so they find one
+ *     entry fewer.
  *   - A cancel left over from an earlier operation (a `stop` with nothing running) doesn't zero the probe: the
  *     scan must still complete (not "stopped") and still report the real N, not "(0 of 0)".
  *   - diff() reports one scan phase and then one comparison phase, in that order, and the comparison ends
@@ -126,6 +127,8 @@ async function main() {
   fs.symlinkSync(linkedTarget, linkPath, 'junction');
 
   const expected = countExpectedEntries(source);
+  // What the scan behind every disc, and diff's scan, find: everything but the junction.
+  const expectedWithoutLinks = expected - 1;
   const linkedCount = countExpectedEntries(linkedTarget);
   console.log(`\nSource tree holds ${expected} entries by an independent count, the junction as one; the ${linkedCount} ` +
     `entries behind the junction must never be counted.`);
@@ -139,11 +142,10 @@ async function main() {
     console.log('\n1) get-file-paths-with-stats');
     scanWithStats = await callWorkerWithProgress(win, 'get-file-paths-with-stats', { dirPath: source });
     check('get-file-paths-with-stats: finished normally', scanWithStats.response.status === 'completed', scanWithStats.response.status);
-    check('get-file-paths-with-stats: result count matches the independent count', scanWithStats.response.res.length === expected,
-      `got ${scanWithStats.response.res.length}, expected ${expected}`);
-    check('get-file-paths-with-stats: the junction is one entry - the shortcut it is burned as - and nothing behind it is listed',
-      scanWithStats.response.res.some((entry) => entry.path.endsWith(`${path.sep}linked-folder.lnk`) && entry.stats.linkTarget === linkedTarget)
-        && !scanWithStats.response.res.some((entry) => entry.path.includes(`${path.sep}linked-folder${path.sep}`)));
+    check('get-file-paths-with-stats: result count matches the independent count, less the junction', scanWithStats.response.res.length === expectedWithoutLinks,
+      `got ${scanWithStats.response.res.length}, expected ${expectedWithoutLinks}`);
+    check('get-file-paths-with-stats: the junction is left out, and nothing behind it is listed',
+      !scanWithStats.response.res.some((entry) => entry.path.startsWith(linkPath)));
     checkNoUnknownLines('get-file-paths-with-stats', scanWithStats.progressLines, [SCAN_LINE]);
     checkPhase('get-file-paths-with-stats', parseLines(scanWithStats.progressLines, SCAN_LINE), expected);
 
@@ -152,8 +154,8 @@ async function main() {
     await sleep(500);
     const afterStop = await callWorkerWithProgress(win, 'get-file-paths-with-stats', { dirPath: source });
     check('after a leftover cancel: the scan still finished normally (not "stopped")', afterStop.response.status === 'completed', afterStop.response.status);
-    check('after a leftover cancel: the scan still found every entry', afterStop.response.res.length === expected,
-      `got ${afterStop.response.res.length}, expected ${expected}`);
+    check('after a leftover cancel: the scan still found every entry', afterStop.response.res.length === expectedWithoutLinks,
+      `got ${afterStop.response.res.length}, expected ${expectedWithoutLinks}`);
     checkPhase('after a leftover cancel', parseLines(afterStop.progressLines, SCAN_LINE), expected);
 
     console.log('\n3) get-file-paths right after a leftover cancel');
@@ -166,20 +168,20 @@ async function main() {
     checkNoUnknownLines('get-file-paths', paths.progressLines, [SCAN_LINE]);
     checkPhase('get-file-paths', parseLines(paths.progressLines, SCAN_LINE), expected);
 
-    console.log('\n4) diff (source against an empty folder - every source entry is source-only; the junction is one entry)');
+    console.log('\n4) diff (source against an empty folder - every source entry is source-only; the junction is left out)');
     const diff = await callWorkerWithProgress(win, 'diff', { source, target: emptyTarget });
     const diffScan = parseLines(diff.progressLines, SCAN_LINE);
     const diffCompare = parseLines(diff.progressLines, COMPARE_LINE);
     check('diff: finished normally', diff.response.status === 'completed', diff.response.status);
-    check('diff: every source entry reported as source-only', diff.response.res.length === expected,
-      `got ${diff.response.res.length}, expected ${expected}`);
-    check('diff: the junction is one entry, not followed',
-      diff.response.res.includes('linked-folder') && !diff.response.res.some((p) => p.startsWith(`linked-folder${path.sep}`)));
+    check('diff: every source entry but the junction reported as source-only', diff.response.res.length === expectedWithoutLinks,
+      `got ${diff.response.res.length}, expected ${expectedWithoutLinks}`);
+    check('diff: the junction is left out, and nothing behind it is listed',
+      !diff.response.res.some((p) => p === 'linked-folder' || p.startsWith(`linked-folder${path.sep}`)));
     checkNoUnknownLines('diff', diff.progressLines, [SCAN_LINE, COMPARE_LINE]);
-    // The empty target folder is one entry itself, so the scan phase's total is the source's plus one.
+    // The empty target folder is one entry itself, so the scan phase's (probed) total is the source's plus one.
     checkPhase('diff scan phase', diffScan, expected + 1);
-    checkPhase('diff comparison phase', diffCompare, expected);
-    check('diff comparison phase: ends exactly on its last item', diffCompare.length > 0 && diffCompare[diffCompare.length - 1].current === expected);
+    checkPhase('diff comparison phase', diffCompare, expectedWithoutLinks);
+    check('diff comparison phase: ends exactly on its last item', diffCompare.length > 0 && diffCompare[diffCompare.length - 1].current === expectedWithoutLinks);
     const lastScanIndex = diff.progressLines.map((l) => SCAN_LINE.test(l)).lastIndexOf(true);
     const firstCompareIndex = diff.progressLines.map((l) => COMPARE_LINE.test(l)).indexOf(true);
     check('diff: the whole scan phase is reported before the comparison phase starts', lastScanIndex !== -1 && firstCompareIndex !== -1 && lastScanIndex < firstCompareIndex);
@@ -197,13 +199,13 @@ async function main() {
     const partitionPack = parseLines(partition.progressLines, PACK_LINE);
     check('partition: finished normally', partition.response.status === 'completed', partition.response.status);
     check('partition: needs several discs (so the packing loop reports more than once)', discs.length > 1, `${discs.length} disc(s)`);
-    check('partition: every entry placed on a disc - the junction as its shortcut, nothing behind it', discs.reduce((sum, disc) => sum + disc.length, 0) === expected
-      && !discs.flat().some((entry) => entry.path.includes(`${path.sep}linked-folder${path.sep}`)));
+    check('partition: every entry placed on a disc - but not the junction, or anything behind it', discs.reduce((sum, disc) => sum + disc.length, 0) === expectedWithoutLinks
+      && !discs.flat().some((entry) => entry.path.startsWith(linkPath)));
     checkNoUnknownLines('partition', partition.progressLines, [SCAN_LINE, PACK_LINE]);
     checkPhase('partition scan phase', partitionScan, expected);
-    checkPhase('partition packing phase', partitionPack, expected);
+    checkPhase('partition packing phase', partitionPack, expectedWithoutLinks);
     check('partition packing phase: one line per disc', partitionPack.length === discs.length, `${partitionPack.length} lines for ${discs.length} discs`);
-    check('partition packing phase: ends exactly on its last file', partitionPack.length > 0 && partitionPack[partitionPack.length - 1].current === expected);
+    check('partition packing phase: ends exactly on its last file', partitionPack.length > 0 && partitionPack[partitionPack.length - 1].current === expectedWithoutLinks);
     const lastPartitionScanIndex = partition.progressLines.map((l) => SCAN_LINE.test(l)).lastIndexOf(true);
     const firstPackIndex = partition.progressLines.map((l) => PACK_LINE.test(l)).indexOf(true);
     check('partition: the whole scan phase is reported before packing starts', lastPartitionScanIndex !== -1 && firstPackIndex !== -1 && lastPartitionScanIndex < firstPackIndex);
@@ -229,9 +231,9 @@ async function main() {
       check('partition with a supplied file list: did not scan the (nonexistent) folder', handedList.response.status === 'completed');
       check('partition with a supplied file list: reported no scan phase', parseLines(handedList.progressLines, SCAN_LINE).length === 0);
       checkNoUnknownLines('partition with a supplied file list', handedList.progressLines, [PACK_LINE]);
-      checkPhase('partition with a supplied file list, packing phase', handedPack, expected);
+      checkPhase('partition with a supplied file list, packing phase', handedPack, expectedWithoutLinks);
       check('partition with a supplied file list: every entry placed on a disc',
-        handedList.response.res.reduce((sum, disc) => sum + disc.length, 0) === expected);
+        handedList.response.res.reduce((sum, disc) => sum + disc.length, 0) === expectedWithoutLinks);
     }
   } finally {
     await app.close().catch(() => {});

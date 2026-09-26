@@ -9,33 +9,27 @@
  *     and a folder Windows denies listing (a "deny list folder" ACL, the same thing that makes e.g. the legacy
  *     "My Music" junction inside Documents unreadable):
  *       - The scan behind every disc (get-file-paths-with-stats / partition-backup-to-optical-media) never follows
- *         a link. A disc cannot hold a link, so each one is listed - and planned - as the one small Windows
- *         shortcut it is burned as, "<link name>.lnk", recording where it points; nothing it points to is ever
- *         part of the result.
+ *         a link. A disc cannot hold a link, so each one is left out - of the result and of the plan - and nothing
+ *         it points to is ever part of either. Each link left out is written to logs.txt, with where it points, and
+ *         is NOT in the "Some items were left out" warning (the wizards say once, beforehand, that links are not
+ *         backed up - a warning naming Windows' own links on every run would stop being read).
  *       - A backup-source scan (skipUnreadable - how the Backup to optical media and Add missing files wizards call
- *         it) skips the folder that cannot be listed and raises ONE warning, "Some items were left out", naming it
- *         by full path; without skipUnreadable (reading a disc, whose ID is a hash of everything on it) it fails.
+ *         it) skips the folder that cannot be listed, and raises ONE warning, "Some items were left out", naming
+ *         it by full path; without skipUnreadable (reading a disc, whose ID is a hash of everything on it) it fails.
  *       - Synchronize directories' comparison (diff with comparison 'any-difference', never skipping - a skipped
  *         source entry would look "missing" and its copy in the target would be deleted) fails too, on the folder
- *         that cannot be listed. (diff lists a link as one entry and copies it as a link -
- *         test-sync-and-cumulative-rules.js covers that.)
- *       - When the disc is sent (create-optical-media-disc-partials, with the app's temp folder pointed at a
- *         scratch folder for the run), each link's shortcut is created in the temp folder - never in the source -
- *         as one small file that Windows itself reads as pointing where the link points (also when that place no
- *         longer exists), and it is hashed like any other file. The folder the links point to is untouched.
+ *         that cannot be listed. (How diff treats links is covered by test-sync-and-cumulative-rules.js.)
  *  2. Files too large for a single disc: planning without splitting reports ALL of them by full path
  *     (too_large_files), not just the first one - that list is what the "Large files found" dialog shows. A plan
  *     that stops there shows no "left out" warning (the wizard plans again once splitting is agreed to, and the
- *     warning would otherwise appear twice) - the entry left out there is the one case a link is: a real file
- *     already has the name its shortcut would get. A plan that goes ahead names it in the warning.
+ *     warning would otherwise appear twice); a plan that goes ahead names the folder it could not list.
  *  3. A whole drive as the folder (a temporary SUBST drive letter onto a scratch folder): planning a backup of
  *     "X:\" (what the folder picker returns for a drive), a scan of a bare "X:" (what the disc readers pass - on
  *     its own that means "the current directory on drive X", not its root), and resolving and hashing a file under
  *     the drive root all work. Skipped if no drive letter is free.
  *
- * Nothing here writes into the app's real temp/cache directory (planning a disc only checks it exists, and the
- * shortcuts are created with config.json's cacheDataDirectoryPath pointed at a scratch folder, restored afterwards),
- * so no temp-dir-guard is needed. The deny ACL and the SUBST drive are both removed again in a finally block.
+ * Nothing here writes into the app's real temp/cache directory (planning a disc only checks it exists), so no
+ * temp-dir-guard is needed. The deny ACL and the SUBST drive are both removed again in a finally block.
  *
  * NOTE: needs a real Windows desktop/window session (see call-worker.js's top comment) - run from your own
  * interactive terminal.
@@ -45,37 +39,18 @@
  */
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const { launchApp, callWorker, startRecordingAppErrors, takeAppErrors } = require('./call-worker');
-const { backupAndRedirectConfigField, restoreConfig } = require('../lib/ibb-tools');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 
-/** What Windows itself says each .lnk shortcut points to (Shell.Application ... GetLink.Path). The paths go in and
- *  come out as UTF-8 through a JSON file, so non-English names survive. Returns [] if Windows could not read them. */
-function readShortcutTargets(shortcutPaths) {
-  const listDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shortcut-targets-'));
-  try {
-    const listFile = path.join(listDir, 'shortcuts.json');
-    fs.writeFileSync(listFile, JSON.stringify(shortcutPaths), 'utf8');
-    const script = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n' +
-      '$shell = New-Object -ComObject Shell.Application\n' +
-      // Assigned first: Windows PowerShell hands a piped JSON array on as ONE item, so looping over the pipeline
-      // directly would get both paths at once.
-      '$list = Get-Content -Raw -Encoding UTF8 -LiteralPath $env:SHORTCUT_LIST | ConvertFrom-Json\n' +
-      'foreach ($p in $list) {\n' +
-      '  $item = Get-Item -LiteralPath $p\n' +
-      '  Write-Output ($shell.Namespace($item.DirectoryName).ParseName($item.Name).GetLink.Path)\n' +
-      '}';
-    return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
-      { encoding: 'utf8', env: { ...process.env, SHORTCUT_LIST: listFile } }).trim().split(/\r?\n/);
-  } catch {
-    return [];
-  } finally {
-    fs.rmSync(listDir, { recursive: true, force: true });
-  }
+// The app's log, which the worker's console.warn lines go to (appData/logs.txt, next to config.json).
+const LOGS_TXT = path.resolve(__dirname, '../../appData/logs.txt');
+
+/** True if logs.txt has the line leaveOutLink (worker.ts) writes for the link at `linkPath`, pointing to `pointsTo`. */
+function linkIsLogged(linkPath, pointsTo) {
+  try { return fs.readFileSync(LOGS_TXT, 'utf8').includes(`Left out a link: ${linkPath}  -  a link to "${pointsTo}"`); } catch { return false; }
 }
 
 /** A file of exactly `sizeBytes` with no real content (sparse on NTFS) - near-instant regardless of size. */
@@ -124,26 +99,28 @@ async function main() {
   const outsideLink = path.join(tree, 'link-to-outside');
   fs.symlinkSync(outsideFolder, outsideLink, 'junction');
   const junctionTarget = path.join(scratchRoot, 'junction-target-that-is-removed');
+  const danglingLink = path.join(tree, 'dangling');
   fs.mkdirSync(junctionTarget);
-  fs.symlinkSync(junctionTarget, path.join(tree, 'dangling'), 'junction');
+  fs.symlinkSync(junctionTarget, danglingLink, 'junction');
   fs.rmdirSync(junctionTarget);
   fs.mkdirSync(lockedDir);
   fs.writeFileSync(path.join(lockedDir, 'secret.txt'), 's');
-  let lockedApplied = false;
-  try {
-    execFileSync('icacls', [lockedDir, '/deny', '*S-1-1-0:(RD)'], { stdio: 'pipe' });
-    try { fs.readdirSync(lockedDir); } catch { lockedApplied = true; }
-  } catch { /* icacls unavailable - the links alone still exercise leaving entries out */ }
-  console.log(`Scratch tree at ${tree} (a junction to outside, a dangling junction${lockedApplied ? ', a folder that cannot be listed' : ''}).`);
 
   const bigFiles = path.join(scratchRoot, 'big');
   writeExactSizeFile(path.join(bigFiles, 'big one.bin'), 3_000_000);
   writeExactSizeFile(path.join(bigFiles, 'sub', 'big two.bin'), 5_000_000);
   writeExactSizeFile(path.join(bigFiles, 'small.txt'), 10);
-  // A link whose shortcut name is already taken by a real file - the one case a disc scan leaves a link out.
-  const clashingLink = path.join(bigFiles, 'a link');
-  fs.symlinkSync(outsideFolder, clashingLink, 'junction');
-  fs.writeFileSync(clashingLink + '.lnk', 'a real file that happens to have the name');
+  // A folder that cannot be listed - left out of a disc plan, so the plan has an entry to name in its warning.
+  const lockedInBigFiles = path.join(bigFiles, 'locked');
+  fs.mkdirSync(lockedInBigFiles);
+  fs.writeFileSync(path.join(lockedInBigFiles, 'secret.txt'), 's');
+
+  let lockedApplied = false;
+  try {
+    for (const dir of [lockedDir, lockedInBigFiles]) { execFileSync('icacls', [dir, '/deny', '*S-1-1-0:(RD)'], { stdio: 'pipe' }); }
+    try { fs.readdirSync(lockedDir); } catch { lockedApplied = true; }
+  } catch { /* icacls unavailable - the checks that need a folder that cannot be listed are skipped */ }
+  console.log(`Scratch tree at ${tree} (a junction to outside, a dangling junction${lockedApplied ? ', a folder that cannot be listed' : ''}).`);
 
   let substLetter = null;
   let app, win;
@@ -162,76 +139,48 @@ async function main() {
     const scan = await callWorker(win, 'get-file-paths-with-stats', { dirPath: tree, skipUnreadable: true });
     const warnings = await takeAppErrors(win);
     const scannedNames = scan.res.map((e) => path.relative(tree, e.path)).sort();
-    const expectedNames = ['a.txt', 'dangling.lnk', 'link-to-outside.lnk', path.join('sub', 'b.txt')].sort();
-    report(results, 'scanListsEachLinkAsItsShortcutAndNothingBehindIt', JSON.stringify(scannedNames) === JSON.stringify(expectedNames), JSON.stringify(scannedNames));
-    const scannedByName = new Map(scan.res.map((e) => [path.relative(tree, e.path), e]));
-    report(results, 'aLinkEntryRecordsWhereItPoints',
-      scannedByName.get('link-to-outside.lnk')?.stats.linkTarget === outsideFolder && scannedByName.get('dangling.lnk')?.stats.linkTarget === junctionTarget);
+    const expectedNames = ['a.txt', path.join('sub', 'b.txt')].sort();
+    report(results, 'scanLeavesEachLinkOutAndNothingBehindIt', JSON.stringify(scannedNames) === JSON.stringify(expectedNames), JSON.stringify(scannedNames));
+    report(results, 'eachLinkLeftOutIsInLogsTxtWithWhereItPoints', linkIsLogged(outsideLink, outsideFolder) && linkIsLogged(danglingLink, junctionTarget));
+    const listed = warnings.length === 1 && Array.isArray(warnings[0].lists) ? warnings[0].lists[0].items : [];
     if (lockedApplied) {
-      const listed = warnings.length === 1 && Array.isArray(warnings[0].lists) ? warnings[0].lists[0].items : [];
-      report(results, 'oneWarningNamesTheFolderThatCannotBeListed',
+      report(results, 'oneWarningNamesOnlyTheFolderThatCannotBeListed - no link',
         warnings.length === 1 && warnings[0].title === 'Some items were left out' && listed.length === 1 && listed[0].startsWith(lockedDir + '  -  '),
         `${warnings.length} warning(s): ${JSON.stringify(listed)}`);
       report(results, 'scanWithoutSkippingFailsOnAFolderThatCannotBeListed', (await callExpectingError(win, 'get-file-paths-with-stats', { dirPath: tree })) !== null);
     } else {
-      report(results, 'noWarningWhenNothingIsLeftOut', warnings.length === 0, `${warnings.length} warning(s)`);
+      report(results, 'noWarningForTheLinks', warnings.length === 0, `${warnings.length} warning(s): ${JSON.stringify(listed)}`);
     }
 
     await takeAppErrors(win);
     const plan = await callWorker(win, 'partition-backup-to-optical-media', { rootPath: tree, mediaCapacityInBytes: 4.7e9, maxRepletionRatio: 0.97, splitLargeFiles: false, sessionId, skipUnreadable: true });
     const plannedPaths = plan.res.flat().map((e) => e.path);
     const plannedFiles = plan.res.flat().filter((e) => !e.stats.isDirectory).map((e) => path.relative(tree, e.path)).sort();
-    report(results, 'backupPlanningPlansEachLinkAsItsShortcutAndNothingBehindIt',
+    report(results, 'backupPlanningLeavesEachLinkOutAndNothingBehindIt',
       JSON.stringify(plannedFiles) === JSON.stringify(expectedNames) && plannedPaths.every((p) => p.startsWith(tree + path.sep))
-        && !plannedPaths.some((p) => p.includes(`link-to-outside${path.sep}`))
+        && !plannedPaths.some((p) => p.startsWith(outsideLink) || p.startsWith(danglingLink))
         && (await takeAppErrors(win)).length === (lockedApplied ? 1 : 0), JSON.stringify(plannedFiles));
     if (lockedApplied) {
       report(results, 'syncComparisonFailsInsteadOfSkipping', (await callExpectingError(win, 'diff', { source: tree, target: bigFiles, comparison: 'any-difference' })) !== null);
     }
 
-    console.log('\nEach link\'s shortcut, created when its disc is sent...');
-    const scratchTemp = path.join(scratchRoot, 'app temp folder');
-    const outsideBefore = JSON.stringify(fs.readdirSync(outsideFolder));
-    const originalConfig = backupAndRedirectConfigField('cacheDataDirectoryPath', scratchTemp);
-    try {
-      const relPaths = plan.res.flat().filter((e) => !e.stats.isDirectory).map((e) => path.relative(tree, e.path));
-      const created = await callWorker(win, 'create-optical-media-disc-partials', { dirPath: tree, paths: relPaths, sessionId });
-      const createdByName = new Map(created.res.map((e) => [e.path, e]));
-      const shortcut = path.join(scratchTemp, sessionId, 'link-to-outside.lnk');
-      const danglingShortcut = path.join(scratchTemp, sessionId, 'dangling.lnk');
-      report(results, 'shortcutsAreCreatedInTheTempFolderNeverInTheSource',
-        fs.existsSync(shortcut) && fs.existsSync(danglingShortcut) && !fs.existsSync(path.join(tree, 'link-to-outside.lnk')) && !fs.existsSync(path.join(tree, 'dangling.lnk')));
-      const shortcutSize = fs.existsSync(shortcut) ? fs.statSync(shortcut).size : -1;
-      report(results, 'eachShortcutIsOneSmallFileWithItsLinkTarget',
-        shortcutSize > 0 && shortcutSize < 16 * 1024 && createdByName.get('link-to-outside.lnk')?.stats.size === shortcutSize
-          && createdByName.get('link-to-outside.lnk')?.stats.linkTarget === outsideFolder, `${shortcutSize} bytes`);
-      const targets = readShortcutTargets([shortcut, danglingShortcut]);
-      report(results, 'windowsReadsEachShortcutAsPointingWhereItsLinkPoints', targets[0] === outsideFolder && targets[1] === junctionTarget, JSON.stringify(targets));
-      const hashes = await callWorker(win, 'compute-sha256-for-backed-up-files', { dirPath: tree, paths: ['link-to-outside.lnk'], sessionId });
-      report(results, 'aShortcutIsHashedLikeAnyOtherFile',
-        hashes.res.length === 1 && hashes.res[0].sha256 === crypto.createHash('sha256').update(fs.readFileSync(shortcut)).digest('hex'));
-      report(results, 'theFolderTheLinksPointToIsUntouched', JSON.stringify(fs.readdirSync(outsideFolder)) === outsideBefore);
-    } finally {
-      restoreConfig(originalConfig);
-    }
-
     // ---- 2. every too-large file is reported
     console.log('\nFiles too large for a single disc...');
-    const tooLarge = await callExpectingError(win, 'partition-backup-to-optical-media', { rootPath: bigFiles, mediaCapacityInBytes: 2_000_000, maxRepletionRatio: 0.97, splitLargeFiles: false, sessionId });
+    await takeAppErrors(win);
+    const tooLarge = await callExpectingError(win, 'partition-backup-to-optical-media', { rootPath: bigFiles, mediaCapacityInBytes: 2_000_000, maxRepletionRatio: 0.97, splitLargeFiles: false, sessionId, skipUnreadable: true });
     const reportedPaths = tooLarge && Array.isArray(tooLarge.too_large_files) ? tooLarge.too_large_files.map((f) => f.path).sort() : [];
     const expectedTooLarge = [path.join(bigFiles, 'big one.bin'), path.join(bigFiles, 'sub', 'big two.bin')].sort();
-    await takeAppErrors(win);
-    const tooLargeAsTheWizardAsks = await callExpectingError(win, 'partition-backup-to-optical-media', { rootPath: bigFiles, mediaCapacityInBytes: 2_000_000, maxRepletionRatio: 0.97, splitLargeFiles: false, sessionId, skipUnreadable: true });
     const warningsWhenStopped = await takeAppErrors(win);
-    report(results, 'aPlanThatStopsAtTooLargeFilesShowsNoLeftOutWarning',
-      tooLargeAsTheWizardAsks !== null && tooLargeAsTheWizardAsks.err_code === 'FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC' && warningsWhenStopped.length === 0,
-      `${warningsWhenStopped.length} warning(s)`);
-    await callWorker(win, 'partition-backup-to-optical-media', { rootPath: bigFiles, mediaCapacityInBytes: 4.7e9, maxRepletionRatio: 0.97, splitLargeFiles: false, sessionId, skipUnreadable: true });
-    const warningsWhenPlanned = await takeAppErrors(win);
-    const leftOutWhenPlanned = warningsWhenPlanned.length === 1 && Array.isArray(warningsWhenPlanned[0].lists) ? warningsWhenPlanned[0].lists[0].items : [];
-    report(results, 'aPlanThatGoesAheadNamesTheLinkWhoseShortcutNameIsTaken',
-      leftOutWhenPlanned.length === 1 && leftOutWhenPlanned[0].startsWith(clashingLink + '  -  ') && leftOutWhenPlanned[0].includes('already next to it'),
-      JSON.stringify(leftOutWhenPlanned));
+    if (lockedApplied) {
+      report(results, 'aPlanThatStopsAtTooLargeFilesShowsNoLeftOutWarning',
+        tooLarge !== null && tooLarge.err_code === 'FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC' && warningsWhenStopped.length === 0,
+        `${warningsWhenStopped.length} warning(s)`);
+      await callWorker(win, 'partition-backup-to-optical-media', { rootPath: bigFiles, mediaCapacityInBytes: 4.7e9, maxRepletionRatio: 0.97, splitLargeFiles: false, sessionId, skipUnreadable: true });
+      const warningsWhenPlanned = await takeAppErrors(win);
+      const leftOutWhenPlanned = warningsWhenPlanned.length === 1 && Array.isArray(warningsWhenPlanned[0].lists) ? warningsWhenPlanned[0].lists[0].items : [];
+      report(results, 'aPlanThatGoesAheadNamesTheFolderItCouldNotList',
+        leftOutWhenPlanned.length === 1 && leftOutWhenPlanned[0].startsWith(lockedInBigFiles + '  -  '), JSON.stringify(leftOutWhenPlanned));
+    }
     report(results, 'planningReportsEveryTooLargeFileByFullPath',
       tooLarge !== null && tooLarge.err_code === 'FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC' && JSON.stringify(reportedPaths) === JSON.stringify(expectedTooLarge),
       JSON.stringify(reportedPaths));
@@ -263,7 +212,7 @@ async function main() {
   } finally {
     if (app) { await app.close().catch(() => {}); }
     if (substLetter) { try { execFileSync('subst', [`${substLetter}:`, '/D']); } catch { /* already gone */ } }
-    if (lockedApplied) { try { execFileSync('icacls', [lockedDir, '/remove:d', '*S-1-1-0'], { stdio: 'pipe' }); } catch { /* best effort */ } }
+    for (const dir of [lockedDir, lockedInBigFiles]) { try { execFileSync('icacls', [dir, '/remove:d', '*S-1-1-0'], { stdio: 'pipe' }); } catch { /* best effort */ } }
   }
 
   const pass = Object.keys(results).length > 0 && Object.values(results).every(Boolean);
