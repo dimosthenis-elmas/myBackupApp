@@ -4,6 +4,7 @@
 <h4 *ngIf="!diffTreeIsEmpty">The following files do not exist in the backup or have been modified.</h4>
 <h4 *ngIf="!diffTreeIsEmpty">Select which ones you want to transfer.</h4>
 <h4 *ngIf="diffTreeIsEmpty">The backup is up to date</h4>
+<p *ngIf="diffTreeIsEmpty && linksNote">{{linksNote}}</p>
 <mat-expansion-panel *ngIf="!diffTreeIsEmpty" [expanded]="panelOpenState" (opened)="panelOpenState = true" (closed)="panelOpenState = false">
     <mat-expansion-panel-header>
         <mat-panel-title>

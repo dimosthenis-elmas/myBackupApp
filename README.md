@@ -138,12 +138,13 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
 
 - **Links, in every feature:** a link (a symbolic link or a junction) is never followed and never backed up, so
   nothing outside the folders you chose is ever read, copied, overwritten or deleted, and nothing in a backup leads
-  outside it. Every backup feature leaves links out, and says so in a dialog it shows before copying or burning
-  anything (Cumulative backup's "Confirm", Synchronize dirs' "Warning", and the "discs needed" / "metadata prepared"
-  dialogs of the two disc features). Each link left out, with where it points, is listed in `logs.txt`, in the
-  app's `appData` folder - not in the "Some items were left out" warning, which would otherwise show Windows' own
-  hidden links on every run: e.g. "My Music", "My Pictures" and "My Videos" inside Documents, which lead to your
-  Music, Pictures and Videos folders and are backed up through those. What a link points to is not backed up
+  outside it. Every backup feature leaves links out, and when it has left any out it says how many in a dialog it
+  shows before copying or burning anything - Cumulative backup's "Confirm" (or under "The backup is up to date"),
+  Synchronize dirs' "Confirmation" (or "already synced"), and the "discs needed" / "metadata prepared" dialogs of the
+  two disc features. Each link left out, with where it points, is listed in `logs.txt`, in the app's `appData`
+  folder - not in the "Some items were left out" warning, which would otherwise show Windows' own hidden links on
+  every run: e.g. "My Music", "My Pictures" and "My Videos" inside Documents, which lead to your Music, Pictures and
+  Videos folders and are backed up through those (so backing up Documents always counts at least those three). What a link points to is not backed up
   through it: back up that folder itself if you need it. Synchronize dirs deletes the links it finds in the target -
   the link itself, never what it points to - since the master's links are not copied; Cumulative backup never
   deletes anything, so a link already in the backup stays there. (A Windows shortcut you already have is an ordinary

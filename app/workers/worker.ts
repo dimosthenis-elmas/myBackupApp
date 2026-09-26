@@ -96,18 +96,21 @@ const reportSkippedScanEntries = function (skipped: SkippedScanEntry[]): void {
 
 /** Leaves the link (symbolic link or junction) at `linkPath` out of a backup: no feature backs up a link or what it
  *  points to, which is outside the folder being backed up - a disc cannot hold a link, and a link copied into a
- *  backup would lead out of it. Every backup wizard says so once, in a dialog it shows before copying or burning
- *  anything; each link left out - with where it points, and `why` - goes to logs.txt only. Listing them in the
- *  "Some items were left out" warning instead would show Windows' own links (e.g. "My Music" in Documents) on every
- *  run, and a warning that always appears stops being read. */
-const leaveOutLink = function (linkPath: string, why: string): void {
+ *  backup would lead out of it. Each link left out - with where it points, and `why` - goes to logs.txt, and into
+ *  `linksLeftOut` when given: the request's response carries their number (`linksLeftOut`), and the wizard says in a
+ *  dialog it already shows before copying or burning anything how many were left out (see linksLeftOutNote in
+ *  src/app/shared/utils/links-note.ts). Listing them in the "Some items were left out" warning instead would show
+ *  Windows' own links (e.g. "My Music" in Documents) on every run, and a warning that always appears stops being read. */
+const leaveOutLink = function (linkPath: string, why: string, linksLeftOut?: string[]): void {
   let pointsTo: string;
   try {
     pointsTo = `a link to "${linkTargetText(linkPath)}"`;
   } catch (error) {
     pointsTo = `a link (where it points could not be read: ${scanErrorMessage(error)})`;
   }
-  console.warn(`Left out a link: ${node_path_module.normalize(linkPath)}  -  ${pointsTo} - ${why}`);
+  const normalized = node_path_module.normalize(linkPath);
+  console.warn(`Left out a link: ${normalized}  -  ${pointsTo} - ${why}`);
+  if (linksLeftOut) { linksLeftOut.push(normalized); }
 }
 
 /** A bare drive ("D:") means "the current directory on drive D", not its root - so a scan starting there would
@@ -195,10 +198,10 @@ const scanSubdirectoryOrSkip = async function <T>(subdirectoryPath: string, skip
  * @param skipped optional - when given, an entry below `dirPath` that cannot be read (see statEntryOrSkip and the
  *  recursive readdir below) is recorded here and left out instead of failing the whole scan; `dirPath` itself
  *  must still be readable. Left undefined, the first unreadable entry throws, as it always did.
- * @param leaveOutLinks true to leave out a link (symbolic link or junction) below `dirPath` (see leaveOutLink);
- *  false lists it as one entry, like a file. Either way it is never looked inside - so nothing outside `dirPath` is
- *  listed. */
-const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string> = [], onProgress?: (itemsFoundSoFar: number) => void, skipped?: SkippedScanEntry[], leaveOutLinks: boolean = false): Promise<string[]> {
+ * @param linksLeftOut optional - when given, a link (symbolic link or junction) below `dirPath` is left out and its
+ *  path added here (see leaveOutLink); left undefined, it is listed as one entry, like a file. Either way it is never
+ *  looked inside - so nothing outside `dirPath` is listed. */
+const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string> = [], onProgress?: (itemsFoundSoFar: number) => void, skipped?: SkippedScanEntry[], linksLeftOut?: string[]): Promise<string[]> {
   let files: Array<string> = fs.readdirSync(dirPath)
 
   arrayOfFiles = arrayOfFiles || []
@@ -215,11 +218,11 @@ const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string>
         await holdOnIfDue();
         continue;
       }
-      if (leaveOutLinks && entryStats.isSymbolicLink()) {
-        leaveOutLink(node_path_module.join(dirPath, "/", file), 'links are not copied');
+      if (linksLeftOut && entryStats.isSymbolicLink()) {
+        leaveOutLink(node_path_module.join(dirPath, "/", file), 'links are not copied', linksLeftOut);
         linksHere++;
       } else if (entryStats.isDirectory()) {
-        arrayOfFiles = await scanSubdirectoryOrSkip(dirPath + "/" + file, skipped, () => getAllFiles(dirPath + "/" + file, arrayOfFiles, onProgress, skipped, leaveOutLinks), arrayOfFiles)
+        arrayOfFiles = await scanSubdirectoryOrSkip(dirPath + "/" + file, skipped, () => getAllFiles(dirPath + "/" + file, arrayOfFiles, onProgress, skipped, linksLeftOut), arrayOfFiles)
       } else {
         arrayOfFiles.push(node_path_module.join(dirPath, "/", file))
         //print_line(arrayOfFiles.length + "")
@@ -953,12 +956,14 @@ const writeJSONtoDisk = async function(path: string, json:Object): Promise<void>
  * link, and what one points to is outside the folder being backed up (see leaveOutLink).
  * @param dirPath the directory for which you want to list the files.
  * @param arrayOfFiles <empty> (used internally for recursion)
- * @param skipped optional - see the identical parameter of getAllFiles. */
+ * @param skipped optional - see the identical parameter of getAllFiles.
+ * @param linksLeftOut optional - the path of each link left out is added here (see leaveOutLink). */
 const getAllFilePathsWithStats = async function (
   dirPath: string,
   arrayOfFiles: Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}> = [],
   onProgress?: (itemsFoundSoFar: number) => void,
-  skipped?: SkippedScanEntry[]
+  skipped?: SkippedScanEntry[],
+  linksLeftOut?: string[]
 ): Promise<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}>> {
 
   // This resets the stop signal in case the user canceled the operation previously.
@@ -983,10 +988,10 @@ const getAllFilePathsWithStats = async function (
         continue;
       }
       if (entryStats.isSymbolicLink()) {
-        leaveOutLink(node_path_module.join(dirPath, "/", file), 'a disc cannot hold a link');
+        leaveOutLink(node_path_module.join(dirPath, "/", file), 'a disc cannot hold a link', linksLeftOut);
         linksHere++;
       } else if (entryStats.isDirectory()) {
-        arrayOfFiles = await scanSubdirectoryOrSkip(dirPath + "/" + file, skipped, () => getAllFilePathsWithStats(dirPath + "/" + file, arrayOfFiles, onProgress, skipped), arrayOfFiles)
+        arrayOfFiles = await scanSubdirectoryOrSkip(dirPath + "/" + file, skipped, () => getAllFilePathsWithStats(dirPath + "/" + file, arrayOfFiles, onProgress, skipped, linksLeftOut), arrayOfFiles)
       } else {
         arrayOfFiles.push({"path": node_path_module.join(dirPath, "/", file), "stats": {
           "size": entryStats.size,
@@ -1131,8 +1136,9 @@ const partitionArrayBasedOnFilter = <T,>(
  *  bin-packing loop below (a known total by then - "Packing items (i of N)", see parsePackingProgress) once per
  *  disc it fills (not per file - packing potentially hundreds of thousands of files into a couple dozen discs
  *  is already coarse-grained at that level, so there's no need for a separate throttling interval the way the
- *  per-item scan/hash loops elsewhere need one). Left undefined, behaves exactly as before (no probing overhead). */
-const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, maxRepletionRatio: number, splitLargeFiles:boolean=false, sessionId: string, filesMetadata?:filesMetadata[], onProgress?: (line: string) => void, skipUnreadable: boolean = false): Promise<ColdStorageMetadata>{
+ *  per-item scan/hash loops elsewhere need one). Left undefined, behaves exactly as before (no probing overhead).
+ *  @param linksLeftOut optional - the path of each link the scan leaves out is added here (see leaveOutLink). */
+const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, maxRepletionRatio: number, splitLargeFiles:boolean=false, sessionId: string, filesMetadata?:filesMetadata[], onProgress?: (line: string) => void, skipUnreadable: boolean = false, linksLeftOut?: string[]): Promise<ColdStorageMetadata>{
   assertValidSessionId(sessionId);
   process.env._stop="NoStop";
 
@@ -1168,7 +1174,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
     skipped = skipUnreadable ? [] : undefined;
     filePathsAndStats = await getAllFilePathsWithStats(dirPath, [], onProgress
       ? (count) => onProgress(`Scanning items (${Math.min(count, scanProbedTotal)} of ${scanProbedTotal})`)
-      : undefined, skipped)
+      : undefined, skipped, linksLeftOut)
   }
 
   // Without splitting, every file too large for a single disc is reported at once - all of them, not just the first
@@ -2179,9 +2185,10 @@ const linkTargetText = function (linkPath: string): string {
  *  unreadable source entry that was merely skipped would look like "not in the source" and the target's copy of
  *  it would be deleted.
  *  @param listLinks how a link (symbolic link or junction) in the FIRST directory is treated. False (Cumulative backup,
- *  and Sync's copy list): it is left out - links are never copied - and named in logs.txt (see leaveOutLink). True
- *  (only Sync's delete list, where the first directory is the target): it is listed
- *  as one entry, like a file, so the target loses it - the link itself (unlinkSync), never what it points to.
+ *  and Sync's copy list): it is left out - links are never copied - named in logs.txt, and its path added to
+ *  `linksLeftOut` if given (see leaveOutLink). True (only Sync's delete list, where the first directory is the
+ *  target): it is listed as one entry, like a file, so the target loses it - the link itself (unlinkSync), never what
+ *  it points to.
  *
  *  A link in the SECOND directory never counts as present. No link is ever followed, so neither feature reads,
  *  copies, overwrites or deletes anything a link points to - and neither puts a link into a target, so nothing in a
@@ -2189,7 +2196,7 @@ const linkTargetText = function (linkPath: string): string {
  *
  *  Throws if either directory is a link or inside one (see refuseLinkedFolder), or if one directory is inside the
  *  other (see refuseFoldersInsideEachOther). */
-const diff = async function (source: string, target: string, onProgress?: (line: string) => void, comparison: DiffComparison = 'source-newer-or-different-size', skipUnreadable: boolean = false, listLinks: boolean = false): Promise<string[]> {
+const diff = async function (source: string, target: string, onProgress?: (line: string) => void, comparison: DiffComparison = 'source-newer-or-different-size', skipUnreadable: boolean = false, listLinks: boolean = false, linksLeftOut: string[] = []): Promise<string[]> {
   process.env._stop = "noStop";
   refuseLinkedFolder(source);
   refuseLinkedFolder(target);
@@ -2210,7 +2217,7 @@ const diff = async function (source: string, target: string, onProgress?: (line:
     combinedProbedTotal = sourceProbedTotal + targetProbedTotal;
   }
   const skipped: SkippedScanEntry[] | undefined = skipUnreadable ? [] : undefined;
-  let source_files = await getAllFiles(source, [], onProgress ? (count) => onProgress(`Scanning items (${Math.min(count, combinedProbedTotal)} of ${combinedProbedTotal})`) : undefined, skipped, !listLinks)
+  let source_files = await getAllFiles(source, [], onProgress ? (count) => onProgress(`Scanning items (${Math.min(count, combinedProbedTotal)} of ${combinedProbedTotal})`) : undefined, skipped, listLinks ? undefined : linksLeftOut)
   console.log("\nReading paths of: " + target)
   let target_files = await getAllFilesSet(target, new Set<string>(), onProgress ? (count) => onProgress(`Scanning items (${Math.min(sourceProbedTotal + count, combinedProbedTotal)} of ${combinedProbedTotal})`) : undefined, skipped)
   if (skipped) { reportSkippedScanEntries(skipped); }
@@ -3216,12 +3223,13 @@ const init = function() : void
       case 'diff':
         console.log("(worker) in diff")
         logsBuffer.setChannel('diff');
+        const linksLeftOutByDiff: string[] = [];
         diff(arg.params.source, arg.params.target, (line) => logsBuffer.push(line),
           (arg.params.comparison === 'any-difference' || arg.params.comparison === 'any-difference-or-content') ? arg.params.comparison : undefined,
-          arg.params.skipUnreadable === true, arg.params.listLinks === true).then((d)=>{
+          arg.params.skipUnreadable === true, arg.params.listLinks === true, linksLeftOutByDiff).then((d)=>{
           logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
-            ipc.sendResponseToMain({ key: 'diff', res: d, status: "completed" });
+            ipc.sendResponseToMain({ key: 'diff', res: d, status: "completed", linksLeftOut: linksLeftOutByDiff.length });
           }else{
             ipc.sendResponseToMain({ key: 'diff', res: d, status: "stopped" });
           }
@@ -3269,10 +3277,11 @@ const init = function() : void
       case 'partition-backup-to-optical-media':
         console.log("(worker) in partition-backup-to-optical-media")
         logsBuffer.setChannel('partition-backup-to-optical-media');
-        partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.maxRepletionRatio, arg.params.splitLargeFiles, arg.params.sessionId, arg.params.filesMetadata, (line) => logsBuffer.push(line), arg.params.skipUnreadable === true).then((d)=>{
+        const linksLeftOutByPlanning: string[] = [];
+        partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.maxRepletionRatio, arg.params.splitLargeFiles, arg.params.sessionId, arg.params.filesMetadata, (line) => logsBuffer.push(line), arg.params.skipUnreadable === true, linksLeftOutByPlanning).then((d)=>{
           logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
-            ipc.sendResponseToMain({ key: 'partition-backup-to-optical-media', res: d, status: "completed" });
+            ipc.sendResponseToMain({ key: 'partition-backup-to-optical-media', res: d, status: "completed", linksLeftOut: linksLeftOutByPlanning.length });
           }else{
             ipc.sendResponseToMain({ key: 'partition-backup-to-optical-media', res: d, status: "stopped" });
           }
@@ -3420,13 +3429,14 @@ const init = function() : void
         // that cannot be read completely must fail, since its ID is a hash of everything on it.
         const scanRoot = asScanRoot(arg.params.dirPath);
         const skippedWhileScanning: SkippedScanEntry[] | undefined = arg.params.skipUnreadable === true ? [] : undefined;
+        const linksLeftOutWhileScanning: string[] = [];
         countAllFilesQuick(scanRoot).then((total) => {
-          return getAllFilePathsWithStats(scanRoot, [], (count) => logsBuffer.push(`Scanning items (${Math.min(count, total)} of ${total})`), skippedWhileScanning);
+          return getAllFilePathsWithStats(scanRoot, [], (count) => logsBuffer.push(`Scanning items (${Math.min(count, total)} of ${total})`), skippedWhileScanning, linksLeftOutWhileScanning);
         }).then((d)=>{
           if (skippedWhileScanning) { reportSkippedScanEntries(skippedWhileScanning); }
           logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
-            ipc.sendResponseToMain({ key: 'get-file-paths-with-stats', res: d, status: "completed" });
+            ipc.sendResponseToMain({ key: 'get-file-paths-with-stats', res: d, status: "completed", linksLeftOut: linksLeftOutWhileScanning.length });
           }else{
             ipc.sendResponseToMain({ key: 'get-file-paths-with-stats', res: d, status: "stopped" });
           }

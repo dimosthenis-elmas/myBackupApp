@@ -199,6 +199,13 @@ from this file (and test it if it needs one - see "Working on these" below), and
 
 ### 14. Smaller ones
 
+- **A read-only file in the target that is also hard-linked from outside it loses its read-only mark there too:**
+  Cumulative backup and Sync replace a changed file by renaming a new copy over it, and Sync deletes by removing the
+  name, so the contents outside never change (confirmed with the app's own Electron). But a read-only file has its
+  mark cleared first (`chmodSync` in `renameReplacingReadOnlyFile`; `unlinkSync` and `rmSync` do the same), and the
+  mark belongs to the file, shared by all its names - so the name outside the target loses it too. Only where
+  something else made hard links into the backup. Fix: leave alone a read-only target file with more than one name
+  (`lstat`'s `nlink > 1`) and list it in the "Some items were left out" warning.
 - **No fit check for a disc's re-measured size:** `sendToImgBurn` only checks slivers against the capacity; files that
   grew since planning are burned even if the disc no longer fits (ImgBurn then refuses it). Planning also counts only
   file bytes - see issue 5 for when the per-medium ratios in `OPTICAL_MEDIA` do not leave enough room for sectors and
@@ -260,10 +267,12 @@ from this file (and test it if it needs one - see "Working on these" below), and
   `ui/test-backup-to-optical-media.js`.
 - **Links are never backed up, by any feature:** each scan leaves them out (`leaveOutLink` in `app/workers/worker.ts`
   - from `getAllFilePathsWithStats` for discs, from `diff` for Cumulative backup and Sync) and writes each one, with
-  where it points, to logs.txt only. Every backup wizard says once, in a dialog it already shows before copying or
-  burning, that links are not backed up (`LINKS_NOT_BACKED_UP_NOTE` in `src/app/shared/utils/links-note.ts`) - the
-  "Some items were left out" warning would otherwise name Windows' own links ("My Music" in Documents, ...) on every
-  run. What a link points to is not backed up through it, and no link is ever put into a backup, so nothing in one
+  where it points, to logs.txt only; the request's response counts them (`linksLeftOut` on `WorkerResponse`), and
+  every backup wizard says how many, if any, in a dialog it already shows before copying or burning
+  (`withLinksLeftOutNote` in `src/app/shared/utils/links-note.ts`) - the "Some items were left out" warning would
+  otherwise name Windows' own links ("My Music" in Documents, ...) on every run. A link the user made (a folder moved
+  elsewhere, with a junction left in its place) is therefore only a number in that dialog and a line in logs.txt -
+  what it points to is not in the backup. What a link points to is not backed up through it, and no link is ever put into a backup, so nothing in one
   leads outside it. Sync deletes the target's links (the link itself - `diff`'s `listLinks` on its delete list);
   Cumulative backup never deletes, so a link already in a backup stays. A folder holding only links counts as empty.
   Tested in `worker-ipc/test-scan-edge-cases.js` (discs) and `worker-ipc/test-sync-and-cumulative-rules.js` section 3.

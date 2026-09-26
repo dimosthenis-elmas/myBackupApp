@@ -13,7 +13,7 @@ import { error } from 'console';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/progress-line';
 import { formatBytes } from '../shared/utils/format-bytes';
-import { LINKS_NOT_BACKED_UP_NOTE } from '../shared/utils/links-note';
+import { withLinksLeftOutNote } from '../shared/utils/links-note';
 import { isDriveRoot } from '../shared/utils/drive-root';
 
 
@@ -45,6 +45,9 @@ export class SyncDirsComponent {
    *  spellings as one name - they are given the template's spelling after the copy and delete phases (see
    *  matchLetterCase in worker.ts). Found together with the two lists above. */
   letterCaseRenames: Array<{ targetPath: string, to: string }> = [];
+  /** How many of the template's links the copy-list comparison left out (links are never copied - see
+   *  linksLeftOutNote). */
+  linksLeftOut = 0;
 
   copyFilesPromise!:Promise<any>
   deleteFilesPromise!:Promise<any>
@@ -136,7 +139,7 @@ export class SyncDirsComponent {
       then the file will be copied from ${this.backup.sourcePath} to ${this.backup.targetPath}. Also in case there is a file in
       ${this.backup.targetPath} which does not exist in ${this.backup.sourcePath} then this file will be DELETED. So be careful as this
       option may delete files from ${this.backup.targetPath}. If you are not sure you want to proceed press 'cancel'.
-      Otherwise press 'continue'.\n\n${LINKS_NOT_BACKED_UP_NOTE} Links in ${this.backup.targetPath} are deleted - only the link itself, never what it points to.`;
+      Otherwise press 'continue'.\n\nLinks (symbolic links and junctions) are never copied, and links in ${this.backup.targetPath} are deleted - only the link itself, never what it points to.`;
     confirmDialog.componentInstance.title = "Warning"
     confirmDialog.componentInstance.actionsNum = 2;
     confirmDialog.componentInstance.action1Label = "Cancel";
@@ -202,7 +205,9 @@ export class SyncDirsComponent {
     // in the source) and one whose size and modified time match but whose bytes do not. The byte comparison reads
     // every otherwise-unchanged file on both sides, so this scan is much slower than a size/date one.
     this.getAllPathsMarkedForCopyPromise = ipc.diff(this.backup.sourcePath, this.backup.targetPath, 'any-difference-or-content');
-    return (await this.getAllPathsMarkedForCopyPromise).res;
+    const response = await this.getAllPathsMarkedForCopyPromise;
+    this.linksLeftOut = response.linksLeftOut ?? 0;
+    return response.res;
   }
 
   async getPathsOfFilesToBeDeleted(): Promise<string[]> {
@@ -412,7 +417,7 @@ export class SyncDirsComponent {
           dialogRef.close();
           const confirmDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '650px' });
           confirmDialog.disableClose = true;
-          confirmDialog.componentInstance.message = `The directories are already synced. No action needs to be taken.`;
+          confirmDialog.componentInstance.message = withLinksLeftOutNote(`The directories are already synced. No action needs to be taken.`, this.linksLeftOut);
           confirmDialog.componentInstance.title = "Directory synchronization"
           confirmDialog.componentInstance.actionsNum = 1;
           confirmDialog.componentInstance.action1Label = "Ok";
@@ -456,9 +461,9 @@ export class SyncDirsComponent {
         previewOperationsPromise.then((res) => {
           this.dialog.closeAll();
           const confirmCopyDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
-          confirmCopyDialog.componentInstance.message =
-            `Are you sure you want to sync the directories? This means that after the end of the process the directory 
-            ${this.backup.targetPath} will become exactly the same as the directory: ${this.backup.sourcePath}.`;
+          confirmCopyDialog.componentInstance.message = withLinksLeftOutNote(
+            `Are you sure you want to sync the directories? This means that after the end of the process the directory
+            ${this.backup.targetPath} will become exactly the same as the directory: ${this.backup.sourcePath}.`, this.linksLeftOut);
           confirmCopyDialog.componentInstance.title = "Confirmation"
           confirmCopyDialog.componentInstance.actionsNum = 2;
           confirmCopyDialog.componentInstance.action1Label = "No, cancel"

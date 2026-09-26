@@ -244,7 +244,7 @@ Plants a junction to a folder outside the scanned one, a dangling junction, and 
 temporary "deny list folder" ACL). The scan behind every disc (`get-file-paths-with-stats`, backup planning) never
 follows a link: a disc cannot hold one, so each link is left out, and nothing it points to ever appears in the
 result or the plan; each link is written to the app's `logs.txt` with where it points, and is not in the "Some items
-were left out" warning. A backup-source scan (`skipUnreadable`, how the Backup to optical media and Add missing
+were left out" warning - the scan's and the plan's responses count them (`linksLeftOut`), for the wizard's dialog. A backup-source scan (`skipUnreadable`, how the Backup to optical media and Add missing
 files wizards call it) names the folder that cannot be listed in **one** such warning; the same scan without it
 (reading a disc) fails on that folder, and so does Synchronize directories' comparison - it must never skip (a
 skipped source entry would look "missing" and get deleted from the target). Planning a backup without splitting
@@ -284,7 +284,8 @@ or the same size and date with different bytes - and the source must not change.
 refuses to copy over (read-only, or hidden while the source file is not) is replaced; and sync's 2-second allowance
 for modified times (identical bytes 1 second apart are left alone, 3 seconds apart copied again). (3) Links
 (junctions): never followed, never copied - a link in the source is left out and written to the app's `logs.txt`, with
-where it points, and no "Some items were left out" warning appears for it; a link in the target is replaced as the link itself where the source has a
+where it points, the comparison's response counts it (`linksLeftOut`), and no "Some items were left out" warning
+appears for it; a link in the target is replaced as the link itself where the source has a
 folder or a file at that path, deleted as the link itself by Synchronize directories otherwise, and left alone by
 Cumulative backup - and for every scenario a folder outside both, which the links point to, must be unchanged, and a
 second run must find nothing left to do. (4) Folders inside each other are refused with a message and nothing

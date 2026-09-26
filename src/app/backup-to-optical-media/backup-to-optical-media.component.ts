@@ -13,7 +13,7 @@ import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfa
 import { filesMetadata } from '../../types/interface';
 import { SerialQueue } from '../shared/utils/serial-queue';
 import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
-import { LINKS_NOT_BACKED_UP_NOTE } from '../shared/utils/links-note';
+import { withLinksLeftOutNote } from '../shared/utils/links-note';
 import { linkedDiscGroup, discsLabel, linkedDiscsNoticeMessage, splitFileOf } from '../shared/utils/linked-discs';
 import { OPTICAL_MEDIA, OpticalMedium } from '../shared/utils/optical-media';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
@@ -354,7 +354,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
           // "Estimated": the real count can still grow later, in the rare case a large file's real split turns
           // out to need one more partial than planning predicted and that surplus doesn't fit on the disc that
           // triggers it - see maybeAppendOverflowDiscs, which is what actually updates the count if that happens.
-          const info_msg = `To burn the backup to the optical medium of your choice (${this.selected_optical_medium.viewValue}) you will need an estimated ${response.res.length} discs in total.\n\n${LINKS_NOT_BACKED_UP_NOTE}`
+          const info_msg = withLinksLeftOutNote(`To burn the backup to the optical medium of your choice (${this.selected_optical_medium.viewValue}) you will need an estimated ${response.res.length} discs in total.`, response.linksLeftOut)
           infoDialog.componentInstance.message = info_msg;
           infoDialog.componentInstance.actionsNum = 2
           infoDialog.componentInstance.action2Label = "Cancel"

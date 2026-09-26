@@ -128,8 +128,14 @@ function workerErrorMessage(e) {
 
 // ---- the two features, called the way their wizards call the worker
 
+/** How many links the last run's copy-list comparison left out (its response's linksLeftOut) - the number the
+ *  wizard's dialog says. */
+let linksLeftOutByLastRun;
+
 async function cumulative(win, source, target) {
-  const list = (await callWorker(win, 'diff', { source, target, comparison: 'source-newer-or-different-size', skipUnreadable: true })).res;
+  const response = await callWorker(win, 'diff', { source, target, comparison: 'source-newer-or-different-size', skipUnreadable: true });
+  linksLeftOutByLastRun = response.linksLeftOut;
+  const list = response.res;
   await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: list, source, target, nameClash: 'keep-both' });
   return list.length;
 }
@@ -137,7 +143,9 @@ async function cumulative(win, source, target) {
 /** Called the way the Synchronize directories wizard does: copy, delete, then give target entries the source's
  *  letter case (match-letter-case). Returns how many entries it copied, deleted and renamed. */
 async function sync(win, source, target) {
-  const copyList = (await callWorker(win, 'diff', { source, target, comparison: 'any-difference-or-content' })).res;
+  const copyResponse = await callWorker(win, 'diff', { source, target, comparison: 'any-difference-or-content' });
+  linksLeftOutByLastRun = copyResponse.linksLeftOut;
+  const copyList = copyResponse.res;
   const copying = new Set(copyList);
   const deleteList = (await callWorker(win, 'diff', { source: target, target: source, comparison: 'any-difference', listLinks: true })).res.filter((p) => !copying.has(p));
   const renames = (await callWorker(win, 'match-letter-case', { source, target, commit: false })).res;
@@ -358,6 +366,7 @@ async function main() {
           if (differences(outsideBefore, snapshot(O)).length) { problems.unshift('the folder OUTSIDE source and target changed'); }
           if (warnings.length) { problems.push(`a "left out" warning appeared: ${JSON.stringify(warnings[0].lists ? warnings[0].lists[0].items : warnings[0])}`); }
           if (!sourceLinks.every(([linkPath, pointsTo]) => linkIsLogged(linkPath, pointsTo))) { problems.push('not every source link is in logs.txt with where it points'); }
+          if (linksLeftOutByLastRun !== sourceLinks.length) { problems.push(`the comparison counted ${linksLeftOutByLastRun} link(s) left out, not ${sourceLinks.length}`); }
           const secondRun = await run(win, mode, S, T);
           if (secondRun) { problems.push(`a second run still found ${secondRun} item(s) to do`); }
         } catch (e) {

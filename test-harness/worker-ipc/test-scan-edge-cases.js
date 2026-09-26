@@ -11,8 +11,8 @@
  *       - The scan behind every disc (get-file-paths-with-stats / partition-backup-to-optical-media) never follows
  *         a link. A disc cannot hold a link, so each one is left out - of the result and of the plan - and nothing
  *         it points to is ever part of either. Each link left out is written to logs.txt, with where it points, and
- *         is NOT in the "Some items were left out" warning (the wizards say once, beforehand, that links are not
- *         backed up - a warning naming Windows' own links on every run would stop being read).
+ *         is NOT in the "Some items were left out" warning (a warning naming Windows' own links on every run would
+ *         stop being read); the response counts them (linksLeftOut), for the wizard's own dialog to say how many.
  *       - A backup-source scan (skipUnreadable - how the Backup to optical media and Add missing files wizards call
  *         it) skips the folder that cannot be listed, and raises ONE warning, "Some items were left out", naming
  *         it by full path; without skipUnreadable (reading a disc, whose ID is a hash of everything on it) it fails.
@@ -142,6 +142,8 @@ async function main() {
     const expectedNames = ['a.txt', path.join('sub', 'b.txt')].sort();
     report(results, 'scanLeavesEachLinkOutAndNothingBehindIt', JSON.stringify(scannedNames) === JSON.stringify(expectedNames), JSON.stringify(scannedNames));
     report(results, 'eachLinkLeftOutIsInLogsTxtWithWhereItPoints', linkIsLogged(outsideLink, outsideFolder) && linkIsLogged(danglingLink, junctionTarget));
+    // The number the wizard's dialog says ("2 links were left out ...").
+    report(results, 'theScanResponseCountsTheLinksLeftOut', scan.linksLeftOut === 2, `linksLeftOut: ${scan.linksLeftOut}`);
     const listed = warnings.length === 1 && Array.isArray(warnings[0].lists) ? warnings[0].lists[0].items : [];
     if (lockedApplied) {
       report(results, 'oneWarningNamesOnlyTheFolderThatCannotBeListed - no link',
@@ -160,6 +162,7 @@ async function main() {
       JSON.stringify(plannedFiles) === JSON.stringify(expectedNames) && plannedPaths.every((p) => p.startsWith(tree + path.sep))
         && !plannedPaths.some((p) => p.startsWith(outsideLink) || p.startsWith(danglingLink))
         && (await takeAppErrors(win)).length === (lockedApplied ? 1 : 0), JSON.stringify(plannedFiles));
+    report(results, 'thePlanResponseCountsTheLinksLeftOut', plan.linksLeftOut === 2, `linksLeftOut: ${plan.linksLeftOut}`);
     if (lockedApplied) {
       report(results, 'syncComparisonFailsInsteadOfSkipping', (await callExpectingError(win, 'diff', { source: tree, target: bigFiles, comparison: 'any-difference' })) !== null);
     }

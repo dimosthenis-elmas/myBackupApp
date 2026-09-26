@@ -36,7 +36,7 @@ import { filesMetadata } from '../../types/interface';
 import { compileSchema, JsonSchema, SchemaNode } from "json-schema-library";
 import { ColdStorageMetadata } from '../../../app/workers/ipc.interfaces';
 import { SerialQueue } from '../shared/utils/serial-queue';
-import { LINKS_NOT_BACKED_UP_NOTE } from '../shared/utils/links-note';
+import { withLinksLeftOutNote } from '../shared/utils/links-note';
 import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
 import { OPTICAL_MEDIA } from '../shared/utils/optical-media';
 import { linkedDiscGroup, discsLabel, linkedDiscsNoticeMessage } from '../shared/utils/linked-discs';
@@ -148,6 +148,8 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    *  it can't be recovered later by re-deriving it from that. confirmDiscBurned reads this to know exactly
    *  which real temp-dir files to delete. */
   private sentDiscPartPaths: string[][] = [];
+  /** How many links the scan of the source ("master") left out - links are never backed up; see linksLeftOutNote. */
+  private linksLeftOut = 0;
   /** Serializes recordConfirmedDiscs' read-modify-write of the shared cold storage metadata JSON - see SerialQueue's
    *  own doc comment for why this is needed (the stepper is non-linear, so discs can be confirmed in quick
    *  succession, in any order). */
@@ -472,7 +474,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     try {
       // skipUnreadable: this is a backup SOURCE, so an entry that cannot be read is left out (and reported)
       // rather than making the whole scan fail.
-      return (await ipc.getFilePathsWithStats(this.backup.targetPath, true)).res;
+      const response = await ipc.getFilePathsWithStats(this.backup.targetPath, true);
+      this.linksLeftOut = response.linksLeftOut ?? 0;
+      return response.res;
     } finally {
       listener.removeListener();
       loadingDialogRef.close();
@@ -560,8 +564,8 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         loadingDialogRef.close();
         const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
         infoDialog.componentInstance.title = "Info";
-        infoDialog.componentInstance.message = `It looks like your cold storage is already up to date. There are no new files in your 'master'
-        that are missing from your cold storage.`;
+        infoDialog.componentInstance.message = withLinksLeftOutNote(`It looks like your cold storage is already up to date. There are no new files in your 'master'
+        that are missing from your cold storage.`, this.linksLeftOut);
         infoDialog.afterClosed().subscribe(()=>{
           // Exit to main menu.
           goToMainMenuAndReload(this.router);
@@ -694,8 +698,8 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
 
       let loadingDialogRef2 = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '600px'});
       loadingDialogRef2.componentInstance.title = "Cold storage metadata prepared";
-      loadingDialogRef2.componentInstance.message = `A scaffold for the updated cold storage metadata (containing placeholders for the new missing files' discs) has been saved to ${this.coldStorageMetadataJSONPathToSave}.
-      It will be filled in as you confirm each new disc burned below (discs holding pieces of the same large file are recorded together, once all of them are confirmed) - once every disc is confirmed, you may keep this .json file for future updates to your cold storage without having to input all the optical discs one by one again.\n\n${LINKS_NOT_BACKED_UP_NOTE}`;
+      loadingDialogRef2.componentInstance.message = withLinksLeftOutNote(`A scaffold for the updated cold storage metadata (containing placeholders for the new missing files' discs) has been saved to ${this.coldStorageMetadataJSONPathToSave}.
+      It will be filled in as you confirm each new disc burned below (discs holding pieces of the same large file are recorded together, once all of them are confirmed) - once every disc is confirmed, you may keep this .json file for future updates to your cold storage without having to input all the optical discs one by one again.`, this.linksLeftOut);
     } finally {
       this.isPartitioning = false;
       partitionProgressListener?.removeListener();

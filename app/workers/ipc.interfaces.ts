@@ -46,6 +46,9 @@ export interface WorkerResponse {
   key: WorkerChannel;
   res: any;
   status: "stopped" | "completed" | "running" | "error"
+  /** How many links (symbolic links and junctions) the request's scan left out - only on a completed diff,
+   *  partition-backup-to-optical-media or get-file-paths-with-stats; see leaveOutLink in worker.ts. */
+  linksLeftOut?: number;
 }
 
 export interface WorkerListener {

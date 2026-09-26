@@ -11,7 +11,7 @@ import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communica
 import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/progress-line';
-import { LINKS_NOT_BACKED_UP_NOTE } from '../shared/utils/links-note';
+import { linksLeftOutNote, withLinksLeftOutNote } from '../shared/utils/links-note';
 
 @Component({
   selector: 'app-incremental',
@@ -24,6 +24,11 @@ export class IncrementalComponent implements OnInit, OnDestroy {
   private filesTree!: FilesTreeComponent;
   
   public diffTreeIsEmpty: boolean = false;
+
+  /** How many links the comparison left out (links are never copied - see linksLeftOutNote). */
+  private linksLeftOut = 0;
+  /** linksLeftOutNote for them - shown under "The backup is up to date", since no "Confirm" dialog follows then. */
+  public linksNote = '';
 
   private workerListener!: WorkerListener;
 
@@ -150,7 +155,7 @@ export class IncrementalComponent implements OnInit, OnDestroy {
           this.dialog.closeAll();
           const confirmCopyDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
           confirmCopyDialog.componentInstance.message =
-            `Are you sure you want to copy the files to the backup?\n\n${LINKS_NOT_BACKED_UP_NOTE}`;
+            withLinksLeftOutNote(`Are you sure you want to copy the files to the backup?`, this.linksLeftOut);
           confirmCopyDialog.componentInstance.title = "Confirm"
           confirmCopyDialog.componentInstance.actionsNum = 2;
           confirmCopyDialog.componentInstance.action1Label = "No"
@@ -222,7 +227,8 @@ export class IncrementalComponent implements OnInit, OnDestroy {
 
     // skipUnreadable: an entry that cannot be read (e.g. a folder Windows denies listing) is left out and reported
     // to the user, instead of making the whole comparison fail. Only safe here because this flow never deletes
-    // anything. (Links are always left out - never copied - and logged; see diff in worker.ts and LINKS_NOT_BACKED_UP_NOTE.)
+    // anything. (Links are always left out - never copied - and logged, and counted in the response; see diff in
+    // worker.ts and linksLeftOutNote.)
     let diffPromise = ipc.diff(this.backup.sourcePath, this.backup.targetPath, 'source-newer-or-different-size', true)
     /*
     //This block is useful for testing only. Use this to avoid having to wait for diff to complete when testing with large directories.
@@ -245,6 +251,8 @@ export class IncrementalComponent implements OnInit, OnDestroy {
 
     diffPromise.then((args)=>{
       diffProgressListener.removeListener();
+      this.linksLeftOut = args.linksLeftOut ?? 0;
+      this.linksNote = linksLeftOutNote(args.linksLeftOut);
       this.createDiffTree(args.res).then(()=>{
         loadingDialogRef.close();
       });
