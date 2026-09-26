@@ -9,7 +9,7 @@ export type WorkerChannel =
 "get-effective-optical-medium-capacity" | "check-temp-data-directory-for-leftovers" |
 "open-existing-ibb-file" |
 "compute-sha256-for-backed-up-files" | "verify-file-hashes" | "delete-recovered-failed-files" |
-"compare-folders" | "match-letter-case";
+"compare-folders" | "match-letter-case" | "recovery-folder-state";
 
 /** How the worker's `diff` decides that a file which exists on both sides has to be reported (entries missing from
  *  the target altogether are always reported):
@@ -60,7 +60,22 @@ export type ColdStorageMetadata =
   // (SHA-256 integrity data is mandatory, not a toggle), but the field stays optional here for backward
   // compatibility with cold storage JSONs written before this feature existed, where it's absent entirely.
   // Never present on a directory entry.
-  Array<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean, "sha256"?: string}}>>
+  // "path" is where the entry is on its disc; "originalPath" (same "D:\" form) only when that differs from where it
+  // was in the folder backed up - its name, or a folder's on its way, was too long for a disc (see disc-names.ts).
+  // "originalNamesList" marks the disc's own list of those original names (ORIGINAL_NAMES_FILE_NAME), not a file
+  // of the user's.
+  Array<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean, "sha256"?: string},
+    "originalPath"?: string, "originalNamesList"?: boolean}>>
+
+/** What the worker's create-IBB-file made (createIBB_file in worker.ts): the .ibb project's F|/D| lines; for each
+ *  of the requested paths whose name (or a folder's on its way) was too long for a disc, its path on the disc; and,
+ *  when there is any such path, the stats of the list of original names burned at the disc's root
+ *  (ORIGINAL_NAMES_FILE_NAME in disc-names.ts) - for its entry in the metadata JSON. */
+export interface CreatedIbbProject {
+  lines: string[];
+  discPaths: { [relativePath: string]: string };
+  originalNamesFile?: { size: number, mtime: Date, sha256: string };
+}
 
 export type OpticalMediaPartitioning<WorkerResponse> = {
   [K in keyof WorkerResponse]:

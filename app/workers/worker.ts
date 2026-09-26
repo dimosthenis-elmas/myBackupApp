@@ -5,8 +5,9 @@ const crypto = require("crypto")
 import { WorkerCommunicator as ipc } from './worker-communicator'
 import { LogsBuffer } from './logsbuffer'
 import { filesMetadata } from '../../src/types/interface';
-import { ColdStorageMetadata, WorkerResponse, OpticalMediaPartitioning, DiffComparison, NameClash } from './ipc.interfaces';
+import { ColdStorageMetadata, WorkerResponse, OpticalMediaPartitioning, DiffComparison, NameClash, CreatedIbbProject } from './ipc.interfaces';
 import { installConsoleLogging } from '../logging';
+import { discName, discPath, originalNamesFileFor, ORIGINAL_NAMES_FILE_NAME } from './disc-names';
 import type { Dirent } from 'fs';
 
 const contextBridgeAPI =require("./preload/contextBridge_api");
@@ -361,6 +362,16 @@ const PART_FILE_PATTERN = /\.part\.\d+$/i;
  *  this can never end up recognizing something unrelated that merely happens to share the extension. */
 const IBB_PROJECT_FILE_PATTERN = /^Disk_\d+\.ibb$/i;
 
+/** Matches the list of original names createIBB_file writes next to a disc's .ibb file (e.g.
+ *  "Disk_1.original-names.json") when some of that disc's names had to be shortened - burned onto the disc as
+ *  ORIGINAL_NAMES_FILE_NAME (see disc-names.ts). Scratch content like the .ibb file itself, so clearTempDataDirectory
+ *  may delete it. */
+const ORIGINAL_NAMES_TEMP_FILE_PATTERN = /^Disk_\d+\.original-names\.json$/i;
+
+/** Where createIBB_file writes disc `disk_id`'s list of original names, in the job's session folder `sessionDirectoryPath`. */
+const originalNamesTempFilePath = (sessionDirectoryPath: string, disk_id: number): string =>
+  node_path_module.join(sessionDirectoryPath, `Disk_${disk_id + 1}.original-names.json`);
+
 /** Matches this app's own per-job temp session folders (e.g. "session-1788672345678"). Every "Backup to optical
  *  media"/"Add missing files to cold storage" job generates exactly one of these (see backup-to-optical-
  *  media.component.ts / add-missing-files-to-optical-media-cold-storage.component.ts) the first time it plans a
@@ -387,8 +398,8 @@ const assertValidSessionId = function (sessionId: string): void {
 /** True if `entryPath` is safe for clearTempDataDirectory to delete, given ownership of its containing temp
  *  directory has already been established (ensureTempDataDirectoryIsAppOwned): a symlink/junction (always
  *  safe - deleting it only ever removes the link entry itself, never follows it into whatever it points to);
- *  a file whose name matches PART_FILE_PATTERN or IBB_PROJECT_FILE_PATTERN; or a directory all of whose contents,
- *  recursively, are themselves safe by this same rule.
+ *  a file whose name matches PART_FILE_PATTERN, IBB_PROJECT_FILE_PATTERN or ORIGINAL_NAMES_TEMP_FILE_PATTERN; or a
+ *  directory all of whose contents, recursively, are themselves safe by this same rule.
  *
  *  This exists on top of the ownership guarantee, not instead of it: ownership proves the directory *started*
  *  out empty, but nothing about that guarantee stops something unexpected from having been written into it
@@ -418,7 +429,7 @@ const isRecognizedTempContent = function (entryPath: string, isSymlink: boolean)
     return children.every((child) => isRecognizedTempContent(node_path_module.join(entryPath, child.name), child.isSymbolicLink()));
   }
   const baseName = node_path_module.basename(entryPath);
-  return PART_FILE_PATTERN.test(baseName) || IBB_PROJECT_FILE_PATTERN.test(baseName);
+  return PART_FILE_PATTERN.test(baseName) || IBB_PROJECT_FILE_PATTERN.test(baseName) || ORIGINAL_NAMES_TEMP_FILE_PATTERN.test(baseName);
 }
 
 /** Fallback used only for the cache/temp directory name when it is missing from config.json - this is what
@@ -753,7 +764,8 @@ const getTempDataDirectoryPath = async function (): Promise<string> {
  *     ownership guarantee) survives being cleared.
  *  6) Even within a directory verified as app-owned, each entry additionally has to pass
  *     isRecognizedTempContent before it is deleted - only .partNNN split files, .ibb project files (see
- *     IBB_PROJECT_FILE_PATTERN), and directories containing exclusively such files, are considered this app's
+ *     IBB_PROJECT_FILE_PATTERN), their lists of original names (ORIGINAL_NAMES_TEMP_FILE_PATTERN), and directories
+ *     containing exclusively such files, are considered this app's
  *     own output. Ownership only proves the directory *started* empty; this is what keeps the actual deletion
  *     narrowed to things that look like what this app itself would have put there, regardless of how anything
  *     else might have ended up inside it since.
@@ -858,7 +870,8 @@ const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, me
   return {
     cleared: false,
     message: `Cleared ${deletedCount} of ${clearableEntryCount} item(s) from the temp directory. The ones listed below were ` +
-      `not cleared (only .partNNN split files, .ibb project files, and folders containing only such files are ever deleted).`,
+      `not cleared (only .partNNN split files, .ibb project files with their lists of original names, and folders ` +
+      `containing only such files are ever deleted).`,
     deletedItems,
     notClearedItems
   };
@@ -2387,11 +2400,25 @@ const newNameTree = (): any => Object.create(null);
 /** True if `tree` (see newNameTree) already has `name`. */
 const treeHasName = (tree: any, name: string): boolean => Object.prototype.hasOwnProperty.call(tree, name);
 
+/** Whether `folder` is a folder that holds nothing at all - recovery only copies into such a folder, so that no file
+ *  already there is ever replaced (see confirmRecoveryFolderIsEmpty in src/app/shared/utils/recovery-folder.ts). */
+const recoveryFolderState = function (folder: string): 'empty' | 'not-empty' | 'missing' {
+  try {
+    if (!fs.statSync(folder).isDirectory()) { return 'missing'; }
+    return fs.readdirSync(folder).length === 0 ? 'empty' : 'not-empty';
+  } catch (error) {
+    return 'missing';
+  }
+}
+
 /** Copies (doCopy) or previews every path diff reported, one at a time - see insertBranch. Recovery from discs copies
  *  through here too. Throws if the target is a link or inside one (see refuseLinkedFolder) - for Cumulative backup
  *  and Sync, diff has already refused that; recovery has no diff.
- *  @param nameClash see NameClash (ipc.interfaces.ts). */
-const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boolean, source: string, target: string, nameClash?: NameClash): Promise<void> {
+ *  @param nameClash see NameClash (ipc.interfaces.ts).
+ *  @param sourcePaths for recovery: where a file of `sourceOnlyPaths` is in `source` when that is not the same path -
+ *  its name on the disc was shortened (see disc-names.ts); keyed by its path in sourceOnlyPaths. */
+const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boolean, source: string, target: string, nameClash?: NameClash,
+  sourcePaths?: { [path: string]: string }): Promise<void> {
   process.env._stop = "noStop";
   refuseLinkedFolder(target);
 
@@ -2407,7 +2434,7 @@ const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boole
     }
     path = sourceOnlyPaths[index];
     let tokens = path.split('\\')
-    insertBranch(tree, tokens, 0, doCopy, source, target, nameClash);
+    insertBranch(tree, tokens, 0, doCopy, source, target, nameClash, sourcePaths);
     // A dedicated progress marker, on top of insertBranch's own descriptive lines above (which don't map 1:1 to
     // items - a copy can log a size-tier line plus a "copied/updated" line, a directory logs its own separate
     // "will create"/"created" line, etc.) - callers who already know sourceOnlyPaths.length up front (every one
@@ -2834,15 +2861,25 @@ const copyEntryReplacingTarget = function (sourcePath: string, targetPath: strin
  *  leaves the source's links out, and one that appeared at a listed path since is refused. Never writes through a
  *  link in the target: a link where a folder is needed is removed first, and one where a file is being copied is
  *  replaced as the link itself (what it points to is left alone), so everything created stays inside the target. A
- *  real folder where a file is being copied, or a file where a folder is needed, is dealt with by resolveNameClash. */
-const insertBranch = function (tree: any, tokens: Array<string>, index: number, doCopy: boolean, source: string, target: string, nameClash?: NameClash): void {
+ *  real folder where a file is being copied, or a file where a folder is needed, is dealt with by resolveNameClash.
+ *  Refuses a path that would lead outside `target` (or, through `sourcePaths` - see createTree - outside `source`):
+ *  recovery's paths come from a metadata JSON, or from a list of original names on a disc. */
+const insertBranch = function (tree: any, tokens: Array<string>, index: number, doCopy: boolean, source: string, target: string, nameClash?: NameClash,
+  sourcePaths?: { [path: string]: string }): void {
+  const refuseUnlessInside = (fullPath: string, folder: string): void => {
+    if (!isPathStrictlyInside(node_path_module.resolve(fullPath), node_path_module.resolve(folder))) {
+      throw new Error(`"${fullPath}" is not inside "${folder}" - nothing was copied there.`);
+    }
+  };
   if ((tokens.length - index) == 1) {
     tree[tokens[index]] = newNameTree()
     // Create file OR directory
     if (tokens[index] != '') {
       let path_suffix = createPath(tokens, index)
       let target_path = target + path_suffix
-      let source_path = source + path_suffix
+      let source_path = source + (sourcePaths && Object.prototype.hasOwnProperty.call(sourcePaths, path_suffix) ? sourcePaths[path_suffix] : path_suffix)
+      refuseUnlessInside(target_path, target);
+      refuseUnlessInside(source_path, source);
       let existingTarget = lstatOrNull(target_path);
       if (lstatOrNull(source_path)?.isSymbolicLink()) {
         throw new Error(`"${source_path}" became a link after the folders were compared - links are not copied. Compare the folders again.`);
@@ -2873,6 +2910,7 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
       // Create directory (only)
       let path_suffix = createPath(tokens, index)
       let target_path = target + path_suffix
+      refuseUnlessInside(target_path, target);
       let existingTarget = lstatOrNull(target_path);
       if (existingTarget && !existingTarget.isDirectory() && !existingTarget.isSymbolicLink()) {
         // A file where the source has a folder.
@@ -2892,7 +2930,7 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
     }
     let a = tokens[index]
     index += 1
-    insertBranch(tree[a], tokens, index, doCopy, source, target, nameClash);
+    insertBranch(tree[a], tokens, index, doCopy, source, target, nameClash, sourcePaths);
   }
 }
 
@@ -2938,17 +2976,25 @@ const asNameClash = function (value: any): NameClash | undefined {
 
 //-----------
 
-const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>, index: number, source: string, target: string, logs: string[], sessionId: string): void {
+/** Adds the F|/D| lines for one path of a disc (`tokens`: its folder and file names) to `logs`. `discTokens` are the
+ *  same names as they are on the disc (discName of each - see disc-names.ts): the lines name every entry as it is on
+ *  the disc, and point at its real location in `source` (or the session's temp folder). `claimDiscPath` is called
+ *  with each entry's path on the disc and in the source, and throws if another entry already has that path on the
+ *  disc. */
+const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>, discTokens: Array<string>, index: number, source: string, target: string, logs: string[], sessionId: string,
+  claimDiscPath: (pathOnDisc: string, pathInSource: string) => void): void {
   if ((tokens.length - index) == 1) {
     tree[tokens[index]] = newNameTree()
     // Create file OR directory
     if (tokens[index] != '') {
       let path_suffix = createPath(tokens, index)
       let target_path = target + path_suffix
+      const disc_target_path = target + createPath(discTokens, index)
+      claimDiscPath(disc_target_path, target_path);
 
-      const fileName = target_path.slice(1).split('\\').slice(-1)[0]
-      const n_tokens = target_path.split('\\').length
-      let parentInOpticalDiskFileStructure = target_path.split('\\').slice(0, n_tokens - 1).join('\\');
+      const fileName = disc_target_path.slice(1).split('\\').slice(-1)[0]
+      const n_tokens = disc_target_path.split('\\').length
+      let parentInOpticalDiskFileStructure = disc_target_path.split('\\').slice(0, n_tokens - 1).join('\\');
       if(parentInOpticalDiskFileStructure == ''){ parentInOpticalDiskFileStructure =  '\\' }
       let fileFullSourcePath = source + target_path.slice(1);
       /* There is a possibility that the file is part of a splitted large file.
@@ -2974,10 +3020,12 @@ const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>
       // Create directory (only)
       let path_suffix = createPath(tokens, index)
       let target_path = target + path_suffix
+      const disc_target_path = target + createPath(discTokens, index)
+      claimDiscPath(disc_target_path, target_path);
 
-      const dirName = target_path.slice(1).split('\\').slice(-1)[0]
-      const n_tokens = target_path.split('\\').length
-      let dirParentInOpticalDiskFileStructure = target_path.split('\\').slice(0, n_tokens - 1).join('\\');
+      const dirName = disc_target_path.slice(1).split('\\').slice(-1)[0]
+      const n_tokens = disc_target_path.split('\\').length
+      let dirParentInOpticalDiskFileStructure = disc_target_path.split('\\').slice(0, n_tokens - 1).join('\\');
       if(dirParentInOpticalDiskFileStructure == ''){ dirParentInOpticalDiskFileStructure =  '\\' }
       let dirFullSourcePath = source + target_path.slice(1) + "\\";
       /*See comment above*/
@@ -2992,7 +3040,7 @@ const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>
     }
     let a = tokens[index]
     index += 1
-    insertBranch_for_IBB_creation(tree[a], tokens, index, source, target, logs, sessionId);
+    insertBranch_for_IBB_creation(tree[a], tokens, discTokens, index, source, target, logs, sessionId, claimDiscPath);
   }
 }
 
@@ -3056,8 +3104,13 @@ The important thing is that this way we can burn the optical disk and preserve t
 without resorting to enabling the "preserve full paths" option in ImgBurn. This is because "preserve full paths"
 will create a file structure for our optical medium statring with \**\*\backup_dir.
 Instead of this we want our file structure inside the optical disk to start (root dir) from backup_dir\.
+
+A name too long for a disc (see disc-names.ts) is burned under its shorter discName - the wizards have asked the user
+first. Such a disc also gets a list of the original names at its root (ORIGINAL_NAMES_FILE_NAME), written next to the
+.ibb file first. Refuses - before writing anything - a disc on which two items would end up with the same name (a
+shortened name, or that list, taking the name of another item).
 */
-const createIBB_file = async function(disk_id: number, paths: Array<string>, sourcePath: string, sessionId: string, volumeLabel?: string){
+const createIBB_file = async function(disk_id: number, paths: Array<string>, sourcePath: string, sessionId: string, volumeLabel?: string): Promise<CreatedIbbProject> {
   assertValidSessionId(sessionId);
   process.env._stop = "noStop";
 
@@ -3068,6 +3121,26 @@ const createIBB_file = async function(disk_id: number, paths: Array<string>, sou
 
   let logs :Array<string> = [];
 
+  // Each entry's path on the disc, in lower case - Windows finds a disc's files whatever their letter case - with its
+  // path in the source, and whether its name on the disc was shortened. Two entries whose names only differ in letter
+  // case were burned side by side before names were ever shortened, and still are; a clash that shortening (or the
+  // list of original names) causes is refused.
+  const claimedDiscPaths = new Map<string, { pathInSource: string, shortened: boolean }>();
+  const claimDiscPath = (pathOnDisc: string, pathInSource: string): void => {
+    const shortened = pathOnDisc !== pathInSource;
+    const earlier = claimedDiscPaths.get(pathOnDisc.toLowerCase());
+    if (earlier === undefined) {
+      claimedDiscPaths.set(pathOnDisc.toLowerCase(), { pathInSource, shortened });
+    } else if (earlier.pathInSource !== pathInSource && (earlier.shortened || shortened)) {
+      throw new Error(`Two items would have the same name on disc ${disk_id + 1}, "${pathOnDisc}": "${earlier.pathInSource}" and ` +
+        `"${pathInSource}". Rename one of them in the folder you back up, then plan the discs again.`);
+    }
+  };
+  const namesTooLong = paths.filter((p) => discPath(p) !== p);
+  if (namesTooLong.length > 0) {
+    claimDiscPath(target + ORIGINAL_NAMES_FILE_NAME, `the app's list of original names (${ORIGINAL_NAMES_FILE_NAME})`);
+  }
+
   let path: string;
   for (let index = 0; index < paths.length; index++) {
     if(process.env._stop == 'stop'){
@@ -3076,9 +3149,11 @@ const createIBB_file = async function(disk_id: number, paths: Array<string>, sou
     }
     path = paths[index];
     let tokens = path.split('\\')
-    insertBranch_for_IBB_creation(tree, tokens, 0, sourcePath, target, logs, sessionId);
+    insertBranch_for_IBB_creation(tree, tokens, tokens.map(discName), 0, sourcePath, target, logs, sessionId, claimDiscPath);
     await holdOn();
   }
+  const discPaths: { [relativePath: string]: string } = {};
+  namesTooLong.forEach((p) => { discPaths[p] = discPath(p); });
 
   const pathTo_IBB_Template = node_path_module.join(__dirname, '../../appData/IBB_TEMPLATE.ibb')
 
@@ -3102,7 +3177,7 @@ const createIBB_file = async function(disk_id: number, paths: Array<string>, sou
   const ownership = await ensureTempDataDirectoryIsAppOwned();
   if (!ownership.ok) {
     console.error('Refusing to create the .ibb file: ' + ownership.message);
-    return logs;
+    return { lines: logs, discPaths };
   }
   // This job's own session subfolder (see SESSION_FOLDER_NAME_PATTERN's own comment) - created here explicitly
   // (recursive - it may not exist yet) rather than assuming createOpticalMediaDiscPartials already created
@@ -3110,6 +3185,15 @@ const createIBB_file = async function(disk_id: number, paths: Array<string>, sou
   const sessionDirectoryPath = node_path_module.join(ownership.path, sessionId);
   fs.mkdirSync(sessionDirectoryPath, { recursive: true });
   const pathToIBBFile = node_path_module.join(sessionDirectoryPath, `Disk_${disk_id + 1}.ibb`);
+
+  let originalNamesFile: CreatedIbbProject['originalNamesFile'];
+  if (namesTooLong.length > 0) {
+    const originalNamesFilePath = originalNamesTempFilePath(sessionDirectoryPath, disk_id);
+    fs.writeFileSync(originalNamesFilePath, JSON.stringify(originalNamesFileFor(paths), null, 2));
+    logs.push(`F|${ORIGINAL_NAMES_FILE_NAME}|${target}|${originalNamesFilePath}`);
+    const stats = fs.statSync(originalNamesFilePath);
+    originalNamesFile = { size: stats.size, mtime: stats.mtime, sha256: await sha256OfFile(originalNamesFilePath) };
+  }
 
   await saveIBB_toDisk(pathToIBBFile, pathTo_IBB_Template, [
     { regEx: /\[START_BACKUP_LIST\]/g, dataToInsert: ["[START_BACKUP_LIST]"].concat(logs).join('\r\n') },
@@ -3121,7 +3205,7 @@ const createIBB_file = async function(disk_id: number, paths: Array<string>, sou
     console.log(err);
   });
 
-  return logs
+  return { lines: logs, discPaths, originalNamesFile };
 }
 
 /** Checks whether this exact disc (disk_id, within this job's own session subfolder - see
@@ -3255,7 +3339,8 @@ const init = function() : void
         break;
       case 'incremental-copy-files':
         logsBuffer.setChannel("incremental-copy-files");
-        createTree(arg.params.sourceOnlyPaths, /*doCopy=*/true, arg.params.source, arg.params.target, asNameClash(arg.params.nameClash)).then((res) => {
+        createTree(arg.params.sourceOnlyPaths, /*doCopy=*/true, arg.params.source, arg.params.target, asNameClash(arg.params.nameClash),
+          (arg.params.sourcePaths && typeof arg.params.sourcePaths === 'object') ? arg.params.sourcePaths : undefined).then((res) => {
         //dummy_copy().then((res) => {
           logsBuffer.flush(); // whatever remained in the buffer
           //tell user that the function has finished
@@ -3376,6 +3461,13 @@ const init = function() : void
         }).catch((err)=>{
           ipc.sendResponseToMain({ key: 'get-temp-data-directory-path', res: err, status: "error" });
         });
+        break;
+      case 'recovery-folder-state':
+        try {
+          ipc.sendResponseToMain({ key: 'recovery-folder-state', res: recoveryFolderState(arg.params.folder), status: "completed" });
+        } catch (err) {
+          ipc.sendResponseToMain({ key: 'recovery-folder-state', res: err, status: "error" });
+        }
         break;
       case 'get-effective-optical-medium-capacity':
         console.log("(worker) in get-effective-optical-medium-capacity")

@@ -24,6 +24,7 @@ import { BlobOptions } from 'buffer';
 import { ScrollableListComponent } from '../scrollable-list/scrollable-list.component';
 import { compileSchema, JsonSchema, SchemaNode } from "json-schema-library";
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
+import { confirmRecoveryFolderIsEmpty } from '../shared/utils/recovery-folder';
 const mySchema =require('../schemas/filesMetadata.schema.json');
 
 @Component({
@@ -154,7 +155,7 @@ export class RecoverDataFromOpticalMediaComponent implements OnInit, OnDestroy{
     });
   }
 
-  step1(): void{
+  async step1(): Promise<void>{
     // Second guard on top of the "Next" button's own [disabled]="loadingExternalMetadataJSON" - belt-and-braces
     // against anything else that might invoke step1() while a JSON is still being read/validated (see
     // loadingExternalMetadataJSON's own doc comment). Without this, the check below would otherwise show a
@@ -169,6 +170,10 @@ export class RecoverDataFromOpticalMediaComponent implements OnInit, OnDestroy{
       loadingDialogRef.componentInstance.message = !this.backup.targetPath
         ? `You have not selected the directory to restore the backup to.`
         : `You have chosen to provide the cold storage files metadata via a JSON file, but no valid JSON file has been selected yet.`;
+    }else if((await confirmRecoveryFolderIsEmpty(this.dialog, this.backup.targetPath, false)) !== 'empty'){
+      // Told why; the user chooses another folder on this same screen. Checked again right before copying (see
+      // getPathsOfFilesToBeRecovered in optical-disc-backup-data-retriever.component.ts).
+      return;
     }else if(this.useExternalMetadata){
       /* Skip reading every disc one by one: seed directly from the already-loaded, schema-validated JSON, then jump
        straight to the files tree. The user will only be asked to insert the specific discs needed for the files

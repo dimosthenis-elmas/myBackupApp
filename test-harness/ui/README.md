@@ -162,10 +162,13 @@ node test-harness/ui/test-recover-single-disc.js
 ```
 
 What it does, in order: makes a small random test folder, builds and mounts a `.iso` from it, opens the real
-app, tells it to pretend a folder-picker click already chose a fresh scratch folder, then clicks all the way
-through the wizard — choose that output folder → click Next → wait for the app to notice the mounted disc and
-read it → click "all discs processed" → tick "select all" → click "recover selected data" → confirm → wait for
-the copy to finish → click "Ok" on the success message. Then it checks every recovered file's fingerprint
+app, tells it to pretend each folder-picker click already chose one of its scratch folders, then clicks all the way
+through the wizard — choose a folder that is **not empty** → click Next → "Choose an empty folder" (the app only
+recovers into an empty folder, so no file already there can be replaced) → choose an empty folder → click Next →
+wait for the app to notice the mounted disc and read it → click "all discs processed" → tick "select all" → a file
+appears in the chosen folder → click "recover selected data" → "Choose an empty folder" again (checked again right
+before copying) → "Choose another folder" (an empty one) → confirm → wait for the copy to finish → click "Ok" on the
+success message. The two folders that were not empty must be left exactly as they were. Then it checks every recovered file's fingerprint
 against the original, and finally un-mounts the disc and deletes its own scratch files — but **only if
 everything passed**. If something fails, it deliberately leaves everything in place (the test folder, the
 recovered folder, the `.iso`) so it can actually be looked at afterward instead of guessing, and also saves a
@@ -604,6 +607,53 @@ Copies the built app (`app/`, `dist/`, and `appData`'s `config.json` and `IBB_TE
 `dist/index.html` (the page URL used to be glued together from the path, where `#` and `%` mean something else, so
 the window stayed blank), nothing may be loaded from the internet, and the Roboto and Material Icons fonts have to
 come from the copy's own `assets/fonts`. Needs `npm run build:prod` first - it copies the build output.
+
+## `test-long-names-on-disc.js`
+
+```
+node test-harness/ui/test-long-names-on-disc.js
+```
+
+Names over 127 characters and paths over 259, end to end, across four wizard runs - the disc in between built by the
+**real ImgBurn** from the project the app wrote (`lib/imgburn-build.js`), then mounted:
+- **Backup to optical media:** "Next" shows "Names too long for a disc", listing the long file and the long folder by
+  full path; "Cancel - I'll shorten them myself" must stop there (no disc plan, no metadata JSON). "Next" again,
+  "Continue - shorten them on the disc", then "Paths too long for some programs" lists the deep file; after "Send to
+  ImgBurn" (a stub) and "Confirm disc burned", the JSON must hold each shortened file at its path on the disc with its
+  `originalPath`, and the disc's list of original names (`originalNamesList`, with a SHA-256). ImgBurn must build the
+  image without a warning.
+- **Recover, from that JSON:** the tree shows the original names (not the disc's, not the list); "Recover selected
+  data" into a deep folder lists the too-long recovered paths; "Choose another folder" asks again for the new one;
+  "Continue - recover them here" must recover every file under its original name, SHA-256 verified, and nothing into
+  the first folder.
+- **Recover, from the disc alone:** the tree shows the original names too, and the disc's own list of original names
+  must put them back.
+- **Verify integrity of cold storage disc** with that JSON: the disc is recognized, and every file on it - the list of
+  original names included - is verified, none failed.
+- **Add missing files**, after a file with a long name was added - first reading the disc (no JSON), then with that
+  JSON: only that file is missing (the shortened ones count as backed up); with the JSON, "Names too long for a disc"
+  lists it, the new disc's entry records its `originalPath`, and the first disc's entries are unchanged.
+
+The source files must never change. Points `cacheDataDirectoryPath` at a scratch folder and `imgBurnExecutablePath` at a
+stub for the run; needs ImgBurn, and no disc in any optical drive.
+
+## `test-long-names-split-file.js`
+
+```
+node test-harness/ui/test-long-names-split-file.js
+```
+
+A split file whose pieces' names are too long for a disc, clicked through the real wizards. The source is one real
+700 MB file whose 120-character name fits on a disc (at most 127) but whose pieces' names (`.part.001` added, 129) do
+not. "Backup to optical media": "Large files found" -> split; "Names too long for a disc" must list the file itself,
+once, by its full path (not its pieces); "Continue" plans two CDs, one piece each; both are sent (ImgBurn is a stub for
+the wizard), built by the **real ImgBurn** (`lib/imgburn-build.js`) without a warning, then confirmed burned, and the
+JSON records both pieces at their shortened paths with their original ones. "Recover data" from that JSON, into an
+empty folder: the tree shows the pieces under their original names; both discs are mounted in turn; "Partial files
+detected" names the file under its original name; "Yes, reassemble" - and the folder must then hold just that file,
+byte for byte the original (SHA-256). The source file must not change. Points `cacheDataDirectoryPath` and
+`imgBurnExecutablePath` at scratch/stub values for the run; needs ImgBurn, about 3 GB free, and no disc in any optical
+drive.
 
 ## `capture-readme-screenshots.js`
 

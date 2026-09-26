@@ -311,3 +311,27 @@ unchanged while still deleting the list's other, target-only entries. (8) A copy
 target's earlier copy as it was: PowerShell holds 1 MB of a newer source file locked, so reading it fails mid-copy;
 in both features the run must fail, the earlier copy must be unchanged, and no temporary file may be left behind
 (Windows only). Everything lives under `generated-fixtures/`; the app's temp/cache folder is not touched.
+
+### `test-long-names-on-disc.js` — names too long for a disc, through a real ImgBurn build
+```
+node test-harness/worker-ipc/test-long-names-on-disc.js
+```
+A disc holds names of at most 127 characters (see `app/workers/disc-names.ts`). Asks the worker for the ImgBurn
+project of a disc with every kind of name over that - a file (the 138-character paper title that started this), a
+Greek folder name, an empty folder, a name with emoji right where it would be cut, a split file's two pieces - next to
+a name of exactly 127 and ordinary ones. The project must name each as it will be on the disc - shortened, never over
+127, a piece keeping its `.part.NNN` and both pieces one start, the 127 kept - while reading it from the untouched
+original, and add the disc's list of original names (whose stats the response returns). Then the **real ImgBurn**
+(from `config.json`, run headless by the script - `lib/imgburn-build.js`) builds an image from that project: its log
+must have no warning (no name changed), and the mounted image must hold exactly those names with the right contents.
+Recovery's copy (`incremental-copy-files` with `sourcePaths`, as the recovery wizard sends it) must put every original
+name back, read from the disc's own list. Refused: a disc whose list would take the name of a user's file (nothing
+written), and a recovery path - or a disc path - leading outside its folder (the file to copy exists, so only the check
+stops it). The source files must be unchanged. Then a split file, the whole way: a real 700 MB file whose
+120-character name fits on a disc but whose pieces' names (`.part.001` added) do not - planned and split for real
+(the wizard's dialog would list the file itself, once), both discs built by the real ImgBurn without a warning, each
+recovered under the original piece names, and the pieces rejoined by `merge-file-parts` (7-Zip) into the file under
+its own name, byte for byte the original. Last, clearing the temp folder must remove everything left there, the lists
+of original names and the pieces included. Points
+`cacheDataDirectoryPath` at a scratch folder and `imgBurnExecutablePath` at a stub for the run; needs ImgBurn, and no
+disc in any optical drive.

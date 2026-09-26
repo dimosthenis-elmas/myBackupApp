@@ -8,7 +8,7 @@ import { ConfirmationDialogComponent } from '../shared/components/confirmation-d
 import { LoadingDialogComponent } from '../shared/components/loading-dialog/loading-dialog.component';
 import { Subject } from 'rxjs';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
-import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
+import { WorkerListener, WorkerResponse, CreatedIbbProject } from '../../../app/workers/ipc.interfaces';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
 
@@ -41,6 +41,7 @@ import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
 import { OPTICAL_MEDIA } from '../shared/utils/optical-media';
 import { linkedDiscGroup, discsLabel, linkedDiscsNoticeMessage } from '../shared/utils/linked-discs';
 import { OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
+import { backedUpPath, confirmDiscNameAndPathLimits, isOriginalNamesList, metadataEntriesForDisc } from '../shared/utils/shortened-names';
 const mySchema =require('../schemas/filesMetadata.schema.json');
 
 @Component({
@@ -489,6 +490,11 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     loadingDialogRef.componentInstance.message = 'Comparing directories';
     this.masterPathsWithStats = masterPathsWithStats;
     await this.holdOn(500);
+    // Compared by where each file was in the master when it was backed up - not where it is on its disc, which differs
+    // for a name too long for a disc (see disc-names.ts). A disc's own list of those names is no file of the master.
+    coldStoragePathsWithStats = coldStoragePathsWithStats
+      .filter((e) => !isOriginalNamesList(e))
+      .map((e) => ({ ...e, path: backedUpPath(e) }));
     let coldStoragePathsWithoutPartials = this.replacePartialFileSplits(coldStoragePathsWithStats, JSON.parse(JSON.stringify(masterPathsWithStats)));
 
     this.opticalDiscVolumeLetter = (coldStoragePathsWithoutPartials.length > 0 ? coldStoragePathsWithoutPartials[0].path : OPTICAL_DRIVE_LETTER_CONVENTION).split('\\')[0] + '\\';
@@ -671,6 +677,18 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       // disc by disc, in sendToImgBurn - see its own comment and createOpticalMediaDiscPartials in worker.ts.
       this.partitions =  (await ipc.partitionBackupToOpticalMedia(this.backup.targetPath, this.selected_optical_medium.capacity, this.selected_optical_medium.maxRepletionRatio, true, this.tempSessionId, selectedPathsWithMetadata)).res;
       console.log(this.partitions)
+
+      // Names too long for a disc, and paths too long for most programs: the user is told about every one before
+      // anything is written, and recommended to shorten them in the master first. The planned paths, relative to the
+      // disc's root, trimmed the same way sendToImgBurn trims them.
+      loadingDialogRef.close();
+      let tempSessionDirectoryPath: string = (await ipc.getTempDataDirectoryPath()).res;
+      if (!tempSessionDirectoryPath.endsWith('\\')) { tempSessionDirectoryPath += '\\'; }
+      tempSessionDirectoryPath += this.tempSessionId + '\\';
+      const plannedRelativePaths = this.partitions.flat().map((a) => a.path.replace(this.backup.targetPath, "").replace(tempSessionDirectoryPath, ""));
+      if (!(await confirmDiscNameAndPathLimits(this.dialog, plannedRelativePaths, this.backup.targetPath, 'start "Add missing files" again'))) {
+        return;
+      }
 
       // Same effective (margin-discounted) capacity partitionBackupToOpticalMedia itself planned against - see
       // getEffectiveOpticalMediumCapacityInBytes in worker.ts. sendToImgBurn/maybeAppendOverflowDiscs must judge
@@ -951,18 +969,17 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
       loadingDialogRef.componentInstance.message = "Preparing ImgBurn project";
 
-      // Recorded in the metadata JSON only once the disc is confirmed burned - see recordConfirmedDiscs.
-      this.discMetadataEntries[i] = finalStats.map((e) => {
-        return { path: this.opticalDiscVolumeLetter + e.path, stats: e.stats };
-      });
-
       // What this disc needed created in the temp folder - split partials - deleted again once the disc is confirmed
       // burned (confirmDiscBurned).
       this.sentDiscPartPaths[i] = finalStats.filter(e => PART_FILE_PATTERN.test(e.path)).map(e => e.path);
 
       // Awaited (previously fired-and-forgotten): see sendingDiscs's own doc comment for why this guard needs
       // this chain's real completion, not just its start, to reset on.
-      await this.createIBB_file(i, finalStats.map(e => e.path), this.backup.targetPath, nextDiscNumber).then(async ()=>{
+      await this.createIBB_file(i, finalStats.map(e => e.path), this.backup.targetPath, nextDiscNumber).then(async (project)=>{
+        // This disc's entry for the metadata JSON - its files as they are on the disc (a name too long for a disc is
+        // shortened there, with its original path recorded). Recorded only once the disc is confirmed burned - see
+        // recordConfirmedDiscs.
+        this.discMetadataEntries[i] = metadataEntriesForDisc(finalStats, project, this.opticalDiscVolumeLetter);
         this.sentDiscs[i] = true;
         loadingDialogRef.close();
         // Now that this disc has actually been sent, check whether every originally-planned new disc has (so no
@@ -1151,14 +1168,14 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   This C:\**\*\ part of the path is given in sourcePath. nextDiscNumber is computed once by the caller (see
   getNextDiscNumber's own doc comment for why it's no longer recomputed here separately).
   */
-  async createIBB_file (disk_id:number, paths: Array<string>, sourcePath: string, nextDiscNumber: number){
+  async createIBB_file (disk_id:number, paths: Array<string>, sourcePath: string, nextDiscNumber: number): Promise<CreatedIbbProject>{
     const collectionName = this.coldStorageCollectionName.trim();
     const volumeLabel = (collectionName ? collectionName + ' ' : '') + 'Disc ' + nextDiscNumber;
 
     // A failure to START ImgBurn is not reported through this call: the worker shows it as an error dialog of its
     // own (see invokeImgBurnOnIBBFile in worker.ts), and clicking "Send to ImgBurn" again reopens the same .ibb file.
     // ipc.createIBB_file() resolves once the worker has finished building the .ibb file and invoking ImgBurn.
-    await ipc.createIBB_file(disk_id, paths, sourcePath, this.tempSessionId, volumeLabel);
+    return (await ipc.createIBB_file(disk_id, paths, sourcePath, this.tempSessionId, volumeLabel)).res;
   }
 
 

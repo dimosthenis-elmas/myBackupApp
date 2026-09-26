@@ -21,6 +21,9 @@ export interface filesMetadata {
     // compatibility with older cold storage JSONs written before this feature existed, where it's absent.
     "sha256"?: string;
   };
+  // Only in a cold storage metadata JSON entry - see ColdStorageMetadata (app/workers/ipc.interfaces.ts).
+  "originalPath"?: string;
+  "originalNamesList"?: boolean;
 }
 
 declare global {

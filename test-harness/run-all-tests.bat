@@ -54,6 +54,7 @@ call :run "worker-ipc: test-split-piece-capacity-guard" "test-harness\worker-ipc
 call :run "worker-ipc: test-scan-edge-cases" "test-harness\worker-ipc\test-scan-edge-cases.js"
 call :run "worker-ipc: test-temp-dir-and-imgburn" "test-harness\worker-ipc\test-temp-dir-and-imgburn.js"
 call :run "worker-ipc: test-sync-and-cumulative-rules" "test-harness\worker-ipc\test-sync-and-cumulative-rules.js"
+call :run "worker-ipc: test-long-names-on-disc" "test-harness\worker-ipc\test-long-names-on-disc.js"
 
 rem --- ui: drives the real on-screen app with Playwright, clicking through it like a person would ---
 call :run "ui: test-recover-single-disc" "test-harness\ui\test-recover-single-disc.js"
@@ -72,6 +73,8 @@ call :run "ui: test-sync-dirs-cancel" "test-harness\ui\test-sync-dirs-cancel.js"
 call :run "ui: test-wizard-error-dialogs" "test-harness\ui\test-wizard-error-dialogs.js"
 call :run "ui: test-recover-copy-failure" "test-harness\ui\test-recover-copy-failure.js"
 call :run "ui: test-install-path-special-characters" "test-harness\ui\test-install-path-special-characters.js"
+call :run "ui: test-long-names-on-disc" "test-harness\ui\test-long-names-on-disc.js"
+call :run "ui: test-long-names-split-file" "test-harness\ui\test-long-names-split-file.js"
 
 echo.
 echo ============================================================

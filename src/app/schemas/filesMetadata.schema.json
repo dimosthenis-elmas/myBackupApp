@@ -31,6 +31,12 @@
             "mtime",
             "isDirectory"
           ]
+        },
+        "originalPath": {
+          "type": "string"
+        },
+        "originalNamesList": {
+          "type": "boolean"
         }
       },
       "required": [

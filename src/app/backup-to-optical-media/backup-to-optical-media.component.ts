@@ -9,7 +9,7 @@ import { LoadingDialogComponent } from '../shared/components/loading-dialog/load
 import { Subject, firstValueFrom } from 'rxjs';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
 import { OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
-import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfaces';
+import { WorkerListener, WorkerResponse, CreatedIbbProject } from '../../../app/workers/ipc.interfaces';
 import { filesMetadata } from '../../types/interface';
 import { SerialQueue } from '../shared/utils/serial-queue';
 import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
@@ -18,6 +18,7 @@ import { linkedDiscGroup, discsLabel, linkedDiscsNoticeMessage, splitFileOf } fr
 import { OPTICAL_MEDIA, OpticalMedium } from '../shared/utils/optical-media';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
+import { confirmDiscNameAndPathLimits, metadataEntriesForDisc } from '../shared/utils/shortened-names';
 
 import {FormBuilder, Validators, FormsModule, ReactiveFormsModule} from '@angular/forms';
 import {MatButtonModule} from '@angular/material/button';
@@ -307,7 +308,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         // source that cannot be read is left out and reported, rather than making the whole planning fail.
         let promise = ipc.partitionBackupToOpticalMedia(this.backup.sourcePath, this.selected_optical_medium.capacity, this.selected_optical_medium.maxRepletionRatio, this.splitLargeFiles, this.tempSessionId, undefined, true);
 
-        promise.then((response)=>{
+        promise.then(async (response)=>{
           this.isPartitioning = false;
           partitionProgressListener.removeListener();
 
@@ -343,12 +344,19 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
           
   
           loadingDialogRef.close();
-          
+
+          // Names too long for a disc, and paths too long for most programs: the user is told about every one, and
+          // recommended to shorten them in their own folder first - planning again picks the new names up.
+          if (!(await confirmDiscNameAndPathLimits(this.dialog, opticalDiskPartitioningTrimmed.flat().map(x => x.path),
+            this.backup.sourcePath, 'click "Next" again'))) {
+            return;
+          }
+
           /* Send the paths to the backup service. This is needed because we are going to change the compoment loaded,
            using router.navigate and thus the data must be somehow available to the new component.
           */
           this.backup.opticalMediaPartitioning = opticalDiskPartitioningTrimmed;
-  
+
           const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
           infoDialog.componentInstance.title = "Backup to optical medium";
           // "Estimated": the real count can still grow later, in the rare case a large file's real split turns
@@ -614,7 +622,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   (for example C:\**\*\my_backup_dir\**\*\some_file). Rather they are of the form: my_backup_dir\**\*\some_file.
   This C:\**\*\ part of the path is given in sourcePath.
   */
-  async createIBB_file (disk_id:number, paths: Array<string>, sourcePath: string){
+  async createIBB_file (disk_id:number, paths: Array<string>, sourcePath: string): Promise<CreatedIbbProject>{
     // This is a brand new cold storage, so disc numbering is always simply sequential from 1 - no existing
     // discs to offset by (see add-missing-files-to-optical-media-cold-storage.component.ts for the case where
     // discs are being added to an already-existing collection).
@@ -624,7 +632,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     // A failure to START ImgBurn is not reported through this call: the worker shows it as an error dialog of its
     // own (see invokeImgBurnOnIBBFile in worker.ts), and clicking "Send to ImgBurn" again reopens the same .ibb file.
     // ipc.createIBB_file() resolves once the worker has finished building the .ibb file and invoking ImgBurn.
-    await ipc.createIBB_file(disk_id, paths, sourcePath, this.tempSessionId, volumeLabel);
+    return (await ipc.createIBB_file(disk_id, paths, sourcePath, this.tempSessionId, volumeLabel)).res;
   }
 
   /** Computes and attaches a `sha256` hash to every non-directory entry of `finalStats` (mutated in place) -
@@ -847,11 +855,6 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         return;
       }
 
-      /* We rename the worker's "stats" field to match what used to come from the files-tree's own "extras" -
-      same shape, now real/measured instead of an estimate. We also add the volume letter, normalized to
-      OPTICAL_DRIVE_LETTER_CONVENTION (see disc-id-hash.ts for why). */
-      const selectedFiles = finalStats.map(e => { return { "path": OPTICAL_DRIVE_LETTER_CONVENTION + e.path, "stats": e.stats } });
-
       // Only the disc's number: during a recovery the app recognizes each inserted disc by itself (a hash of its
       // contents, see getDiscIdHash) and asks for discs by this number.
       await new Promise<void>((resolve) => {
@@ -871,8 +874,6 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
 
       const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
       loadingDialogRef.componentInstance.message = "Preparing ImgBurn project";
-      // Recorded in the metadata JSON only once the disc is confirmed burned - see recordConfirmedDiscs.
-      this.discMetadataEntries[i] = selectedFiles;
 
       // What this disc needed created in the temp folder - split partials - deleted again once the disc is confirmed
       // burned (confirmDiscBurned).
@@ -880,7 +881,11 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
 
       // Awaited (previously fired-and-forgotten): see sendingDiscs's own doc comment for why this guard needs
       // this chain's real completion, not just its start, to reset on.
-      await this.createIBB_file(i, finalStats.map(e => e.path), this.backup.sourcePath).then(async ()=>{
+      await this.createIBB_file(i, finalStats.map(e => e.path), this.backup.sourcePath).then(async (project)=>{
+        // This disc's entry for the metadata JSON - its files as they are on the disc (a name too long for a disc is
+        // shortened there, with its original path recorded), under OPTICAL_DRIVE_LETTER_CONVENTION (see
+        // disc-id-hash.ts for why). Recorded only once the disc is confirmed burned - see recordConfirmedDiscs.
+        this.discMetadataEntries[i] = metadataEntriesForDisc(finalStats, project, OPTICAL_DRIVE_LETTER_CONVENTION);
         this.sentDiscs[i] = true;
         loadingDialogRef.close();
         // Now that this disc has actually been sent, check whether every originally-planned disc has (so no

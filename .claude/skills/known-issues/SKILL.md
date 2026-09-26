@@ -281,8 +281,31 @@ from this file (and test it if it needs one - see "Working on these" below), and
   wherever it leads. Each folder on the path is checked with `lstat`, so a SUBST drive or a mapped network drive is
   not taken for a link. Recovery only finds out when it starts copying from the first disc (it has no comparison
   step). Tested in `test-sync-and-cumulative-rules.js` section 4b.
+- **A name over 127 characters is shortened on the disc, only after the user agrees** (`app/workers/disc-names.ts`):
+  a disc (UDF, Unicode) holds names of at most 127 UTF-16 units, and ImgBurn would otherwise cut them itself - silently,
+  breaking the disc's match with the JSON, a split piece's `.part.NNN`, or an emoji. Both disc wizards list every such
+  item before planning, and every file whose path on the disc is over 259 characters, recommending the user shorten
+  them (`confirmDiscNameAndPathLimits` in `src/app/shared/utils/shortened-names.ts`); recovery lists recovered paths
+  over 259 (`confirmRecoveredPathLengths`). `createIBB_file` burns the shortened names (`discName`: start, "~", 8 hex
+  digits, extension) plus `my-backup original names.json` at the disc root; the JSON entry's `path` is where the file
+  is on the disc, `originalPath` where it was backed up from, and the list's own entry is marked `originalNamesList`.
+  Disc ids hash `path` (the list included); recovery, Add missing files and the files tree use `backedUpPath`. A disc
+  burned before this has ImgBurn-cut names that its JSON does not match - recover it by reading the discs. Tested in
+  `worker-ipc/test-long-names-on-disc.js` (also a real 700 MB split file rejoined), `ui/test-long-names-on-disc.js`
+  (backup, recovery with and without the JSON, Verify, Add missing files with and without the JSON) and
+  `ui/test-long-names-split-file.js` (a split file rejoined through the recovery wizard) - all build real images with
+  ImgBurn.
+- **Recovery only copies into an empty folder** (`confirmRecoveryFolderIsEmpty` in
+  `src/app/shared/utils/recovery-folder.ts`, `recoveryFolderState` in worker.ts): checked at the wizard's "Next" and
+  again right before the first disc is copied, so no file already there is ever replaced. Later discs of the same
+  recovery copy into it without a check. Tested in `ui/test-recover-single-disc.js`.
 - **Recovery** stops with an error on a name that is a file in the recovery folder but a folder on the disc (or the
-  other way round) - it passes no `NameClash`.
+  other way round) - it passes no `NameClash`. With an empty recovery folder, only two discs of one backup that
+  disagree on a name can cause it.
+- **Add missing files does not notice a split (large) file that changed after it was burned** - the user accepts
+  this as a compromise of cold storage. `replacePartialFileSplits` stands the master's own entry in for the file's
+  pieces, so the out-of-sync check compares the file with itself; ordinary files that changed are still caught
+  ("cold storage out of sync").
 - **A Linux build is not ready:** the sync and copy code joins paths with `\\` throughout (`diff`, `createTree`,
   `deleteFilesAndDirsForDirSync`); `fs.copyFileSync` on Linux does not keep modified times, which Sync's comparison
   relies on (add `fs.utimesSync` after copying); ImgBurn is Windows-only.

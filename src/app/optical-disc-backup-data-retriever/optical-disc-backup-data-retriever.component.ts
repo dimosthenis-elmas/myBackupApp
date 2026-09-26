@@ -14,6 +14,8 @@ import { getDiscIdHash, OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/progress-line';
 import { formatMegabytes } from '../shared/utils/format-bytes';
+import { applyOriginalNamesList, backedUpPath, confirmRecoveredPathLengths, isOriginalNamesList } from '../shared/utils/shortened-names';
+import { confirmRecoveryFolderIsEmpty } from '../shared/utils/recovery-folder';
  
   @Component({
     selector: 'optical-disc-backup-data-retriever',
@@ -66,7 +68,7 @@ import { formatMegabytes } from '../shared/utils/format-bytes';
      *  not on every change detection. */
     get coldStorageTotals(): { files: number, size: string } {
       if (this.coldStorageTotalsFor !== this.coldStorageMetadataForAllOpticalDiscs) {
-        const files = this.coldStorageMetadataForAllOpticalDiscs.flat().filter((e) => !e.stats.isDirectory);
+        const files = this.coldStorageMetadataForAllOpticalDiscs.flat().filter((e) => !e.stats.isDirectory && !isOriginalNamesList(e));
         this.coldStorageTotalsCache = { files: files.length, size: formatMegabytes(files.reduce((sum, e) => sum + Number(e.stats.size), 0)) };
         this.coldStorageTotalsFor = this.coldStorageMetadataForAllOpticalDiscs;
       }
@@ -211,13 +213,15 @@ import { formatMegabytes } from '../shared/utils/format-bytes';
       let discIdsForCompleteBackupFilePaths: number[] = [];
 
       metadata.forEach((discFiles) => {
-        let filePaths = discFiles.map(f => f.path).sort();
-        let currentDiskId = this.getStringHash(filePaths.toString());
+        // The id from every path on the disc, its list of original names included; the files to choose from where
+        // they were in the folder backed up (see backedUpPath).
+        let currentDiskId = this.getStringHash(discFiles.map(f => f.path).sort().toString());
+        let filePaths = discFiles.filter(f => !isOriginalNamesList(f)).map(f => backedUpPath(f)).sort();
 
         opticalDiskIds.push(currentDiskId);
         completeBackupFilePaths = completeBackupFilePaths.concat(filePaths);
         discIdsForCompleteBackupFilePaths = discIdsForCompleteBackupFilePaths.concat(
-          Array(discFiles.length).fill(currentDiskId)
+          Array(filePaths.length).fill(currentDiskId)
         );
       });
 
@@ -401,6 +405,22 @@ import { formatMegabytes } from '../shared/utils/format-bytes';
         filePaths = filePaths.map(x=>x.replace(/^(\w+\:\\)/, OPTICAL_DRIVE_LETTER_CONVENTION))
         let currentDiskId = this.getStringHash(filePaths.sort().toString())
 
+        // Kept drive-letter-normalized, like filePaths above and like every path in a cold storage metadata
+        // JSON: this list is what add-missing-files-to-optical-media-cold-storage.component.ts writes back out
+        // as the updated JSON (and derives new discs' labels/ID hashes from), and a disc's ID is a hash of its
+        // OPTICAL_DRIVE_LETTER_CONVENTION-prefixed paths - with the drive letter this disc happened to mount
+        // as left in, those IDs would only match when the drive really is "D:".
+        const normalizedFilePathsWithStats: filesMetadata[] = filePathsWithStats.map(f => ({
+          ...f,
+          path: f.path.replace(/^(\w+\:\\)/, OPTICAL_DRIVE_LETTER_CONVENTION)
+        }));
+        // A disc with names too long for a disc carries the list of their original names (see disc-names.ts): the
+        // files to choose from are where they were in the folder backed up, as with a metadata JSON.
+        const mountedRoot = mountedVolumeLetter.endsWith('\\') ? mountedVolumeLetter : mountedVolumeLetter + '\\';
+        await applyOriginalNamesList(normalizedFilePathsWithStats,
+          async (path) => (await ipc.readJSONfromDisk(path.replace(/^(\w+\:\\)/, mountedRoot))).res);
+        const backedUpFilePaths = normalizedFilePathsWithStats.filter(f => !isOriginalNamesList(f)).map(f => backedUpPath(f)).sort();
+
         if(this.opticalDiskIds.includes(currentDiskId)){
           //"We have already processed this optical disk!"
           let currentDiskIndex = this.opticalDiskIds.indexOf(currentDiskId);  
@@ -420,7 +440,7 @@ import { formatMegabytes } from '../shared/utils/format-bytes';
           return;
         }
 
-        if(this.stringArrayHasDuplicates(this.completeBackupFilePaths.concat(filePaths))){
+        if(this.stringArrayHasDuplicates(this.completeBackupFilePaths.concat(backedUpFilePaths))){
           /*Seems like this disk does not follow the specification.
           Every disk must contain unique file names. If there exist disks with common file names then
           these disks do not meet the requirements. They do not belong to a set of backup disks as defined here.
@@ -444,19 +464,10 @@ import { formatMegabytes } from '../shared/utils/format-bytes';
           //Add an id for the disk. Please read the comment before the this.opticalDiskIds declaration.
           this.opticalDiskIds.push(currentDiskId);
           //Add the paths to the complete backup.
-          this.completeBackupFilePaths = this.completeBackupFilePaths.concat(filePaths);
-          // Kept drive-letter-normalized, like filePaths above and like every path in a cold storage metadata
-          // JSON: this list is what add-missing-files-to-optical-media-cold-storage.component.ts writes back out
-          // as the updated JSON (and derives new discs' labels/ID hashes from), and a disc's ID is a hash of its
-          // OPTICAL_DRIVE_LETTER_CONVENTION-prefixed paths - with the drive letter this disc happened to mount
-          // as left in, those IDs would only match when the drive really is "D:".
-          const normalizedFilePathsWithStats = filePathsWithStats.map(f => ({
-            ...f,
-            path: f.path.replace(/^(\w+\:\\)/, OPTICAL_DRIVE_LETTER_CONVENTION)
-          }));
+          this.completeBackupFilePaths = this.completeBackupFilePaths.concat(backedUpFilePaths);
           this.coldStorageMetadataForAllOpticalDiscs = this.coldStorageMetadataForAllOpticalDiscs.concat([normalizedFilePathsWithStats]);
-        
-          this.discIdsForCompleteBackupFilePaths = this.discIdsForCompleteBackupFilePaths.concat(Array(filePaths.length).fill(currentDiskId))
+
+          this.discIdsForCompleteBackupFilePaths = this.discIdsForCompleteBackupFilePaths.concat(Array(backedUpFilePaths.length).fill(currentDiskId))
 
           this.finishedReadingFilePaths = true;
         
@@ -541,8 +552,31 @@ import { formatMegabytes } from '../shared/utils/format-bytes';
       this.filesTreeNotLoaded  = false;
     }
 
-    getPathsOfFilesToBeRecovered(){
-      this.selectedFilePathsWithExtraInfo = this.filesTreeRef.getSelectedFilePathsIncludingExtraInfo();
+    async getPathsOfFilesToBeRecovered(){
+      const selected: {path: string, extras: any}[] = this.filesTreeRef.getSelectedFilePathsIncludingExtraInfo();
+      const chooseAnotherFolderAndStartAgain = async () => {
+        const folder = await this.chooseDirectory();
+        if (folder) {
+          this.backup.targetPath = folder;
+          this.getPathsOfFilesToBeRecovered();
+        }
+      };
+      if (selected.length > 0) {
+        // Right before anything is copied: the recovery folder must be empty, so that no file already there is
+        // replaced (it may have been chosen long before, or be the folder just chosen below).
+        const folderState = await confirmRecoveryFolderIsEmpty(this.dialog, this.backup.targetPath, true);
+        if (folderState !== 'empty') {
+          if (folderState === 'choose-folder') { await chooseAnotherFolderAndStartAgain(); }
+          return;
+        }
+        // Recovered paths too long for most programs: the user is told about every one, and recommended to pick a
+        // folder with a shorter path - then asked again, for that folder.
+        if ((await confirmRecoveredPathLengths(this.dialog, selected.map(x => x.path), this.backup.targetPath)) === 'choose-folder') {
+          await chooseAnotherFolderAndStartAgain();
+          return;
+        }
+      }
+      this.selectedFilePathsWithExtraInfo = selected;
       console.log(this.selectedFilePathsWithExtraInfo)
       if(this.selectedFilePathsWithExtraInfo.length > 0){
         this.discIdsNeededForTheRecoveryOfSelectedFiles = [...new Set(this.selectedFilePathsWithExtraInfo.map((item: { extras: any; }) => item.extras))];
@@ -752,9 +786,23 @@ import { formatMegabytes } from '../shared/utils/format-bytes';
 
       
 
+      // Where each of them is on the disc, when that is not where it goes - its name was too long for a disc and
+      // shortened there (see disc-names.ts); it is recovered under its original name.
+      // (coldStorageMetadataForAllOpticalDiscs is in the order of opticalDiskIds.)
+      const onDiscByBackedUpPath = new Map<string, string>();
+      (this.coldStorageMetadataForAllOpticalDiscs[this.opticalDiskIds.indexOf(currentDiskId)] || []).forEach((e) => {
+        const backedUp = backedUpPath(e);
+        if (backedUp !== e.path) { onDiscByBackedUpPath.set(backedUp.replace(/^(\w+\:\\)/, ''), e.path.replace(/^(\w+\:\\)/, '')); }
+      });
+      const sourcePaths: { [path: string]: string } = {};
+      selectedPathsPresentInTheInsertedDisk.forEach((p) => {
+        const onDisc = onDiscByBackedUpPath.get(p);
+        if (onDisc !== undefined) { sourcePaths[p] = onDisc; }
+      });
+
       // Send request to worker to copy the selected files to target.
       this.showLogs=true;
-      this.copyingPromise = ipc.incrementalCopyFiles(selectedPathsPresentInTheInsertedDisk, this.mountedVolumeLetter, this.backup.targetPath);
+      this.copyingPromise = ipc.incrementalCopyFiles(selectedPathsPresentInTheInsertedDisk, this.mountedVolumeLetter, this.backup.targetPath, undefined, sourcePaths);
       // The copy's failure arrives as a rejection of this promise, not as a throw from the call above (so a
       // surrounding try/catch would never see it). Without a handler it was an unhandled rejection: a generic
       // "something unexpected went wrong" dialog, and a wizard left showing a progress bar that never finishes
@@ -888,9 +936,10 @@ import { formatMegabytes } from '../shared/utils/format-bytes';
     private async verifyRecoveredFileIntegrity(): Promise<{ verified: string[], noData: string[], failed: string[] } | undefined> {
       // Built once as a Map (bare path -> hash) rather than a per-call Array.find() scan - a cold storage with
       // many discs/files otherwise makes this an O(files selected * files in cold storage) scan.
+      // Keyed by where each file was backed up from - the path it is recovered to (see backedUpPath).
       const hashByBarePath = new Map<string, string>();
       this.coldStorageMetadataForAllOpticalDiscs.flat().forEach((e) => {
-        if (e.stats.sha256) { hashByBarePath.set(e.path.replace(OPTICAL_DRIVE_LETTER_CONVENTION, ''), e.stats.sha256); }
+        if (e.stats.sha256 && !isOriginalNamesList(e)) { hashByBarePath.set(backedUpPath(e).replace(OPTICAL_DRIVE_LETTER_CONVENTION, ''), e.stats.sha256); }
       });
 
       let target = this.backup.targetPath;

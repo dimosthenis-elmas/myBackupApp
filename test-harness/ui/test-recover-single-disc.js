@@ -18,13 +18,17 @@
  * What it does:
  *   1. Generates a small random source tree + manifest (generate-random-tree.js).
  *   2. Builds a .iso from that tree and mounts it (test-harness/optical-media).
- *   3. Launches the real app, stubs the native "select folder" dialog to return a fresh scratch output folder.
- *   4. Clicks through: main menu -> Recover data from optical media backup -> select output folder -> Next ->
- *      (waits for the app's OWN disc detection to find the mounted .iso) -> "all discs processed" -> checks the
- *      totals shown under the files tree (number of files, total size in bytes) against the disc's own -> select all
- *      files -> Recover selected data -> confirm -> (waits for copy) -> "Ok" on the success dialog.
+ *   3. Launches the real app, stubs the native "select folder" dialog to return scratch folders in turn.
+ *   4. Clicks through: main menu -> Recover data from optical media backup -> select a folder that is NOT empty ->
+ *      Next -> "Choose an empty folder" (recovery only copies into an empty folder, so that no file already there
+ *      is replaced) -> select an empty output folder -> Next -> (waits for the app's OWN disc detection to find the
+ *      mounted .iso) -> "all discs processed" -> checks the totals shown under the files tree (number of files,
+ *      total size in bytes) against the disc's own -> select all files -> a file appears in the output folder ->
+ *      Recover selected data -> "Choose an empty folder" again (checked again right before copying) -> "Choose
+ *      another folder" (an empty one) -> confirm -> (waits for copy) -> "Ok" on the success dialog.
  *   5. Verifies the recovered folder's contents against the manifest by hash (verify-manifest.js) - a real
- *      pass/fail, not just "no error was thrown".
+ *      pass/fail, not just "no error was thrown" - and that the two folders that were not empty were left exactly
+ *      as they were.
  *   6. Dismounts the .iso and cleans up its own scratch files either way.
  *
  * NOTE: needs a real Windows desktop/window session (see worker-ipc/call-worker.js's top comment) - run from
@@ -56,9 +60,15 @@ async function main() {
   const runId = Date.now();
   const scratchRoot = path.join(FIXTURES_ROOT, `ui-recover-${runId}`);
   const sourceRoot = path.join(scratchRoot, 'source');
+  // Chosen in turn: a folder with a file in it (refused at "Next"), one that gets a file only after "Next" (refused
+  // right before copying), and the empty one everything is recovered into.
+  const notEmptyFolder = path.join(scratchRoot, 'a folder with a file in it');
+  const emptiedTooLateFolder = path.join(scratchRoot, 'recovered, first choice');
   const outputRoot = path.join(scratchRoot, 'recovered');
   const isoPath = path.join(scratchRoot, 'disc1.iso');
-  fs.mkdirSync(outputRoot, { recursive: true }); // must pre-exist - stands in for what a real folder-picker dialog would only ever return
+  // Must pre-exist - they stand in for what a real folder-picker dialog would only ever return.
+  for (const folder of [notEmptyFolder, emptiedTooLateFolder, outputRoot]) { fs.mkdirSync(folder, { recursive: true }); }
+  fs.writeFileSync(path.join(notEmptyFolder, 'keep me.txt'), 'must stay as it is');
 
   // 1. Generate the source tree + manifest - random by default, or from this test's own bundled JSON spec
   //    (--json-tree) - see lib/fixture-tree-source.js.
@@ -87,9 +97,10 @@ async function main() {
     // 3. Launch the app and stub the native folder-picker to return our scratch output folder.
     console.log('\nLaunching the app...');
     ({ app, win } = await launchApp());
-    await app.evaluate(({ dialog }, dir) => {
-      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dir] });
-    }, outputRoot);
+    await app.evaluate(({ dialog }, dirs) => {
+      const queue = [...dirs];
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [queue.shift()] });
+    }, [notEmptyFolder, emptiedTooLateFolder, outputRoot]);
 
     // 4. Click through the wizard - each interaction logged individually (before AND after) so a hang or a
     //    selector mismatch shows exactly where it stopped, instead of a silent gap between milestone messages.
@@ -120,11 +131,19 @@ async function main() {
     await step('main menu -> Recover data from optical media backup', () =>
       clickMainMenuButton(win, 'Recover data from optical media backup'));
 
-    await step('click "Select a directory to save the recovered files"', () =>
-      win.getByRole('button', { name: 'Select a directory to save the recovered files' }).click({ timeout: 15_000 }));
+    // Recovery only copies into an empty folder: a folder with a file in it is refused at "Next".
+    await step('choose a folder that is not empty, click "Next" - "Choose an empty folder", "Ok"', async () => {
+      await win.getByRole('button', { name: 'Select a directory to save the recovered files' }).click({ timeout: 15_000 });
+      await win.getByText(notEmptyFolder, { exact: true }).waitFor({ timeout: 10_000 });
+      await win.getByRole('button', { name: 'Next', exact: true }).click({ timeout: 15_000 });
+      await win.getByRole('dialog').filter({ hasText: 'Choose an empty folder' }).waitFor({ timeout: 15_000 });
+      await win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 });
+    });
 
-    await step('wait for the chosen output path to appear on screen', () =>
-      win.getByText(outputRoot, { exact: true }).waitFor({ timeout: 10_000 }));
+    await step('choose an empty folder instead', async () => {
+      await win.getByRole('button', { name: 'Select a directory to save the recovered files' }).click({ timeout: 15_000 });
+      await win.getByText(emptiedTooLateFolder, { exact: true }).waitFor({ timeout: 10_000 });
+    });
 
     await step('click "Next"', () =>
       win.getByRole('button', { name: 'Next', exact: true }).click({ timeout: 15_000 }));
@@ -155,8 +174,13 @@ async function main() {
     await step('click the "Select all" checkbox', () =>
       win.getByRole('checkbox', { name: 'Select all' }).click({ timeout: 30_000 }));
 
-    await step('click "Recover selected data"', () =>
-      win.getByRole('button', { name: 'Recover selected data' }).click({ timeout: 15_000 }));
+    // The folder is checked again right before anything is copied - here it has a file in it by now.
+    fs.writeFileSync(path.join(emptiedTooLateFolder, 'appeared later.txt'), 'must stay as it is too');
+    await step('click "Recover selected data" - "Choose an empty folder" again; "Choose another folder" (an empty one)', async () => {
+      await win.getByRole('button', { name: 'Recover selected data' }).click({ timeout: 15_000 });
+      await win.getByRole('dialog').filter({ hasText: 'Choose an empty folder' }).waitFor({ timeout: 15_000 });
+      await win.getByRole('button', { name: 'Choose another folder', exact: true }).click({ timeout: 15_000 });
+    });
 
     await step('click "Ok" on the "you will need to insert disc(s)" confirmation', () =>
       win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 30_000 }));
@@ -196,17 +220,26 @@ async function main() {
     verifyPassed = false;
   }
 
+  // The two folders that were not empty hold exactly what they held - nothing recovered into them.
+  const untouched = (folder, name, content) => {
+    const entries = fs.readdirSync(folder);
+    return entries.length === 1 && entries[0] === name && fs.readFileSync(path.join(folder, name), 'utf8') === content;
+  };
+  const refusedFoldersUntouched = untouched(notEmptyFolder, 'keep me.txt', 'must stay as it is')
+    && untouched(emptiedTooLateFolder, 'appeared later.txt', 'must stay as it is too');
+  console.log(`Folders that were not empty were left exactly as they were: ${refusedFoldersUntouched ? 'OK' : 'WRONG'}`);
+
   // 6. Clean up our own scratch files ONLY on success - on failure, leave everything (source tree, recovered
   //    output, the .iso) in place under scratchRoot so it can actually be inspected afterwards instead of
   //    guessing blind at what went wrong.
-  const pass = verifyPassed && totalsLabelCorrect;
+  const pass = verifyPassed && totalsLabelCorrect && refusedFoldersUntouched;
   if (pass) {
     fs.rmSync(scratchRoot, { recursive: true, force: true });
   } else {
     console.log(`\nLeaving scratch files in place for inspection: ${scratchRoot}`);
   }
 
-  console.log(`\n${pass ? 'PASS' : 'FAIL'} - recovery wizard ${pass ? 'showed the right totals and correctly recovered every file with matching content.' : 'did not produce a correct result, see above.'}`);
+  console.log(`\n${pass ? 'PASS' : 'FAIL'} - recovery wizard ${pass ? 'refused folders that were not empty, showed the right totals and correctly recovered every file with matching content.' : 'did not produce a correct result, see above.'}`);
   process.exitCode = pass ? 0 : 1;
 }
 

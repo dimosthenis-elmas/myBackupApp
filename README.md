@@ -82,6 +82,10 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   cold storage holds and their total size, in MB and in bytes. Important: label your discs in the same
   order they appear in the JSON file (the disc you call "disc 1" must be the first one listed).
 
+  Files are recovered only into an **empty folder**, so that no file already there can be replaced: a folder that
+  holds anything is refused - when you click "Next", and again right before copying starts - and you choose an empty
+  one, or create a new one.
+
   Choosing any piece of a split large file chooses all of its pieces. If any recovered files are parts of a large
   file that was split across discs, the app offers to reassemble the
   original file with 7-Zip once every needed disc has been copied. If you decline, or reassembly fails (e.g. a
@@ -194,6 +198,21 @@ These apply to more than one feature, or to the app as a whole.
   not fit. A larger disc does not help, since its free share is smaller; pack folders of many small files into an
   archive (e.g. a .zip) before backing them up instead.
 
+- **Long names and long paths** ("Backup to optical media", "Add missing files" and recovery): a disc holds file and
+  folder names of at most 127 characters. Before planning the discs, the app lists every name that is longer - for a
+  large file split into pieces, counting the ".part.001" its pieces add - and recommends that you cancel and shorten
+  them in your folder. If you continue instead, each one is burned under a shorter name, on the disc only: its first
+  part, then "~" and a code of 8 characters, then its extension. Your own files are never renamed or changed. The
+  metadata JSON records each original name, and so does a file on each such disc, `my-backup original names.json`,
+  so recovering - from the JSON or from the discs alone - puts the original names back; other programs show the
+  shorter names on the disc. A disc burned by an older version of the app has such a name cut by ImgBurn itself, and
+  its metadata JSON does not match it: recover that disc by reading the discs, not from the JSON.
+
+  A whole path has no such limit on a disc, but Windows Explorer and many other programs cannot open a file whose
+  full path is over 259 characters. The app lists such files before burning (by their path on the disc) and before
+  recovering (by their path in the folder you recover to), and recommends shortening folder names, or recovering
+  into a folder with a shorter path. It burns and recovers them either way.
+
 - **Tested only on Windows 11, with drives formatted as NTFS.** Other versions of Windows and other file systems
   have not been tested. The app might not work on Linux (or macOS): parts of it assume Windows - its paths, and
   ImgBurn, which only runs on Windows.
@@ -241,7 +260,9 @@ This app's backup/split/recover/sync flow has an automated test harness under `t
   only style that can catch problems in the screens themselves - a button that doesn't do what it says, a dialog
   that never appears, a checkbox that lies about its own state - rather than just the underlying engine. All 6
   main-menu features have a Playwright UI test, including the SHA-256 integrity-checksum feature and multi-disc
-  recovery with large files split across discs.
+  recovery with large files split across discs. The tests for names too long for a disc go one step further and
+  build their discs with the real ImgBurn (it has to be installed), so they check exactly what ImgBurn puts on a
+  disc.
 - **Worker-IPC tests** (`test-harness/worker-ipc/`) talk directly to the app's file-handling engine over the same
   IPC messages the UI sends, skipping the screens entirely - faster, and useful for testing logic like the
   bin-packing pass (which files go on which disc) in isolation.

@@ -249,13 +249,17 @@ export class WorkerCommunicator {
         }, 'response.res');
     }
 
-    /** @param nameClash see incrementalPreview. */
-    static incrementalCopyFiles(sourceOnlyPaths: Array<string>, sourcePath: string, targetPath: string, nameClash?: NameClash): Promise<WorkerResponse> {
+    /** @param nameClash see incrementalPreview.
+     *  @param sourcePaths for recovery: where a file of `sourceOnlyPaths` is on the disc when its name there was
+     *  shortened - see createTree in worker.ts. */
+    static incrementalCopyFiles(sourceOnlyPaths: Array<string>, sourcePath: string, targetPath: string, nameClash?: NameClash,
+        sourcePaths?: { [path: string]: string }): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('incremental-copy-files', {
             sourceOnlyPaths: sourceOnlyPaths,
             source: sourcePath,
             target: targetPath,
-            nameClash: nameClash
+            nameClash: nameClash,
+            sourcePaths: sourcePaths
         }, 'response.res');
     }
 
@@ -304,7 +308,8 @@ export class WorkerCommunicator {
         });
     }
 
-    /** See partitionBackupToOpticalMedia's own comment on sessionId - the same one value for this whole job. */
+    /** See partitionBackupToOpticalMedia's own comment on sessionId - the same one value for this whole job. Resolves
+     *  with `res`: a CreatedIbbProject (ipc.interfaces.ts). */
     static createIBB_file(disk_id: number, paths: Array<string>, sourcePath: string, sessionId: string, volumeLabel?: string): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('create-IBB-file', {
             disk_id: disk_id,
@@ -336,6 +341,12 @@ export class WorkerCommunicator {
 
     static getTempDataDirectoryPath(): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('get-temp-data-directory-path', {});
+    }
+
+    /** Resolves with `res`: 'empty', 'not-empty' or 'missing' - whether recovery may copy into `folder` (see
+     *  recoveryFolderState in worker.ts). */
+    static recoveryFolderState(folder: string): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('recovery-folder-state', { folder });
     }
 
     /** Applies a medium's maxRepletionRatio (see OPTICAL_MEDIA in src/app/shared/utils/optical-media.ts) to its raw

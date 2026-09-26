@@ -23,6 +23,7 @@
     "app/workers/worker.ts",
     "app/workers/worker-communicator.ts",
     "app/workers/logsbuffer.ts",
+    "app/workers/disc-names.ts",
     "src/types/interface.d.ts"
   ],
   "exclude": [
