@@ -124,7 +124,9 @@ async function main() {
     console.log('\nAsking the app for each disc\'s real file listing (get-file-paths-with-stats)...');
     const disc1Entries = await buildDiscMetadata(win, disc1Dir, manifest);
     const disc2Entries = await buildDiscMetadata(win, disc2Dir, manifest);
-    fs.writeFileSync(metadataJsonPath, JSON.stringify([disc1Entries, disc2Entries], null, 2));
+    // Plus two empty discs - never confirmed burned, so never recorded; they share one disc id, and the JSON must
+    // still load.
+    fs.writeFileSync(metadataJsonPath, JSON.stringify([disc1Entries, disc2Entries, [], []], null, 2));
     console.log(`Wrote cold storage metadata JSON (disc 1: ${disc1Entries.length} entries, disc 2: ${disc2Entries.length} entries) to:\n  ${metadataJsonPath}`);
 
     // 3. NOW - only after both discs' hashes are already recorded above - tamper with exactly one file on disc

@@ -64,7 +64,10 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   the disc's own file system takes. Large files that don't fit on one disc are split automatically, into 500 MB
   pieces, when the first disc holding one of their pieces is sent to ImgBurn; if such a file has changed size so much
   since the discs were planned that it needs a different number of pieces, that disc is refused with a message and
-  you plan the discs again - so no piece is ever left off the discs. Every file also gets a SHA-256 checksum recorded
+  you plan the discs again - so a file that changed does not end up with a piece on no disc. A split file's pieces
+  are ticked and unticked together, on every disc that holds one - a file can only be put back together from all of
+  its pieces - and once one of those discs has been sent, the file can no longer be left out (or added). Every file
+  also gets a SHA-256 checksum recorded
   in the cold storage metadata JSON (always on, not optional) - protection against a later drive read error or disc
   damage. See "Verify integrity of cold storage disc" below for how these checksums get used.
 
@@ -94,7 +97,8 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   cold storage holds and their total size, in MB and in bytes. Important: label your discs in the same
   order they appear in the JSON file (the disc you call "disc 1" must be the first one listed).
 
-  If any recovered files are parts of a large file that was split across discs, the app offers to reassemble the
+  Choosing any piece of a split large file chooses all of its pieces. If any recovered files are parts of a large
+  file that was split across discs, the app offers to reassemble the
   original file with 7-Zip once every needed disc has been copied. If you decline, or reassembly fails (e.g. a
   missing or corrupted part), nothing is deleted - you get the exact 7-Zip command to do it by hand later.
 
@@ -107,7 +111,9 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
 - **Add missing (new) files to existing optical media cold storage:** adds only the files that are new since your
   last backup, onto new discs - large files that don't fit on one disc are split the same way as in "Backup to
   optical media." New discs always get SHA-256 checksums; if the existing cold storage JSON predates this feature,
-  those older entries are simply listed as having no integrity data when later verified or recovered.
+  those older entries are simply listed as having no integrity data when later verified or recovered. New discs
+  continue your collection's numbering (after 3 discs, the first new one is "Optical disk 4"), and every number the
+  wizard shows is the one burned onto that disc's label.
 
   Split files are recognized by a naming convention (`largeFile.data` becomes `largeFile.data.part.001`, etc.),
   which can misfire if you happen to have unrelated files matching that same pattern.
@@ -121,7 +127,8 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   be put back together from all of its pieces. Until then, confirming one of them tells you which discs you still
   have to burn. If you close the app before that, the discs you already burned for those files are not in the JSON,
   and the app will plan their files again ("Add missing files" puts them on new discs) - so note them down, in order
-  not to burn the same disc twice.
+  not to burn the same disc twice. A disc that was never confirmed stays an empty entry in the JSON; recovery,
+  "Verify integrity" and "Add missing files" all accept a JSON with such entries.
 
 - **Verify integrity of cold storage disc:** a read-only wizard that checks a disc's SHA-256 checksums without
   recovering or copying anything - useful for periodically spot-checking discs you already have. Point it at the

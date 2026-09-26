@@ -1,4 +1,4 @@
-import { Component, Input, NgZone, OnDestroy, OnInit, ViewChild, ElementRef } from '@angular/core';
+import { Component, NgZone, OnDestroy, OnInit, ViewChild, ElementRef } from '@angular/core';
 import { Router, ActivatedRoute } from '@angular/router';
 import { MatDialog } from '@angular/material/dialog';
 import { BackupService } from '../core/services/backup/backup.service';
@@ -25,14 +25,6 @@ import { formatMegabytes } from '../shared/utils/format-bytes';
 
     step:string = 'step_1';
     allFilesSelected:boolean = true;
-    /** Forwarded straight through to this component's own <files-tree> (see that component for the mechanics) -
-     *  this component itself has no opinion on the default; the specific screen embedding it decides (see
-     *  recover-data-from-optical-media.component.ts, the only caller that ever reaches step_3 - the file
-     *  SELECTION step - at all: add-missing-files-to-optical-media-cold-storage.component.ts also embeds this
-     *  component, but only ever drives it through step_2's disc-enumeration, via
-     *  getCombinedFilePathsFromAllOpticalDiscs() alone, never createFilesTreeForReconstructedBackupPaths() - so
-     *  step_3, and this input, is simply never reached in that context). */
-    @Input() groupPartialFiles: boolean = true;
     opticalMediumLoaded:boolean = false;
     finishedReadingFilePaths=false;
     showLogs=false;
@@ -209,8 +201,9 @@ import { formatMegabytes } from '../shared/utils/format-bytes';
      * (metadata[0] is "disc 1", metadata[1] is "disc 2", etc.) - see opticalDiskIds and recoverAllFilesFromAllDiscs.
      *
      * Returns false (and shows an error dialog) instead of mutating state if the metadata looks malformed - e.g. two
-     * discs producing the same disc id (an empty disc, or the same disc listed twice), which would otherwise silently
+     * discs with files producing the same disc id (the same disc listed twice), which would otherwise silently
      * misattribute files to the wrong disc later on, since opticalDiskIds.indexOf(id) is used to label discs to the user.
+     * Empty discs (never confirmed burned) are allowed, however many.
      */
     seedFromExternalMetadata(metadata: ColdStorageMetadata): boolean {
       let opticalDiskIds: number[] = [];
@@ -228,12 +221,16 @@ import { formatMegabytes } from '../shared/utils/format-bytes';
         );
       });
 
-      if(new Set(opticalDiskIds).size !== opticalDiskIds.length){
+      // Discs with no entries are left out: a disc the wizards never recorded (not confirmed burned - see
+      // recordConfirmedDiscs) stays an empty entry, and all empty discs share one id - but they hold nothing to recover,
+      // so no file can be attributed to the wrong one.
+      const idsOfDiscsWithFiles = opticalDiskIds.filter((id, i) => metadata[i].length > 0);
+      if(new Set(idsOfDiscsWithFiles).size !== idsOfDiscsWithFiles.length){
         const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
         infoDialog.disableClose = true;
         infoDialog.componentInstance.title = `Error`;
         infoDialog.componentInstance.message = `The provided cold storage metadata JSON looks malformed: two or more discs produce
-          the same identifier (for example, an empty disc, or the same disc listed twice). Please check the JSON file and try again.`;
+          the same identifier (for example, the same disc listed twice). Please check the JSON file and try again.`;
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Ok";
         infoDialog.componentInstance.action1Callback = () => { infoDialog.close(); }

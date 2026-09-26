@@ -263,7 +263,17 @@ from this file (and test it if it needs one - see "Working on these" below), and
   if the app is closed now, the discs already burned are not in the JSON and will be re-planned ("Add missing files"
   puts their files on new discs), so the user should note them down. Reason: a split file can only be put back
   together from all of its pieces, and "Add missing files" counts a file as backed up as soon as the JSON has any one
-  of its pieces (`replacePartialFileSplits`). Tested in `ui/test-backup-to-optical-media-overflow-disc.js`.
+  of its pieces (`replacePartialFileSplits`). Tested in `ui/test-backup-to-optical-media-overflow-disc.js`. A disc
+  never confirmed stays an empty entry, however many there are: recovery from the JSON and the Verify wizard leave
+  empty discs out of their "two discs with the same id" check (all empty discs share one id) - tested with two empty
+  discs in `ui/test-recover-from-json-metadata.js` and `ui/test-verify-cold-storage-integrity.js` - and "Add missing
+  files" also takes a JSON with no disc recorded at all.
+- **A split file's pieces are ticked together, on every disc** (Backup to optical media, `onDiscSelectionChange`):
+  ticking or unticking one piece - or a folder, or "Select all" - does the same to all of that file's pieces on every
+  disc, since a file can only be put back together from all of them; once a disc holding one of its pieces has been
+  sent (or is being sent), a change that disagrees with it is refused with a message and set back. Recovery always
+  selects a file's pieces together too (`groupPartialFiles`; the old "Group partials" checkbox is gone). Tested in
+  `ui/test-backup-to-optical-media.js`.
 - **Links on discs** are burned as Windows shortcuts (`<name>.lnk`, created with PowerShell and `IShellLinkW`);
   recovery restores the shortcut file, not a real link. A link whose shortcut name is already taken by a real file is
   left out and listed in the "Some items were left out" warning.

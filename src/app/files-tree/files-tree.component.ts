@@ -285,6 +285,11 @@
      *  <files-tree> usage behaves exactly as before. */
     @Output() buildProgress = new EventEmitter<number>();
 
+    /** Emits after the user ticks or unticks something in this tree: the full paths (as getSelectedData builds them)
+     *  of the files whose tick changed, and their new state. Not emitted for selectAllNodes/deselectAllNodes or
+     *  setFilesSelected - those are called by the parent, which knows what it changed. */
+    @Output() userSelectionChange = new EventEmitter<{ paths: string[], selected: boolean }>();
+
     /** Matches this app's own large-file split volume naming convention - see PART_FILE_PATTERN in
      *  app/workers/worker.ts and groupSelectedPartialFiles in optical-disc-backup-data-retriever.component.ts,
      *  which this mirrors exactly (kept as its own copy here since this component doesn't otherwise depend on
@@ -393,14 +398,15 @@
       this.checklistSelection.isSelected(node)
         ? this.checklistSelection.select(...descendants)
         : this.checklistSelection.deselect(...descendants);
-  
+
       // Force update for the parent
       descendants.every(child =>
         this.checklistSelection.isSelected(child)
       );
       this.checkAllParentsSelection(node);
+      this.emitUserSelectionChange(descendants, this.checklistSelection.isSelected(node));
     }
-  
+
     /** Toggle a leaf to-do item selection. Check all the parents to see if they changed */
     todoLeafItemSelectionToggle(node: TodoItemFlatNode): void {
       this.checklistSelection.toggle(node);
@@ -408,6 +414,49 @@
         this.toggleSiblingPartialFiles(node);
       }
       this.checkAllParentsSelection(node);
+      this.emitUserSelectionChange([node], this.checklistSelection.isSelected(node));
+    }
+
+    /** Emits userSelectionChange for the file nodes among `nodes` - only when someone listens, since it walks the
+     *  whole tree for the paths. */
+    private emitUserSelectionChange(nodes: TodoItemFlatNode[], selected: boolean): void {
+      if (!this.userSelectionChange.observed) { return; }
+      const changed = new Set(nodes.filter((n) => !n.expandable));
+      const paths = this.fileNodesWithPaths().filter((f) => changed.has(f.node)).map((f) => f.path);
+      if (paths.length > 0) { this.userSelectionChange.emit({ paths, selected }); }
+    }
+
+    /** Ticks (selected) or unticks every file node whose full path is in `paths`, and updates the folders above
+     *  them. Does not emit userSelectionChange. */
+    setFilesSelected(paths: Set<string>, selected: boolean): void {
+      for (const { node, path } of this.fileNodesWithPaths()) {
+        if (!paths.has(path)) { continue; }
+        if (selected) { this.checklistSelection.select(node); } else { this.checklistSelection.deselect(node); }
+        this.checkAllParentsSelection(node);
+      }
+    }
+
+    /** Every file (leaf) node with its full path, built the same way getSelectedData builds the paths it returns. */
+    private fileNodesWithPaths(): Array<{ node: TodoItemFlatNode, path: string }> {
+      const files: Array<{ node: TodoItemFlatNode, path: string }> = [];
+      const prefix = { str: "", level: 0 };
+      this.treeControl.dataNodes.forEach((node) => {
+        let level_difference = prefix.level - node.level;
+        if (level_difference > 0) {
+          for (let i = 0; i < level_difference; ++i) {
+            this.remove_folder(prefix);
+          }
+          level_difference = prefix.level - node.level;
+        }
+        if (node.expandable) {
+          if (!this.isEmptyDir(node) && level_difference <= 0) {
+            this.add_folder(node.item, prefix);
+          }
+        } else {
+          files.push({ node, path: prefix.str + node.item });
+        }
+      });
+      return files;
     }
 
     /** When groupPartialFiles is on and `node` is one part of a split large file (PART_FILE_PATTERN), selects

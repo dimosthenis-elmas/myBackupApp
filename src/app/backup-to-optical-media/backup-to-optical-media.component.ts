@@ -13,7 +13,7 @@ import { WorkerListener, WorkerResponse } from '../../../app/workers/ipc.interfa
 import { filesMetadata } from '../../types/interface';
 import { SerialQueue } from '../shared/utils/serial-queue';
 import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
-import { linkedDiscGroup, discsLabel, linkedDiscsNoticeMessage } from '../shared/utils/linked-discs';
+import { linkedDiscGroup, discsLabel, linkedDiscsNoticeMessage, splitFileOf } from '../shared/utils/linked-discs';
 import { OPTICAL_MEDIA, OpticalMedium } from '../shared/utils/optical-media';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
@@ -124,6 +124,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   private discMetadataEntries: Array<Array<{ path: string; stats: any }> | undefined> = [];
   /** Whether disc i's entry has been written to the cold storage metadata JSON - see recordConfirmedDiscs. */
   private recordedDiscs: boolean[] = [];
+  /** Discs whose "Confirm disc burned" is still running - see confirmDiscBurned. */
+  private discsBeingConfirmed = new Set<number>();
   /** Whether disc i has been sent to ImgBurn at least once yet - gates both "Confirm disc burned" (can't
    *  confirm a disc that was never sent) and re-sending. */
   public sentDiscs: boolean[] = [];
@@ -545,6 +547,64 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     }else{
       this.filesTrees.toArray()[i].deselectAllNodes();
     }
+    this.onDiscSelectionChange(i, { paths: this.backup.opticalMediaPartitioning[i].map(x => x.path), selected });
+  }
+
+  /** Keeps a split large file's pieces ticked or unticked together, on every disc that holds one: a file burned with
+   *  only some of its pieces can never be put back together, and "Add missing files" would still count it as backed
+   *  up. Called after the user ticks or unticks something in disc i's tree, or its "Select all": every split file
+   *  among `change.paths` gets `change.selected` for all of its pieces, on every disc. Refused for a file - disc i's
+   *  pieces of it are set back, and the user is told - when a disc holding one of its pieces has already been sent
+   *  (or is being sent) the other way: those pieces are burned, or left out, for good. */
+  onDiscSelectionChange(i: number, change: { paths: string[], selected: boolean }): void {
+    const files = new Set(change.paths.map(p => splitFileOf(p, this.tempSessionId)).filter((f): f is string => f !== null));
+    if (files.size === 0) { return; }
+    const trees = this.filesTrees.toArray();
+    // Each of those files' planned pieces, by disc - one pass over the plan.
+    const piecesByFile = new Map<string, Map<number, Set<string>>>();
+    this.backup.opticalMediaPartitioning.forEach((planned, d) => {
+      for (const x of planned) {
+        const file = splitFileOf(x.path, this.tempSessionId);
+        if (file === null || !files.has(file)) { continue; }
+        const byDisc = piecesByFile.get(file) ?? piecesByFile.set(file, new Map()).get(file)!;
+        (byDisc.get(d) ?? byDisc.set(d, new Set()).get(d)!).add(x.path);
+      }
+    });
+    // A sent disc's ticks, read once each (a sent disc's tree never changes).
+    const tickedOn = new Map<number, Set<string>>();
+    const ticked = (d: number) => tickedOn.get(d)
+      ?? tickedOn.set(d, new Set(trees[d].getSelectedFilePathsIncludingExtraInfo().map(x => x.path))).get(d)!;
+    const refused: string[] = [];
+    const setBack = new Set<string>();
+    const toSet = new Map<number, Set<string>>();
+    for (const [file, byDisc] of piecesByFile) {
+      const sentTheOtherWay = [...byDisc.keys()].filter(d => d !== i && (this.sentDiscs[d] || this.sendingDiscs[d])
+        && [...byDisc.get(d)!].some(p => ticked(d).has(p) !== change.selected));
+      if (sentTheOtherWay.length > 0) {
+        (byDisc.get(i) ?? []).forEach(p => setBack.add(p));
+        refused.push(`${file}  -  ${discsLabel(sentTheOtherWay.map(d => d + 1))} already sent ${change.selected ? 'without' : 'with'} its pieces`);
+        continue;
+      }
+      for (const [d, pieces] of byDisc) { pieces.forEach(p => (toSet.get(d) ?? toSet.set(d, new Set()).get(d)!).add(p)); }
+    }
+    for (const [d, pieces] of toSet) { trees[d].setFilesSelected(pieces, change.selected); }
+    // Set back after this click's change detection: setting a tick box back within the same click leaves its bound
+    // value unchanged, so the box the user clicked would keep showing the click, not the setting.
+    if (setBack.size > 0) {
+      setTimeout(() => { trees[i].setFilesSelected(setBack, !change.selected); });
+    }
+    if (refused.length > 0) {
+      const dialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
+      dialog.componentInstance.title = "Split file not changed";
+      dialog.componentInstance.message = `A large file split into pieces is burned with all of its pieces or with none - it ` +
+        `can only be put back together from all of them. The file(s) below have a disc that was already sent ` +
+        `${change.selected ? 'without' : 'with'} their pieces, so they cannot be ${change.selected ? 'added' : 'left out'} ` +
+        `now; this disc's pieces of them were set back.`;
+      dialog.componentInstance.lists = [{ label: `Not changed (${refused.length}):`, items: refused }];
+      dialog.componentInstance.actionsNum = 1;
+      dialog.componentInstance.action1Label = "Ok";
+      dialog.componentInstance.action1Callback = () => { dialog.close(); };
+    }
   }
 
   /*
@@ -936,30 +996,36 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    *  is true - see the template), then records it in the cold storage metadata JSON (see recordConfirmedDiscs). Discs can be sent/confirmed in any order, independent of each other - there is
    *  no sequencing requirement, matching the already non-linear stepper "Send to ImgBurn" itself allows. */
   async confirmDiscBurned(i: number): Promise<void> {
-    if (!this.sentDiscs[i] || this.confirmedDiscs[i]) { return; }
-    const partRelativePaths = this.sentDiscPartPaths[i] || [];
-    if (partRelativePaths.length > 0) {
-      // This job's own session subfolder (see tempSessionId's own doc comment) - the same one create
-      // actually wrote these real partials under, not the temp directory's bare root.
-      const rawTempDataDirectoryPath: string = (await ipc.getTempDataDirectoryPath()).res;
-      const tempDirNormalized = rawTempDataDirectoryPath.replace(/\\$/, '') + '\\' + this.tempSessionId;
-      const partialPaths = partRelativePaths.map(p => tempDirNormalized + '\\' + p);
-      const response = await ipc.deletePartialsForDisc(partialPaths);
-      const result: { cleared: boolean; message: string; deletedItems: string[]; notClearedItems: string[] } = response.res;
-      if (!result.cleared) {
-        const warnDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
-        warnDialog.componentInstance.title = "Temp cleanup incomplete";
-        warnDialog.componentInstance.message = `Disc ${i + 1} was confirmed burned, but its temporary split-part files could not all be removed: ${result.message} You can safely ignore this - the app offers to clear leftover temp files the next time it starts.`;
-        if (result.notClearedItems?.length) {
-          warnDialog.componentInstance.lists = [{ label: `Not removed (${result.notClearedItems.length}):`, items: result.notClearedItems }];
+    // A second click while this one still waits for the worker must not confirm (and record) the disc twice.
+    if (!this.sentDiscs[i] || this.confirmedDiscs[i] || this.discsBeingConfirmed.has(i)) { return; }
+    this.discsBeingConfirmed.add(i);
+    try {
+      const partRelativePaths = this.sentDiscPartPaths[i] || [];
+      if (partRelativePaths.length > 0) {
+        // This job's own session subfolder (see tempSessionId's own doc comment) - the same one create
+        // actually wrote these real partials under, not the temp directory's bare root.
+        const rawTempDataDirectoryPath: string = (await ipc.getTempDataDirectoryPath()).res;
+        const tempDirNormalized = rawTempDataDirectoryPath.replace(/\\$/, '') + '\\' + this.tempSessionId;
+        const partialPaths = partRelativePaths.map(p => tempDirNormalized + '\\' + p);
+        const response = await ipc.deletePartialsForDisc(partialPaths);
+        const result: { cleared: boolean; message: string; deletedItems: string[]; notClearedItems: string[] } = response.res;
+        if (!result.cleared) {
+          const warnDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
+          warnDialog.componentInstance.title = "Temp cleanup incomplete";
+          warnDialog.componentInstance.message = `Disc ${i + 1} was confirmed burned, but its temporary split-part files could not all be removed: ${result.message} You can safely ignore this - the app offers to clear leftover temp files the next time it starts.`;
+          if (result.notClearedItems?.length) {
+            warnDialog.componentInstance.lists = [{ label: `Not removed (${result.notClearedItems.length}):`, items: result.notClearedItems }];
+          }
+          warnDialog.componentInstance.actionsNum = 1;
+          warnDialog.componentInstance.action1Label = "Ok";
+          warnDialog.componentInstance.action1Callback = () => { warnDialog.close(); };
         }
-        warnDialog.componentInstance.actionsNum = 1;
-        warnDialog.componentInstance.action1Label = "Ok";
-        warnDialog.componentInstance.action1Callback = () => { warnDialog.close(); };
       }
+      this.confirmedDiscs[i] = true;
+      await this.recordConfirmedDiscs(i);
+    } finally {
+      this.discsBeingConfirmed.delete(i);
     }
-    this.confirmedDiscs[i] = true;
-    await this.recordConfirmedDiscs(i);
   }
 
   /** Writes disc i's entry to the cold storage metadata JSON, together with the entries of every disc that holds a

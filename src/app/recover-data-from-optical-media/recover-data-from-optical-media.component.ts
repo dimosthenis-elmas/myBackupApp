@@ -47,16 +47,6 @@ export class RecoverDataFromOpticalMediaComponent implements OnInit, OnDestroy{
    *  file has been selected yet" dialog for a JSON that WAS selected and is just still loading. Bound to the
    *  "Next" button's [disabled] in the template. */
   loadingExternalMetadataJSON = false;
-  /** Passed down to <optical-disc-backup-data-retriever>'s own groupPartialFiles @Input (forwarded again from
-   *  there to its internal <files-tree> - see FilesTreeComponent for the actual mechanics). Owned HERE, not by
-   *  the retriever itself, because this is the only screen where the file-selection step (step_3, where the
-   *  checkbox for this actually renders) is ever reached - see that @Input's own doc comment for why
-   *  add-missing-files-to-optical-media-cold-storage.component.ts's embedding of the same retriever never gets
-   *  there. Defaults to ON: selecting only SOME of a split file's parts isn't a real use case (the merge-offer
-   *  the retriever runs after recovery would just fail on an incomplete set), so grouping them by default saves
-   *  clicks for the common case, and a user who genuinely wants only some parts can still manually uncheck the
-   *  ones they don't want afterward. */
-  groupPartialFiles = true;
 
   constructor(public router: Router, private route: ActivatedRoute, public dialog: MatDialog, public backup: BackupService,
      private ngZone: NgZone, private eleRef: ElementRef) { }

@@ -281,7 +281,8 @@ JSON file" checkbox on step 1. This is a genuinely different code path from ever
 from the JSON's own file paths (schema-validated first against `src/app/schemas/filesMetadata.schema.json`), and
 if valid, the wizard skips the entire "insert disc 1, insert disc 2, ..." *enumeration* dance and jumps straight
 to file selection. Real discs are still needed afterward, during the *recovery* phase itself, to copy the actual
-bytes of whichever files get selected — only the listing step is skipped.
+bytes of whichever files get selected — only the listing step is skipped. The JSON also holds two empty discs
+(planned, never confirmed burned, so never recorded): they share one disc ID, and the JSON must still load.
 
 **How the test JSON fixture is built — reusing the app's own real computation, not hand-constructed.** Rather than
 hand-writing JSON that merely *looks* right against the schema, the script asks the app's own real worker IPC
@@ -363,6 +364,11 @@ source file must keep its own pending pieces untouched. The first of the two dis
 be confirmed shows an "Also burn disc ..." notice (they are recorded in the metadata JSON together), which the script
 dismisses; once every disc is confirmed, every disc must be recorded in the JSON.
 
+**Also checks that a split file's pieces are ticked together across discs.** Before sending, it finds the two discs
+holding the large file's two pieces, unticks the first piece - the second must be unticked too - and ticks the second
+again - the first must be ticked too. Then, once the first piece's disc is sent, unticking the other piece must be
+refused ("Split file not changed") and the piece must stay ticked.
+
 ## `test-backup-to-optical-media-overflow-disc.js`
 
 ```
@@ -419,9 +425,9 @@ retrying with `splitLargeFiles: true` after hitting a "file too large" error, be
 THIS wizard's `partition()` calls `partitionBackupToOpticalMedia` with `splitLargeFiles` hardcoded to `true`,
 unconditionally, every time. The bin-packing arithmetic (two separate passes pushed onto the same shared array -
 ordinary files first, then the large file's real split pieces) reliably produces exactly 3 new discs: 1 for the
-small missing files, 2 for the ~500MB/~176MB real split pieces. Each disc's "Send disk N to ImgBurn" button
-already has the disk number in its own text (unlike `backup-to-optical-media.component.ts`'s identically-labeled
-ones), but its STEP still needs selecting first - `mat-stepper` only keeps the *currently selected* step's
+small missing files, 2 for the ~500MB/~176MB real split pieces. Each disc's step ("Optical disk N") and "Send
+disk N to ImgBurn" button carry the number burned onto its label, continuing the existing collection's (disc 2, 3,
+4 here) - unlike `backup-to-optical-media.component.ts`'s identically-labeled buttons - but its STEP still needs selecting first - `mat-stepper` only keeps the *currently selected* step's
 content actually attached to the DOM, so only one disc's panel is ever attached at a time.
 
 Like `test-backup-to-optical-media.js`, this clicks "Send to ImgBurn" for real, using the same ImgBurn-redirect
@@ -522,7 +528,8 @@ backup wizard, the other hooks into the ORDINARY recovery wizard's own post-reco
 copying: loads a metadata JSON, then verifies each inserted disc's files directly off the mounted drive.
 
 Builds a metadata JSON covering TWO simulated discs (same real-hash technique as
-`test-recover-integrity-detects-corruption.js`), deliberately keeps disc 1 clean and corrupts one file on disc 2
+`test-recover-integrity-detects-corruption.js`) plus two empty ones (never confirmed burned - they share one disc
+ID, and the JSON must still load), deliberately keeps disc 1 clean and corrupts one file on disc 2
 AFTER its hash was recorded, then drives the wizard through BOTH discs in one session to prove: disc 1
 auto-identifies correctly (no disc-number prompt needed) and reports fully Verified; the "Verify another disc?"
 loop actually accepts a second disc, correctly identifies IT too (not confused with disc 1), and reports FAILED

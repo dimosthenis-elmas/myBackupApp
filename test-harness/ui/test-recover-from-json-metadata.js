@@ -219,9 +219,13 @@ async function main() {
     // See lib/cold-storage-metadata.js's own doc comment for why this must be a literal prefix-string
     // replacement, not path.relative() - a real bug found here (2026-08-27) before this was extracted into that
     // shared module.
+    // Plus two empty discs - planned, but never confirmed burned, so never recorded (see recordConfirmedDiscs in the
+    // disc wizards). They share one disc id; the JSON must still load, and they are never asked for.
     const coldStorageMetadata = [
       normalizeForMetadata(disc1Listing, disc1Dir),
       normalizeForMetadata(disc2Listing, disc2Dir),
+      [],
+      [],
     ];
     fs.writeFileSync(metadataJsonPath, JSON.stringify(coldStorageMetadata, null, 2));
     console.log(`Wrote cold storage metadata JSON (disc 1: ${coldStorageMetadata[0].length} entries, disc 2: ${coldStorageMetadata[1].length} entries) to:\n  ${metadataJsonPath}`);

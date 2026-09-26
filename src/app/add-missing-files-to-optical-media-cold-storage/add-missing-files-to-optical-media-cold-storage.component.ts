@@ -39,6 +39,7 @@ import { SerialQueue } from '../shared/utils/serial-queue';
 import { PART_FILE_PATTERN } from '../shared/utils/part-file-pattern';
 import { OPTICAL_MEDIA } from '../shared/utils/optical-media';
 import { linkedDiscGroup, discsLabel, linkedDiscsNoticeMessage } from '../shared/utils/linked-discs';
+import { OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 const mySchema =require('../schemas/filesMetadata.schema.json');
 
 @Component({
@@ -155,6 +156,8 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   private discMetadataEntries: Array<Array<filesMetadata> | undefined> = [];
   /** Whether new disc i's entry has been written to the cold storage metadata JSON - see recordConfirmedDiscs. */
   private recordedDiscs: boolean[] = [];
+  /** New discs whose "Confirm disc burned" is still running - see confirmDiscBurned. */
+  private discsBeingConfirmed = new Set<number>();
   /** How many NEW discs (i.e. this.partitions.length at the time) the initial plan (partitionBackupToOpticalMedia,
    *  called from partition()) actually called for - fixed once partition() runs, even though this.partitions/
    *  _disks can later grow (see pendingOverflowPartials). Needed to tell "every originally-planned new disc has
@@ -385,7 +388,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   }
 
   private replacePartialFileSplits(coldStoragePaths: filesMetadata[], masterPaths: filesMetadata[]): filesMetadata[] {
-    this.opticalDiscVolumeLetter = coldStoragePaths[0].path.split('\\').slice(0)[0];
+    // Every recorded path starts with OPTICAL_DRIVE_LETTER_CONVENTION ("D:\"); a JSON with no disc recorded yet (none
+    // confirmed burned) has no path to read it from.
+    this.opticalDiscVolumeLetter = (coldStoragePaths.length > 0 ? coldStoragePaths[0].path : OPTICAL_DRIVE_LETTER_CONVENTION).split('\\')[0];
     // Without a trailing backslash whether or not targetPath has one (a drive root such as "D:\" always does), so
     // what is left after stripping it is "\dir\file" in every case - the form the cold storage paths take once
     // their volume letter is stripped.
@@ -481,7 +486,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     await this.holdOn(500);
     let coldStoragePathsWithoutPartials = this.replacePartialFileSplits(coldStoragePathsWithStats, JSON.parse(JSON.stringify(masterPathsWithStats)));
 
-    this.opticalDiscVolumeLetter = coldStoragePathsWithoutPartials[0].path.split('\\').slice(0)[0] + '\\';
+    this.opticalDiscVolumeLetter = (coldStoragePathsWithoutPartials.length > 0 ? coldStoragePathsWithoutPartials[0].path : OPTICAL_DRIVE_LETTER_CONVENTION).split('\\')[0] + '\\';
     if (this.backup.targetPath[this.backup.targetPath.length - 1] != '\\') { this.backup.targetPath += "\\"; }
 
     // Deep copy because this will mutate the values;
@@ -724,8 +729,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    * burned volume label correctly continued the numbering - so a user adding to an existing 1-disc collection
    * would have been told to label their new disc "1" when its actual embedded label said "Disc 2", risking a
    * real mislabeled disc (this app's own recovery flow depends on discs being labeled to match their JSON order
-   * - see the root README). */
-  private getNextDiscNumber(disk_id: number): number {
+   * - see the root README). Every disc number this wizard shows - its "Send disk N to ImgBurn" buttons and its
+   * messages - is this one too, so the screen and the labels on the discs always agree. */
+  getNextDiscNumber(disk_id: number): number {
     return this.entireColdStorageMetadata.length + disk_id + 1;
   }
 
@@ -797,7 +803,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       } catch (error) {
         const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
         errorDialog.componentInstance.title = "Error";
-        errorDialog.componentInstance.message = `Could not check whether disc ${i + 1} was already sent: ${error}`;
+        errorDialog.componentInstance.message = `Could not check whether disc ${this.getNextDiscNumber(i)} was already sent: ${error}`;
         errorDialog.componentInstance.actionsNum = 1;
         errorDialog.componentInstance.action1Label = "Ok";
         errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
@@ -833,7 +839,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       if (bareRelativePaths.length === 0) {
         const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
         errorDialog.componentInstance.title = "Error";
-        errorDialog.componentInstance.message = `Disc ${i + 1} has no files to send - this should never happen. Please try clicking "Send to ImgBurn" again.`;
+        errorDialog.componentInstance.message = `Disc ${this.getNextDiscNumber(i)} has no files to send - this should never happen. Please try clicking "Send to ImgBurn" again.`;
         errorDialog.componentInstance.actionsNum = 1;
         errorDialog.componentInstance.action1Label = "Ok";
         errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
@@ -862,7 +868,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         // worker then refuses to split it) - the disc is not sent, and the message says why.
         const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
         errorDialog.componentInstance.title = "Error";
-        errorDialog.componentInstance.message = `Could not prepare the files of disc ${i + 1}: ${error}`;
+        errorDialog.componentInstance.message = `Could not prepare the files of disc ${this.getNextDiscNumber(i)}: ${error}`;
         errorDialog.componentInstance.actionsNum = 1;
         errorDialog.componentInstance.action1Label = "Ok";
         errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
@@ -918,7 +924,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       } catch (error) {
         const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
         errorDialog.componentInstance.title = "Error";
-        errorDialog.componentInstance.message = `Could not compute SHA-256 hashes for disc ${i + 1}: ${error}`;
+        errorDialog.componentInstance.message = `Could not compute SHA-256 hashes for disc ${this.getNextDiscNumber(i)}: ${error}`;
         errorDialog.componentInstance.actionsNum = 1;
         errorDialog.componentInstance.action1Label = "Ok";
         errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
@@ -1059,30 +1065,36 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    *  in any order, independent of each other - matching the already non-linear stepper "Send to ImgBurn" itself
    *  allows. */
   async confirmDiscBurned(i: number): Promise<void> {
-    if (!this.sentDiscs[i] || this.confirmedDiscs[i]) { return; }
-    const partRelativePaths = this.sentDiscPartPaths[i] || [];
-    if (partRelativePaths.length > 0) {
-      // This job's own session subfolder (see tempSessionId's own doc comment) - the same one create
-      // actually wrote these real partials under, not the temp directory's bare root.
-      const rawTempDataDirectoryPath: string = (await ipc.getTempDataDirectoryPath()).res;
-      const tempDirNormalized = rawTempDataDirectoryPath.replace(/\\$/, '') + '\\' + this.tempSessionId;
-      const partialPaths = partRelativePaths.map(p => tempDirNormalized + '\\' + p);
-      const response = await ipc.deletePartialsForDisc(partialPaths);
-      const result: { cleared: boolean; message: string; deletedItems: string[]; notClearedItems: string[] } = response.res;
-      if (!result.cleared) {
-        const warnDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
-        warnDialog.componentInstance.title = "Temp cleanup incomplete";
-        warnDialog.componentInstance.message = `Disc ${i + 1} was confirmed burned, but its temporary split-part files could not all be removed: ${result.message} You can safely ignore this - the app offers to clear leftover temp files the next time it starts.`;
-        if (result.notClearedItems?.length) {
-          warnDialog.componentInstance.lists = [{ label: `Not removed (${result.notClearedItems.length}):`, items: result.notClearedItems }];
+    // A second click while this one still waits for the worker must not confirm (and record) the disc twice.
+    if (!this.sentDiscs[i] || this.confirmedDiscs[i] || this.discsBeingConfirmed.has(i)) { return; }
+    this.discsBeingConfirmed.add(i);
+    try {
+      const partRelativePaths = this.sentDiscPartPaths[i] || [];
+      if (partRelativePaths.length > 0) {
+        // This job's own session subfolder (see tempSessionId's own doc comment) - the same one create
+        // actually wrote these real partials under, not the temp directory's bare root.
+        const rawTempDataDirectoryPath: string = (await ipc.getTempDataDirectoryPath()).res;
+        const tempDirNormalized = rawTempDataDirectoryPath.replace(/\\$/, '') + '\\' + this.tempSessionId;
+        const partialPaths = partRelativePaths.map(p => tempDirNormalized + '\\' + p);
+        const response = await ipc.deletePartialsForDisc(partialPaths);
+        const result: { cleared: boolean; message: string; deletedItems: string[]; notClearedItems: string[] } = response.res;
+        if (!result.cleared) {
+          const warnDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
+          warnDialog.componentInstance.title = "Temp cleanup incomplete";
+          warnDialog.componentInstance.message = `Disc ${this.getNextDiscNumber(i)} was confirmed burned, but its temporary split-part files could not all be removed: ${result.message} You can safely ignore this - the app offers to clear leftover temp files the next time it starts.`;
+          if (result.notClearedItems?.length) {
+            warnDialog.componentInstance.lists = [{ label: `Not removed (${result.notClearedItems.length}):`, items: result.notClearedItems }];
+          }
+          warnDialog.componentInstance.actionsNum = 1;
+          warnDialog.componentInstance.action1Label = "Ok";
+          warnDialog.componentInstance.action1Callback = () => { warnDialog.close(); };
         }
-        warnDialog.componentInstance.actionsNum = 1;
-        warnDialog.componentInstance.action1Label = "Ok";
-        warnDialog.componentInstance.action1Callback = () => { warnDialog.close(); };
       }
+      this.confirmedDiscs[i] = true;
+      await this.recordConfirmedDiscs(i);
+    } finally {
+      this.discsBeingConfirmed.delete(i);
     }
-    this.confirmedDiscs[i] = true;
-    await this.recordConfirmedDiscs(i);
   }
 
   /** Writes new disc i's entry to the cold storage metadata JSON, together with the entries of every new disc that

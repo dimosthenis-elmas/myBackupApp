@@ -269,6 +269,33 @@ async function main() {
       throw new Error(`Expected exactly ${EXPECTED_DISC_COUNT} discs, got ${actualDiscCount}. Something about the size constants at the top of this script no longer holds.`);
     }
 
+    // --- A split file's pieces are ticked and unticked together, on every disc (onDiscSelectionChange). The large
+    // file's two pieces are planned on two different discs: find them, untick one, and the other must follow; tick
+    // it again, and both are back. (Only the selected step's content is visible to getByRole.) ---
+    const pieceCheckbox = (n) => win.getByRole('checkbox', { name: new RegExp(escapeRegExp(path.basename(largeFileAbsPath)) + '\\.part\\.00' + n) });
+    const openDisc = async (i) => {
+      await win.getByRole('tab', { name: `Optical disk ${i + 1}`, exact: false }).click({ timeout: 15_000 });
+      await new Promise((r) => setTimeout(r, 700)); // the step's expand animation
+    };
+    const discOfPiece = {};
+    for (let i = 0; i < actualDiscCount; i++) {
+      await openDisc(i);
+      for (const n of [1, 2]) { if ((await pieceCheckbox(n).count()) > 0) { discOfPiece[n] = i; } }
+    }
+    console.log(`  the large file's pieces are on disc ${discOfPiece[1] + 1} (piece 1) and disc ${discOfPiece[2] + 1} (piece 2)`);
+    let piecesGoTogether = discOfPiece[1] !== undefined && discOfPiece[2] !== undefined && discOfPiece[1] !== discOfPiece[2];
+    if (piecesGoTogether) {
+      await openDisc(discOfPiece[1]);
+      await step('untick piece 1', () => pieceCheckbox(1).click({ timeout: 15_000 }));
+      await openDisc(discOfPiece[2]);
+      const piece2UntickedToo = !(await pieceCheckbox(2).isChecked());
+      await step('tick piece 2 again', () => pieceCheckbox(2).click({ timeout: 15_000 }));
+      await openDisc(discOfPiece[1]);
+      const piece1TickedToo = await pieceCheckbox(1).isChecked();
+      console.log(`  unticking piece 1 unticked piece 2 too: ${piece2UntickedToo}; ticking piece 2 again ticked piece 1 too: ${piece1TickedToo}`);
+      piecesGoTogether = piece2UntickedToo && piece1TickedToo;
+    }
+
     // Redirect ImgBurn to the harmless stub only now, right before it's actually needed - keeping the window
     // during which the real config.json differs from normal as short as practical - and restore it in the
     // outer finally block below no matter how the rest of this script ends.
@@ -277,9 +304,23 @@ async function main() {
 
     // --- Phase E: per disc - open its step, "Send to ImgBurn", confirm the disc label, wait for the real .ibb ---
 
+    let pieceKeptOnceItsOtherDiscIsSent = false;
     for (let i = 0; i < actualDiscCount; i++) {
       await step(`open the "Optical disk ${i + 1}" step`, () =>
         win.getByRole('tab', { name: `Optical disk ${i + 1}`, exact: false }).click({ timeout: 15_000 }));
+
+      if (i === Math.max(discOfPiece[1], discOfPiece[2])) {
+        // The disc with the file's other piece is already sent: leaving the file out now must be refused.
+        const n = i === discOfPiece[2] ? 2 : 1;
+        await new Promise((r) => setTimeout(r, 700));
+        await step(`untick piece ${n} (its other piece's disc is already sent)`, () => pieceCheckbox(n).click({ timeout: 15_000 }));
+        await step('wait for the "Split file not changed" dialog and click "Ok"', async () => {
+          await win.getByText('Split file not changed', { exact: true }).waitFor({ timeout: 15_000 });
+          await win.getByRole('dialog').getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 });
+        });
+        pieceKeptOnceItsOtherDiscIsSent = await pieceCheckbox(n).isChecked();
+        console.log(`  piece ${n} is still ticked after the refusal: ${pieceKeptOnceItsOtherDiscIsSent}`);
+      }
 
       // Despite @ViewChildren('cmp') being able to see every disc's FilesTreeComponent instance at once (used
       // right after step 2 first renders, to pre-select every disc's tree - see createTrees()), mat-stepper only
@@ -512,7 +553,10 @@ async function main() {
       fs.rmdirSync(sessionDir);
     }
 
-    const verifyPassed = normalCheckPassed && splitCheckPassed && confirmCheckPassed && allDiscsRecorded;
+    console.log(`\nA split file's pieces go together across discs: ${piecesGoTogether ? 'OK' : 'WRONG'}; ` +
+      `changing them once one of their discs is sent is refused: ${pieceKeptOnceItsOtherDiscIsSent ? 'OK' : 'WRONG'}`);
+    const verifyPassed = normalCheckPassed && splitCheckPassed && confirmCheckPassed && allDiscsRecorded
+      && piecesGoTogether && pieceKeptOnceItsOtherDiscIsSent;
 
     if (verifyPassed) {
       fs.rmSync(scratchRoot, { recursive: true, force: true });

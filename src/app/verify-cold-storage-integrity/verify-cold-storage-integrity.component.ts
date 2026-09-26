@@ -148,17 +148,18 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
 
       const discIdHashes = metadata.map(disc => getDiscIdHashForPaths(disc.map(f => f.path)));
       // Same guard seedFromExternalMetadata (optical-disc-backup-data-retriever.component.ts) already applies
-      // to this exact JSON shape - without it, two discs producing the same id (an empty disc, or the same
-      // disc listed twice) would make discIdHashes.indexOf() always resolve to the FIRST one: the second could
-      // never actually be identified/verified - inserting it would just look like "you already verified this
-      // disc" forever, even though it never really was.
-      if (new Set(discIdHashes).size !== discIdHashes.length) {
+      // to this exact JSON shape - without it, two discs producing the same id (the same disc listed twice) would
+      // make discIdHashes.indexOf() always resolve to the FIRST one: the second could never actually be
+      // identified/verified - inserting it would just look like "you already verified this disc" forever, even
+      // though it never really was. Discs with no entries are left out, like there: a disc never confirmed burned
+      // stays an empty entry, all empty discs share one id, and there is nothing on them to verify.
+      const idsOfDiscsWithFiles = discIdHashes.filter((id, i) => metadata[i].length > 0);
+      if (new Set(idsOfDiscsWithFiles).size !== idsOfDiscsWithFiles.length) {
         loadingDialogRef.close();
         this.showOkDialog(
           "Error",
           `The provided cold storage metadata JSON looks malformed: two or more discs produce the same ` +
-          `identifier (for example, an empty disc, or the same disc listed twice). Please check the JSON file ` +
-          `and try again.`
+          `identifier (for example, the same disc listed twice). Please check the JSON file and try again.`
         );
         return;
       }

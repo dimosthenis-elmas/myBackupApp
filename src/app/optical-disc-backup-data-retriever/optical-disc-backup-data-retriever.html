@@ -56,12 +56,9 @@
                     (click)="$event.stopPropagation()">
                     Select all
                 </mat-checkbox>
-                <mat-checkbox [ngClass]="{'hideThis' : filesTreeNotLoaded}" style="align-self: self-start" [(ngModel)]="groupPartialFiles"
-                    (click)="$event.stopPropagation()"
-                    matTooltip="A large file that didn't fit on one disc gets split into several '.partNNN' pieces, possibly spread across different discs. With this on, selecting any one piece automatically selects every other piece of that same file too, so you don't have to click each one by hand.">
-                    Group partials (choosing any part of a split file automatically selects all its other parts)
-                </mat-checkbox>
-                <files-tree style="align-self: stretch;" [ngClass]="{'hideThis' : filesTreeNotLoaded}" [groupPartialFiles]="groupPartialFiles"></files-tree>
+                <!-- A split large file's pieces are always selected together: a file can only be put back together from
+                     all of its pieces (see FilesTreeComponent's groupPartialFiles). -->
+                <files-tree style="align-self: stretch;" [ngClass]="{'hideThis' : filesTreeNotLoaded}" [groupPartialFiles]="true"></files-tree>
             </div> 
             <div class="flex-centered" *ngIf="!filesTreeNotLoaded">
                 <button mat-flat-button color="primary" (click)="getPathsOfFilesToBeRecovered();">Recover selected data</button> 

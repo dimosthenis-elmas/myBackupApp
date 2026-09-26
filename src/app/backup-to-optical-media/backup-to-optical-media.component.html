@@ -76,7 +76,9 @@
     <!-- Grayed out and its selection locked (expand/collapse and scrolling stay usable, for review) once this
          disc has been sent at least once - see disc-tree-locked's own comment in the stylesheet for why the
          selection must not change after that point. -->
-    <files-tree #cmp [disabled]="sentDiscs[disk]" [class.disc-tree-locked]="sentDiscs[disk]"></files-tree>
+    <!-- A split large file's pieces are ticked and unticked together on every disc - see onDiscSelectionChange. -->
+    <files-tree #cmp [disabled]="sentDiscs[disk]" [class.disc-tree-locked]="sentDiscs[disk]"
+       (userSelectionChange)="onDiscSelectionChange(disk, $event)"></files-tree>
     <form [formGroup]="firstFormGroup">
       <ng-template matStepLabel>Optical disk {{disk + 1}}{{confirmedDiscs[disk] ? ' (confirmed)' : ''}}</ng-template>
       <br>

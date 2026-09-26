@@ -412,7 +412,8 @@ async function captureAddMissingFiles() {
     await shot(win, 'Metadata saved confirmation', '03-metadata-saved.png');
 
     await win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 });
-    await win.getByRole('button', { name: 'Send disk 1 to ImgBurn' }).waitFor({ timeout: 30_000 });
+    // The new disc continues the existing collection's numbering (getNextDiscNumber).
+    await win.getByRole('button', { name: `Send disk ${existingMetadata.length + 1} to ImgBurn` }).waitFor({ timeout: 30_000 });
     await pause(500);
     await shot(win, 'Burn screen (new disc)', '04-burn-screen.png');
   } finally {

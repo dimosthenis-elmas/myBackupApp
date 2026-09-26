@@ -379,8 +379,10 @@ async function main() {
     // backup-to-optical-media.component.ts's stepper - discs 2/3 are collapsed (DOM-present, not yet visible)
     // until their own tab header is clicked. So each disc's own step still needs selecting before its button is
     // actually clickable, same as that other script - see the loop below.
-    await step('wait for step 5 to render (disc 1\'s "Send disk 1 to ImgBurn" button)', () =>
-      win.getByRole('button', { name: 'Send disk 1 to ImgBurn' }).waitFor({ timeout: 30_000 }));
+    // Every disc number on this screen is the one burned onto the disc's label - it continues the existing
+    // collection's numbering (getNextDiscNumber): the first new disc is disc existingMetadata.length + 1.
+    await step(`wait for step 5 to render (the first new disc's "Send disk ${existingMetadata.length + 1} to ImgBurn" button)`, () =>
+      win.getByRole('button', { name: `Send disk ${existingMetadata.length + 1} to ImgBurn` }).waitFor({ timeout: 30_000 }));
 
     const actualDiscCount = await win.getByRole('tab').count();
     console.log(`  -> ${actualDiscCount} new disc step(s) rendered (expected ${EXPECTED_NEW_DISC_COUNT} - 1 for the small missing files, 2 for the large file's real split pieces).`);
@@ -393,11 +395,12 @@ async function main() {
     // selected first - mat-step HEADERS (unlike step body content) are always all simultaneously present in the
     // DOM, so selecting them by ordinal position (.nth(i)) is safe.
     for (let i = 0; i < actualDiscCount; i++) {
-      await step(`open new disc ${i + 1}'s step`, () =>
-        win.getByRole('tab').nth(i).click({ timeout: 15_000 }));
+      const discNumber = existingMetadata.length + i + 1;
+      await step(`open new disc ${i + 1}'s step ("Optical disk ${discNumber}")`, () =>
+        win.getByRole('tab', { name: `Optical disk ${discNumber}`, exact: false }).click({ timeout: 15_000 }));
 
-      await step(`click "Send disk ${i + 1} to ImgBurn"`, () =>
-        win.getByRole('button', { name: `Send disk ${i + 1} to ImgBurn` }).click({ timeout: 15_000 }));
+      await step(`click "Send disk ${discNumber} to ImgBurn"`, () =>
+        win.getByRole('button', { name: `Send disk ${discNumber} to ImgBurn` }).click({ timeout: 15_000 }));
 
       // sendingDiscs[i] (add-missing-files-to-optical-media-cold-storage.component.ts) is meant to disable this
       // exact button for the whole time a send is in flight - not just guard against it silently in TypeScript -
@@ -408,9 +411,9 @@ async function main() {
       // Material's dialog overlay marks the rest of the page aria-hidden="true" while open, which hides this
       // button from getByRole entirely (an accessibility-tree query), not because it's actually gone - a plain
       // CSS locator sees it regardless.
-      await step(`verify "Send disk ${i + 1} to ImgBurn" is disabled while its send is in flight`, async () => {
-        const isDisabled = await win.locator('button', { hasText: `Send disk ${i + 1} to ImgBurn` }).isDisabled();
-        if (!isDisabled) { throw new Error(`"Send disk ${i + 1} to ImgBurn" was still enabled right after being clicked - the sendingDiscs in-flight guard is not actually disabling it.`); }
+      await step(`verify "Send disk ${discNumber} to ImgBurn" is disabled while its send is in flight`, async () => {
+        const isDisabled = await win.locator('button', { hasText: `Send disk ${discNumber} to ImgBurn` }).isDisabled();
+        if (!isDisabled) { throw new Error(`"Send disk ${discNumber} to ImgBurn" was still enabled right after being clicked - the sendingDiscs in-flight guard is not actually disabling it.`); }
       });
 
       // Capture the "Disc label" dialog's own visible text before dismissing it - this is the exact real-bug
