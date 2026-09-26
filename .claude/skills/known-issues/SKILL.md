@@ -19,21 +19,7 @@ from this file (and test it if it needs one - see "Working on these" below), and
 
 ## High
 
-### 1. Hidden and system files may be left off a disc (unverified)
-
-- **What happens:** `appData/IBB_TEMPLATE.ibb` has `IncludeHiddenFiles=0` and `IncludeSystemFiles=0`. If ImgBurn
-  applies them to the `F|` entries the app lists one by one, hidden/system files (`desktop.ini`, `Thumbs.db`,
-  anything the user hid) are not burned, while the metadata JSON records them with hashes. No test covers it.
-- **Worse than the missing files:** recovery from the JSON identifies an inserted disc by a hash of ALL its paths
-  (`recoverAllFilesFromAllDiscs` in `optical-disc-backup-data-retriever.component.ts`) and compares it with the hash
-  of the JSON's list for that disc. One file missing from the disc (a single `desktop.ini`) makes the whole disc
-  unrecognizable - "This disc does not seem to contain any of the files you requested" - so none of its files can be
-  recovered that way.
-- **Fix:** set both to 1 in the template.
-- **Test idea:** one real ImgBurn build (not the stub) of a folder with a hidden file and a system file, then check
-  the image.
-
-### 2. A split file's leftover piece can be lost when sending a disc fails
+### 1. A split file's leftover piece can be lost when sending a disc fails
 
 - **What happens:** a large file's real split can produce one more piece than planned (a "sliver"). Slivers wait in
   `pendingOverflowPartials` until a disc has room. In `sendToImgBurn`, the list is emptied and the slivers that fit
@@ -52,7 +38,7 @@ from this file (and test it if it needs one - see "Working on these" below), and
   sliver is accepted (e.g. make the hashing fail by locking one of that disc's files with PowerShell,
   `[IO.File]::Open(path, 'Open', 'ReadWrite', 'None')`), then retry and check the sliver still reaches a disc.
 
-### 3. Retrying after a failed split trusts the pieces already there (unverified)
+### 2. Retrying after a failed split trusts the pieces already there (unverified)
 
 - **What happens:** `createOpticalMediaDiscPartials` only splits a large file when no `<name>.part*` file exists yet
   (`partFileNames.length === 0`); the piece count is only checked right after a fresh split. If 7-Zip fails part way
@@ -67,7 +53,7 @@ from this file (and test it if it needs one - see "Working on these" below), and
 
 ## Medium
 
-### 4. A file another program holds open stops the whole run
+### 3. A file another program holds open stops the whole run
 
 - **What happens:** a file opened without sharing (an open Outlook `.pst`, browser profile databases) gives EBUSY on
   copy and on open-for-read (confirmed). Synchronize directories' byte comparison opens every unchanged file on both
@@ -84,7 +70,7 @@ from this file (and test it if it needs one - see "Working on these" below), and
 - **Test idea:** in `test-sync-and-cumulative-rules.js`, lock a source file with PowerShell
   (`[IO.File]::Open(path, 'Open', 'ReadWrite', 'None')`) for the length of a run.
 
-### 5. Splitting large files fails when the app's temp folder is inside the folder being backed up
+### 4. Splitting large files fails when the app's temp folder is inside the folder being backed up
 
 - **What happens:** e.g. the app folder is on the Desktop and the Desktop is backed up. The planned split pieces live
   in the temp folder (`appData\tempFilesCanBeDeleted\session-...`), and the wizard trims the source folder off every
@@ -102,14 +88,14 @@ from this file (and test it if it needs one - see "Working on these" below), and
 - **Test idea:** point `cacheDataDirectoryPath` at a folder inside the source (lib/ibb-tools.js
   `backupAndRedirectConfigField`), plan with splitting, send a disc with pieces (stub 7-Zip), check the .ibb paths.
 
-### 6. Discs holding many small files do not fit (estimate, not measured)
+### 5. Discs holding many small files do not fit (estimate, not measured)
 
 - **What happens:** planning counts only file bytes and keeps a fixed share of each disc free (`maxRepletionRatio` in
-  `OPTICAL_MEDIA`). The ImgBurn project builds ISO9660 + Joliet + UDF (`FileSystem=3` in `appData/IBB_TEMPLATE.ibb`),
-  where every file also takes a 2 KB UDF file entry, its data rounded up to whole 2 KB sectors, and three directory
-  records - about 3 KB per file. The free share covers about 46,000 files on a full DVD (141 MB), 81,000 on a full
-  BD-25 (250 MB) and 16,000 on a full CD (49 MB); a full disc whose files average under about 100 KB (DVD), 300 KB
-  (Blu-ray) or 40 KB (CD) does not fit. Planning sorts largest-first, so the smallest files of the whole source end up
+  `OPTICAL_MEDIA`). The ImgBurn project builds ISO9660 + UDF 1.02, no Joliet (`FileSystem=3` in
+  `appData/IBB_TEMPLATE.ibb`), where every file also takes a 2 KB UDF file entry, its data rounded up to whole 2 KB
+  sectors, and two directory records (one per file system) - about 3 KB per file. The free share covers about
+  46,000 files on a full DVD (141 MB), 81,000 on a full BD-25 (250 MB) and 16,000 on a full CD (49 MB); a full disc
+  whose files average under about 100 KB (DVD), 300 KB (Blu-ray) or 40 KB (CD) does not fit. Planning sorts largest-first, so the smallest files of the whole source end up
   together on the last disc(s): any source with more than one disc's worth of small files (source code, mail,
   thumbnails) gets such discs. ImgBurn then refuses the disc; the app cannot re-plan one disc, and the only way out in
   the app - deselecting files - leaves them out of the backup silently (on no disc, not in the JSON).
@@ -120,10 +106,11 @@ from this file (and test it if it needs one - see "Working on these" below), and
 - **Fix:** plan each file as its size rounded up to 2 KB plus a per-file allowance (about 3 KB; a folder, one or two
   blocks), and keep the ratio only for the rest.
 - **Test idea:** confirm the per-file cost first with one real ImgBurn build (not the stub) of a folder with many
-  small files; then a planning check in `test-partitioning.js` that a disc of many tiny files is planned with room for
-  them.
+  small files - ImgBurn builds an image with no prompts from a project file:
+  `ImgBurn.exe /MODE BUILD /SRC x.ibb /DEST x.iso /OUTPUTMODE IMAGEFILE /START /CLOSE /NOIMAGEDETAILS /LOG x.log`;
+  then a planning check in `test-partitioning.js` that a disc of many tiny files is planned with room for them.
 
-### 7. The metadata JSON is rewritten in place
+### 6. The metadata JSON is rewritten in place
 
 - **What happens:** `writeJSONtoDisk` (`app/workers/worker.ts`) truncates the file, then writes it. Both disc wizards
   rewrite the whole cold storage metadata JSON each time a disc is confirmed burned; a crash or power loss in between
@@ -134,7 +121,7 @@ from this file (and test it if it needs one - see "Working on these" below), and
   replaces a file.
 - **Test idea:** a very simple fix - none needed beyond the existing JSON checks in the disc wizards' UI tests.
 
-### 8. A failed ImgBurn project write is reported as success
+### 7. A failed ImgBurn project write is reported as success
 
 - **What happens:** in `createIBB_file` (`app/workers/worker.ts`), a failure writing the `.ibb` file is only logged -
   `saveIBB_toDisk(...).catch(err => console.log(err))` - and a refused temp folder only shows an error and returns.
@@ -148,7 +135,7 @@ from this file (and test it if it needs one - see "Working on these" below), and
 
 ## Low
 
-### 9. Cumulative backup to an exFAT drive probably copies most files again on every run (unverified)
+### 8. Cumulative backup to an exFAT drive probably copies most files again on every run (unverified)
 
 - **What happens:** exFAT stores modified times to 10 ms; Cumulative's default comparison copies whenever the source
   is newer by even 1 ms. The README only excludes FAT/FAT32, and exFAT is the default for large USB drives. The result
@@ -158,7 +145,7 @@ from this file (and test it if it needs one - see "Working on these" below), and
 - **Test idea:** a Cumulative run onto an exFAT stick or VHD (needs admin to create), then a second run: it must copy
   nothing.
 
-### 10. Cumulative backup to the root of an NTFS drive warns that the backup drive's own folders are not backed up
+### 9. Cumulative backup to the root of an NTFS drive warns that the backup drive's own folders are not backed up
 
 - **What happens:** `diff` collects the entries it cannot read from BOTH scans into one `skipped` list and reports it
   as "Some items were left out ... they are NOT backed up". A drive root always holds "System Volume Information",
@@ -175,17 +162,17 @@ from this file (and test it if it needs one - see "Working on these" below), and
 - **Test idea:** extend section 3 of `test-harness/ui/test-wizard-error-dialogs.js` (a folder denied listing with
   icacls) with that folder in the backup folder instead of the source: no "NOT backed up" warning may name it.
 
-### 11. A failed Cumulative copy shows two error dialogs
+### 10. A failed Cumulative copy shows two error dialogs
 
 - **What happens:** `ngAfterViewInit` in `src/app/incremental-copying/incremental-copying.component.ts` attaches
   `.catch(onError)` and a separate `.then(...)` to the same `copyingPromise`. When the copy fails (disk full, a locked
-  file - issue 4 - a link that needs administrator rights), the promise returned by `.then` rejects with no handler,
+  file - issue 3 - a link that needs administrator rights), the promise returned by `.then` rejects with no handler,
   so GlobalErrorHandler adds "Something unexpected went wrong in the app" on top of the "Error" dialog.
 - **Fix:** one chain - `.then(...).catch(...)`.
 - **Test idea:** in `test-wizard-error-dialogs.js`, make a Cumulative copy fail (delete a source file after the
   comparison, before copying) and check exactly one dialog appears.
 
-### 12. Cancel is ignored while "Planning discs" does its first count
+### 11. Cancel is ignored while "Planning discs" does its first count
 
 - **What happens:** `getAllFilePathsWithStats` sets `process.env._stop = 'NoStop'` at the start of every call. A
   Cancel that lands during the `countAllFilesQuick` probe before it stops the probe, then the scan resets it and the
@@ -195,7 +182,7 @@ from this file (and test it if it needs one - see "Working on these" below), and
 - **Test idea:** worker-ipc: start a plan of a large generated tree, send `stop` right away (`sendToWorker`), expect
   status "stopped".
 
-### 13. Synchronize directories: Cancel during the first comparison does not stop the second
+### 12. Synchronize directories: Cancel during the first comparison does not stop the second
 
 - **What happens:** the stop reaches the worker before the second `diff` request, which resets the stop flag, so
   the second full scan and `match-letter-case` run in the background after the dialog closed; anything started next
@@ -203,18 +190,18 @@ from this file (and test it if it needs one - see "Working on these" below), and
 - **Code:** `syncDirs()` in `src/app/sync-dirs/sync-dirs.component.ts`.
 - **Fix:** check `userCancelledOperation` before starting the second `diff` and `match-letter-case`.
 
-### 14. The recovery wizard's "already recovered this disc" fix has no test
+### 13. The recovery wizard's "already recovered this disc" fix has no test
 
 - **What it is:** in `src/app/optical-disc-backup-data-retriever/optical-disc-backup-data-retriever.component.ts`,
   the "already recovered this disc" dialog's Retry sets `dialogClosed = true` so `waitForDialog`'s polling loop ends.
   Before, that loop ran forever in the background.
 - **Why no test:** the loop has no visible effect, so no UI test can see it. A regression would not be caught.
 
-### 15. Smaller ones
+### 14. Smaller ones
 
 - **No fit check for a disc's re-measured size:** `sendToImgBurn` only checks slivers against the capacity; files that
   grew since planning are burned even if the disc no longer fits (ImgBurn then refuses it). Planning also counts only
-  file bytes - see issue 6 for when the per-medium ratios in `OPTICAL_MEDIA` do not leave enough room for sectors and
+  file bytes - see issue 5 for when the per-medium ratios in `OPTICAL_MEDIA` do not leave enough room for sectors and
   file system records.
 - **Split pieces get discs of their own:** `partitionBackupToOpticalMedia` packs ordinary files first and the pieces
   afterwards, so the last ordinary disc's free space is never used for pieces (1 GB of files + one 6 GB file = 3 DVDs
