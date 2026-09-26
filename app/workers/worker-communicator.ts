@@ -10,7 +10,7 @@ whole pattern again.
 
 
 import { filesMetadata, IElectronAPI } from '../../src/types/interface'
-import { WorkerChannel, WorkerRequest, WorkerResponse, OpticalMediaPartitioning, WorkerListener, DiffComparison, NameClash } from './ipc.interfaces'
+import { WorkerChannel, WorkerRequest, WorkerResponse, OpticalMediaPartitioning, WorkerListener, DiffComparison, NameClash, IncompleteSplitFile } from './ipc.interfaces'
 
 /** The human-readable text for a worker error payload (`WorkerResponse.res` of a `status: 'error'` response): a
  *  plain string as-is, an Error's (or an `{ msg }` object's) message, otherwise its JSON. */
@@ -295,8 +295,9 @@ export class WorkerCommunicator {
      *  once per job and reused consistently across every call this same job makes (this one, createIBB_file,
      *  and createOpticalMediaDiscPartials) - it is what keeps this job's real split partials and .ibb files
      *  isolated from any other job's, past or concurrent. `maxRepletionRatio` is the chosen medium's (see
-     *  OPTICAL_MEDIA in src/app/shared/utils/optical-media.ts). */
-    static partitionBackupToOpticalMedia(rootPath: string, mediaCapacityInBytes: number, maxRepletionRatio: number, splitLargeFiles: boolean = false, sessionId: string, filesMetadata?: filesMetadata[], skipUnreadable: boolean = false): Promise<OpticalMediaPartitioning<WorkerResponse>> {
+     *  OPTICAL_MEDIA in src/app/shared/utils/optical-media.ts). `incompleteSplitFiles`: files among `filesMetadata`
+     *  whose first pieces are already on discs - only their missing pieces are planned. */
+    static partitionBackupToOpticalMedia(rootPath: string, mediaCapacityInBytes: number, maxRepletionRatio: number, splitLargeFiles: boolean = false, sessionId: string, filesMetadata?: filesMetadata[], skipUnreadable: boolean = false, incompleteSplitFiles?: IncompleteSplitFile[]): Promise<OpticalMediaPartitioning<WorkerResponse>> {
         return this.sendAndAwaitResponse<OpticalMediaPartitioning<WorkerResponse>>('partition-backup-to-optical-media', {
             rootPath: rootPath,
             mediaCapacityInBytes: mediaCapacityInBytes,
@@ -304,7 +305,8 @@ export class WorkerCommunicator {
             splitLargeFiles: splitLargeFiles,
             sessionId: sessionId,
             filesMetadata: filesMetadata,
-            skipUnreadable: skipUnreadable
+            skipUnreadable: skipUnreadable,
+            incompleteSplitFiles: incompleteSplitFiles
         });
     }
 
@@ -410,12 +412,13 @@ export class WorkerCommunicator {
     }
 
     /** Physically splits (via real 7-Zip) whichever large files `paths` references that haven't been split yet,
-     *  and returns fresh, real stats for every path - see createOpticalMediaDiscPartials in worker.ts. The
-     *  response's `res` array can be longer than `paths` (a rare, known boundary case surfaces one extra,
-     *  unplanned partial - a "sliver", see that function's own comment) - callers should build their disc's
-     *  saved metadata
-     *  from the full response, not by zipping it against the original request. `sessionId` must be the same
-     *  one value used for every other call this job makes - see partitionBackupToOpticalMedia's own comment. */
+     *  and returns fresh, real stats for every path - see createOpticalMediaDiscPartials in worker.ts. A piece is
+     *  returned under its real name, whose total can differ from the planned one (withoutPieceTotal in
+     *  split-pieces.ts tells which requested piece it is), and the response's `res` array can be longer than
+     *  `paths` (a rare, known boundary case surfaces one extra, unplanned piece - a "sliver", see that function's
+     *  own comment) - callers should build their disc's saved metadata from the full response, not by zipping it
+     *  against the original request. `sessionId` must be the same one value used for every other call this job
+     *  makes - see partitionBackupToOpticalMedia's own comment. */
     static createOpticalMediaDiscPartials(dirPath: string, paths: Array<string>, sessionId: string): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('create-optical-media-disc-partials', { dirPath: dirPath, paths: paths, sessionId: sessionId });
     }

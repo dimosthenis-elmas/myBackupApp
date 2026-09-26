@@ -83,7 +83,7 @@ const path = require('path');
 const { launchApp } = require('../worker-ipc/call-worker');
 const { assertRealTempDataDirectoryIsSafeToUse, resolveRealTempDataDirectory, waitForSessionSubdirectory } = require('../worker-ipc/temp-dir-guard');
 const { printTree } = require('../lib/print-tree');
-const { writeStubImgBurnBat, backupAndRedirectImgBurnPath, restoreConfig, waitForFile, parseIbbBackupList, confirmedAfterDismissingLinkedDiscsNotice } = require('../lib/ibb-tools');
+const { writeStubImgBurnBat, backupAndRedirectImgBurnPath, restoreConfig, waitForFile, parseIbbBackupList, waitForDiscConfirmed } = require('../lib/ibb-tools');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
 
@@ -272,7 +272,7 @@ async function main() {
     // --- A split file's pieces are ticked and unticked together, on every disc (onDiscSelectionChange). The large
     // file's two pieces are planned on two different discs: find them, untick one, and the other must follow; tick
     // it again, and both are back. (Only the selected step's content is visible to getByRole.) ---
-    const pieceCheckbox = (n) => win.getByRole('checkbox', { name: new RegExp(escapeRegExp(path.basename(largeFileAbsPath)) + '\\.part\\.00' + n) });
+    const pieceCheckbox = (n) => win.getByRole('checkbox', { name: new RegExp(escapeRegExp(path.basename(largeFileAbsPath)) + `\\.outOf\\.${EXPECTED_PART_COUNT}\\.part\\.00` + n) });
     const openDisc = async (i) => {
       await win.getByRole('tab', { name: `Optical disk ${i + 1}`, exact: false }).click({ timeout: 15_000 });
       await new Promise((r) => setTimeout(r, 700)); // the step's expand animation
@@ -456,10 +456,11 @@ async function main() {
     && missingDirs.length === 0 && extraDirs.length === 0;
 
   // 3. Verify the large file's real split pieces STRUCTURALLY - their exact names come from 7-Zip itself, not
-  //    predicted in advance (unlike everything else above, which this script fully controls).
+  //    predicted in advance (unlike everything else above, which this script fully controls) - each name says how
+  //    many pieces the file has.
   console.log('\nVerifying the large file\'s real split pieces...');
   const largeFileBasename = path.basename(largeFileAbsPath);
-  const partNamePattern = new RegExp('^' + escapeRegExp(largeFileBasename) + '\\.part\\.', 'i');
+  const partNamePattern = new RegExp('^' + escapeRegExp(largeFileBasename) + `\\.outOf\\.${EXPECTED_PART_COUNT}\\.part\\.`, 'i');
   const partEntries = splitPieceEntries
     .filter((e) => partNamePattern.test(e.name))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -504,12 +505,9 @@ async function main() {
       await step(`click "Confirm disc burned" for disc ${i + 1}`, () =>
         win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 15_000 }));
 
-      // A disc that shares a split file with a disc not confirmed yet is not recorded in the metadata JSON yet, and
-      // says so in an "Also burn disc ..." notice as it is confirmed - dismissed here, before looking for the "Disc
-      // confirmed" button (the open notice hides the page from getByRole). test-backup-to-optical-media-overflow-disc.js
-      // checks that notice and the recording in detail.
-      await step(`wait for disc ${i + 1} to show as confirmed (dismissing an "Also burn disc ..." notice if one opens)`, () =>
-        confirmedAfterDismissingLinkedDiscsNotice(win));
+      // Recorded in the metadata JSON at once, with no dialog - also a disc holding only some pieces of the split file.
+      await step(`wait for disc ${i + 1} to show as confirmed, with no dialog`, () =>
+        waitForDiscConfirmed(win));
 
       if (discSplitPiecePaths.length > 0) {
         // confirmDiscBurned awaits the real delete IPC call before its own button text updates, so by the time

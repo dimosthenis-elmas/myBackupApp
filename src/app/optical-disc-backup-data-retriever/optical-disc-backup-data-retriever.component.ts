@@ -16,6 +16,7 @@ import { parseProgressFromLine, parseScanItemsProgress } from '../shared/utils/p
 import { formatMegabytes } from '../shared/utils/format-bytes';
 import { applyOriginalNamesList, backedUpPath, confirmRecoveredPathLengths, isOriginalNamesList } from '../shared/utils/shortened-names';
 import { confirmRecoveryFolderIsEmpty } from '../shared/utils/recovery-folder';
+import { parsePiece } from '../../../app/workers/split-pieces';
  
   @Component({
     selector: 'optical-disc-backup-data-retriever',
@@ -1052,17 +1053,17 @@ import { confirmRecoveryFolderIsEmpty } from '../shared/utils/recovery-folder';
     }
 
     /** Groups the recovered/selected file paths (this.selectedFilePathsWithExtraInfo) by the large file they
-     *  are a partial of. Only paths matching the "<name>.part.<digits>" convention used when splitting large
-     *  files (see partitionBackupToOpticalMedia in worker.ts) are considered, and only groups of 2 or more are
-     *  returned - a lone ".part.001" with no siblings selected is not a usable set to reassemble from anyway,
-     *  and mergeFileParts itself also refuses fewer than 2 parts as a second line of defense.
+     *  are a partial of. Only paths named as the pieces of a split large file are considered (see split-pieces.ts),
+     *  and only groups of 2 or more are returned - a lone ".part.001" with no siblings selected is not a usable set
+     *  to reassemble from anyway, and mergeFileParts itself also refuses fewer than 2 parts as a second line of
+     *  defense - except a group whose names say how many pieces there are, so that pieces missing from it are named
+     *  (mergeFileParts checks that first).
      *  Each part's path is resolved to its actual absolute on-disk location using the exact same rule
      *  createTree/insertBranch (worker.ts) use to build the copy destination: this.backup.targetPath, with a
      *  trailing '\' appended if missing, followed by the file's path relative to the backup root - so this
      *  must be kept in sync with that logic if it ever changes. */
     private groupSelectedPartialFiles(): Array<{ originalFileName: string; partFilePaths: string[] }> {
-      const partFilePattern = /^(.+)\.part\.\d+$/i;
-      const groups = new Map<string, { originalFileName: string; partFilePaths: string[] }>();
+      const groups = new Map<string, { originalFileName: string; partFilePaths: string[], total?: number }>();
 
       let target = this.backup.targetPath;
       if (target[target.length - 1] != '\\') { target += '\\'; }
@@ -1071,18 +1072,21 @@ import { confirmRecoveryFolderIsEmpty } from '../shared/utils/recovery-folder';
         const lastSlash = entry.path.lastIndexOf('\\');
         const dir = lastSlash >= 0 ? entry.path.substring(0, lastSlash + 1) : '';
         const fileName = lastSlash >= 0 ? entry.path.substring(lastSlash + 1) : entry.path;
-        const match = partFilePattern.exec(fileName);
-        if (match) {
-          const originalFileName = match[1];
+        const piece = parsePiece(fileName);
+        if (piece) {
+          const originalFileName = piece.file;
           const key = dir + originalFileName;
           if (!groups.has(key)) {
             groups.set(key, { originalFileName: originalFileName, partFilePaths: [] });
           }
           groups.get(key)!.partFilePaths.push(target + entry.path);
+          groups.get(key)!.total ??= piece.total;
         }
       });
 
-      return Array.from(groups.values()).filter(g => g.partFilePaths.length > 1);
+      return Array.from(groups.values())
+        .filter(g => g.partFilePaths.length > 1 || g.total !== undefined)
+        .map(({ originalFileName, partFilePaths }) => ({ originalFileName, partFilePaths }));
     }
 
     /** The folder a group's parts were recovered into, ending in a backslash - which is also where

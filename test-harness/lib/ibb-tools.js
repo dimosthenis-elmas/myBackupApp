@@ -100,25 +100,21 @@ function parseIbbVolumeLabel(ibbFilePath) {
   return match[1].trim();
 }
 
-/** For right after clicking a disc's "Confirm disc burned" in either disc wizard: the button then turns into "Disc
- *  confirmed" - but for a disc that shares a split large file with a disc not confirmed yet, an "Also burn disc ..."
- *  notice opens at the same moment, and while it is open the page behind it is hidden from getByRole. Dismisses that
- *  notice if it opens, then waits for "Disc confirmed". Resolves with the notice's text, or null if none opened. */
-async function confirmedAfterDismissingLinkedDiscsNotice(win, timeoutMs = 15_000) {
-  const notice = win.getByRole('dialog').filter({ hasText: "Don't close the app" });
+/** For right after clicking a disc's "Confirm disc burned" in either disc wizard: waits for the button to turn into
+ *  "Disc confirmed". A confirmed disc is recorded in the metadata JSON at once, with no dialog - one that opens
+ *  instead (it would also hide the page behind it from getByRole) fails the wait, with its text. */
+async function waitForDiscConfirmed(win, timeoutMs = 15_000) {
+  const dialog = win.getByRole('dialog');
   const confirmedButton = win.getByRole('button', { name: 'Disc confirmed', exact: false });
   await Promise.race([
-    notice.waitFor({ timeout: timeoutMs }).catch(() => {}),
+    dialog.first().waitFor({ timeout: timeoutMs }).catch(() => {}),
     confirmedButton.waitFor({ timeout: timeoutMs }).catch(() => {}),
   ]);
-  await new Promise((r) => setTimeout(r, 500)); // the two appear together - let both settle
-  let noticeText = null;
-  if ((await notice.count()) > 0) {
-    noticeText = await notice.innerText();
-    await notice.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: timeoutMs });
+  await new Promise((r) => setTimeout(r, 500)); // a dialog would open together with the button's change
+  if ((await dialog.count()) > 0) {
+    throw new Error(`A dialog opened on confirming the disc: ${(await dialog.first().innerText()).replace(/\s+/g, ' ')}`);
   }
   await confirmedButton.waitFor({ timeout: timeoutMs });
-  return noticeText;
 }
 
 module.exports = {
@@ -129,5 +125,5 @@ module.exports = {
   waitForFile,
   parseIbbBackupList,
   parseIbbVolumeLabel,
-  confirmedAfterDismissingLinkedDiscsNotice,
+  waitForDiscConfirmed,
 };

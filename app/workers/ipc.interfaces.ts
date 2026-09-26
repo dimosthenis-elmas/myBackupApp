@@ -77,6 +77,16 @@ export interface CreatedIbbProject {
   originalNamesFile?: { size: number, mtime: Date, sha256: string };
 }
 
+/** A large file only some of whose pieces are on discs (see split-pieces.ts) - burned in an earlier job that ended
+ *  before the rest were. "Add missing files" plans only its missing pieces; before they are burned, splitting the file
+ *  again must give back the very pieces already on discs, checked by their SHA-256 (see createOpticalMediaDiscPartials
+ *  in worker.ts). `path` is the file's full path in the folder being backed up. */
+export interface IncompleteSplitFile {
+  path: string;
+  total: number;
+  burnedPieces: Array<{ number: number, sha256?: string }>;
+}
+
 export type OpticalMediaPartitioning<WorkerResponse> = {
   [K in keyof WorkerResponse]:
             K extends 'res' ? 

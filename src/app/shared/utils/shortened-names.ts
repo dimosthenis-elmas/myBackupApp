@@ -38,7 +38,7 @@ export async function confirmDiscNameAndPathLimits(dialog: MatDialog, relativePa
   const namesTooLong = itemsWithNamesTooLong(relativePaths);
   if (namesTooLong.length > 0 && !(await askToContinue(dialog, 'Names too long for a disc',
     `A disc holds file and folder names of at most ${MAX_DISC_NAME_LENGTH} characters. The ${namesTooLong.length === 1 ? 'name' : `${namesTooLong.length} names`} ` +
-    `below ${namesTooLong.length === 1 ? 'is' : 'are'} longer - for a large file split into pieces, counting the ".part.001" its pieces add.\n\n` +
+    `below ${namesTooLong.length === 1 ? 'is' : 'are'} longer - for a large file split into pieces, counting the ending such as ".outOf.23.part.001" its pieces add.\n\n` +
     `We recommend that you cancel, shorten ${namesTooLong.length === 1 ? 'it' : 'them'} in your folder, and then ${howToRetry}.\n\n` +
     `If you continue instead, each one is burned under a shorter name, on the disc only: its first part, then "~" and a ` +
     `code of 8 characters, then its extension - for example "…Autoregressive_Transformer_and_Conditio~1f0c9a2e.pdf". Your ` +

@@ -147,12 +147,12 @@ async function main() {
 
       printTree(sessionTempDir, 'App temp session dir after materializing only the mixed disc');
 
-      // Both solo pieces' real names are predictable (file-a.bin.part.001 / file-b.bin.part.001, the only
-      // full-volume piece each file has), and they land in the same temp subdirectory the mixed disc's own
-      // pieces were just materialized into.
+      // Both solo pieces' real names are predictable (file-a.bin.outOf.2.part.001 / file-b.bin.outOf.2.part.001,
+      // the only full-volume piece each file has, of its 2), and they land in the same temp subdirectory the mixed
+      // disc's own pieces were just materialized into.
       const expectedSoloRealPaths = [
-        path.join(sessionTempDir, 'large-files', 'file-a.bin.part.001'),
-        path.join(sessionTempDir, 'large-files', 'file-b.bin.part.001'),
+        path.join(sessionTempDir, 'large-files', 'file-a.bin.outOf.2.part.001'),
+        path.join(sessionTempDir, 'large-files', 'file-b.bin.outOf.2.part.001'),
       ];
       const soloSideEffectExists = expectedSoloRealPaths.every((p) => fs.existsSync(p));
       results.soloDiscPiecesMaterializedAsSideEffect = soloSideEffectExists;

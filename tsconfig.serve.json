@@ -24,6 +24,7 @@
     "app/workers/worker-communicator.ts",
     "app/workers/logsbuffer.ts",
     "app/workers/disc-names.ts",
+    "app/workers/split-pieces.ts",
     "src/types/interface.d.ts"
   ],
   "exclude": [

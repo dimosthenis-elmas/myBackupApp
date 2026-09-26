@@ -38,7 +38,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { launchApp } = require('../worker-ipc/call-worker');
-const { backupAndRedirectConfigField, restoreConfig, writeStubImgBurnBat, waitForFile, parseIbbBackupList, confirmedAfterDismissingLinkedDiscsNotice } = require('../lib/ibb-tools');
+const { backupAndRedirectConfigField, restoreConfig, writeStubImgBurnBat, waitForFile, parseIbbBackupList, waitForDiscConfirmed } = require('../lib/ibb-tools');
 const { realImgBurnPath, buildIsoWithImgBurn } = require('../lib/imgburn-build');
 const { assertNoOpticalMediaAlreadyMounted, mountIso, dismountIso } = require('./iso-disc');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
@@ -212,7 +212,7 @@ async function main() {
     await waitForFile(firstIbb, 30_000);
     await step('"Confirm disc burned"', async () => {
       await win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 15_000 });
-      await confirmedAfterDismissingLinkedDiscsNotice(win);
+      await waitForDiscConfirmed(win);
     });
     const recorded = () => { try { return JSON.parse(fs.readFileSync(metadataJsonPath, 'utf8')); } catch { return null; } };
     for (let i = 0; i < 60 && !(recorded() && recorded()[0] && recorded()[0].length > 0); i++) { await pause(500); }
@@ -394,7 +394,7 @@ async function main() {
     await waitForFile(secondIbb, 30_000);
     await step('"Confirm disc burned"', async () => {
       await win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 15_000 });
-      await confirmedAfterDismissingLinkedDiscsNotice(win);
+      await waitForDiscConfirmed(win);
     });
     const updated = () => { try { return JSON.parse(fs.readFileSync(updatedJsonPath, 'utf8')); } catch { return null; } };
     for (let i = 0; i < 60 && !(updated() && updated()[1] && updated()[1].length > 0); i++) { await pause(500); }

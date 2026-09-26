@@ -95,7 +95,7 @@ const { launchApp, callWorker } = require('../worker-ipc/call-worker');
 const { assertRealTempDataDirectoryIsSafeToUse, resolveRealTempDataDirectory, waitForSessionSubdirectory } = require('../worker-ipc/temp-dir-guard');
 const { printTree } = require('../lib/print-tree');
 const { normalizeForMetadata, OPTICAL_DRIVE_LETTER_CONVENTION } = require('../lib/cold-storage-metadata');
-const { writeStubImgBurnBat, backupAndRedirectImgBurnPath, restoreConfig, waitForFile, parseIbbBackupList, parseIbbVolumeLabel, confirmedAfterDismissingLinkedDiscsNotice } = require('../lib/ibb-tools');
+const { writeStubImgBurnBat, backupAndRedirectImgBurnPath, restoreConfig, waitForFile, parseIbbBackupList, parseIbbVolumeLabel, waitForDiscConfirmed } = require('../lib/ibb-tools');
 const { MARKER_FILE_NAME } = require('../lib/safety');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { generateFixtureTree } = require('../lib/fixture-tree-source');
@@ -544,11 +544,12 @@ async function main() {
     && dirsMissingFromIbb.length === 0 && dirsExtraInIbb.length === 0;
 
   // 3b. Verify the large file's real split pieces STRUCTURALLY - their exact names come from 7-Zip itself, not
-  //     predicted in advance (unlike everything else above, which this script fully controls).
+  //     predicted in advance (unlike everything else above, which this script fully controls) - each name says how
+  //     many pieces the file has.
   console.log('\nVerifying the large file\'s real split pieces...');
   const originalLargeFileAbsPath = largeFileEntry ? path.join(masterDir, largeFileEntry.relativePath.split('/').join(path.sep)) : null;
   const largeFileBasename = largeFileEntry ? path.basename(largeFileEntry.relativePath) : null;
-  const partNamePattern = largeFileBasename ? new RegExp('^' + escapeRegExp(largeFileBasename) + '\\.part\\.', 'i') : null;
+  const partNamePattern = largeFileBasename ? new RegExp('^' + escapeRegExp(largeFileBasename) + `\\.outOf\\.${EXPECTED_PART_COUNT}\\.part\\.`, 'i') : null;
   const partEntries = splitPieceIbbEntries
     .filter((e) => partNamePattern && partNamePattern.test(e.name))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -592,12 +593,9 @@ async function main() {
       await step(`click "Confirm disc burned" for new disc ${i + 1}`, () =>
         win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 15_000 }));
 
-      // A disc that shares a split file with a disc not confirmed yet is not recorded in the metadata JSON yet, and
-      // says so in an "Also burn disc ..." notice as it is confirmed - dismissed here, before looking for the "Disc
-      // confirmed" button (the open notice hides the page from getByRole). ui/test-backup-to-optical-media-overflow-disc.js
-      // checks that notice and the recording in detail.
-      await step(`wait for new disc ${i + 1} to show as confirmed (dismissing an "Also burn disc ..." notice if one opens)`, () =>
-        confirmedAfterDismissingLinkedDiscsNotice(win));
+      // Recorded in the metadata JSON at once, with no dialog - also a disc holding only some pieces of the split file.
+      await step(`wait for new disc ${i + 1} to show as confirmed, with no dialog`, () =>
+        waitForDiscConfirmed(win));
 
       if (discSplitPiecePaths.length > 0) {
         // confirmDiscBurned awaits the real delete IPC call before its own button text updates, so by the time

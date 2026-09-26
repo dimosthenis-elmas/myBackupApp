@@ -67,9 +67,12 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
 - **Backup to optical media:** splits your files across as many discs as needed and sends them to ImgBurn to burn.
   Each disc is planned to be at most 93% full for a CD, 97% for a DVD and 99% for a Blu-ray, leaving room for what
   the disc's own file system takes. Large files that don't fit on one disc are split automatically, into 500 MB
-  pieces, when the first disc holding one of their pieces is sent to ImgBurn; if such a file has changed size so much
-  since the discs were planned that it needs a different number of pieces, that disc is refused with a message and
-  you plan the discs again - so a file that changed does not end up with a piece on no disc. A split file's pieces
+  pieces, when the first disc holding one of their pieces is sent to ImgBurn. Each piece's name says which piece it is
+  and how many there are: `myFile.zip` split into 23 pieces becomes `myFile.zip.outOf.23.part.001` to
+  `myFile.zip.outOf.23.part.023`. Now and then 7-Zip makes one piece more than planned; every piece's name then counts
+  it too. If a large file has changed size so much since the discs were planned that it needs a different number of
+  pieces, that disc is refused with a message and you plan the discs again - so a file that changed does not end up
+  with a piece on no disc. A split file's pieces
   are ticked and unticked together, on every disc that holds one - a file can only be put back together from all of
   its pieces - and once one of those discs has been sent, the file can no longer be left out (or added). Every file
   also gets a SHA-256 checksum recorded
@@ -90,7 +93,8 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   Choosing any piece of a split large file chooses all of its pieces. If any recovered files are parts of a large
   file that was split across discs, the app offers to reassemble the
   original file with 7-Zip once every needed disc has been copied. If you decline, or reassembly fails (e.g. a
-  missing or corrupted part), nothing is deleted - you get the exact 7-Zip command to do it by hand later.
+  missing or corrupted part - a missing one is named, as the pieces' names say how many there are), nothing is
+  deleted - you get the exact 7-Zip command to do it by hand later.
 
   If the cold storage has SHA-256 checksums recorded, the app re-checks every recovered file once copying finishes
   and tells you exactly which ones (if any) failed - a real, actionable sign of drive or disc trouble, not just
@@ -105,20 +109,25 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   continue your collection's numbering (after 3 discs, the first new one is "Optical disk 4"), and every number the
   wizard shows is the one burned onto that disc's label.
 
-  Split files are recognized by a naming convention (`largeFile.data` becomes `largeFile.data.part.001`, etc.),
-  which can misfire if you happen to have unrelated files matching that same pattern.
+  Split files are recognized by a naming convention (`largeFile.data` becomes `largeFile.data.outOf.3.part.001`,
+  etc.; discs burned by older versions of the app have `largeFile.data.part.001`), which can misfire if you happen
+  to have unrelated files matching that same pattern. A large file only some of whose pieces are on your discs -
+  the app was closed before the rest were burned - is listed as missing, and only its missing pieces are burned.
+  Before they are, the app checks that splitting the file again gives back the very pieces already on your discs
+  (by their SHA-256 checksums); if the file has changed since, the disc with its missing pieces is refused - your
+  cold storage is out of sync with that file, as with any other file that changed.
 
   Both "Backup to optical media" and "Add missing files" ask you where to save the resulting cold storage metadata
   JSON file, via a normal save dialog. Keep this file safe - it's what lets you use "Recover data from optical
   media" and "Add missing files" again without physically inserting every disc.
 
-  A disc is recorded in that JSON when you click "Confirm disc burned", not when you send it to ImgBurn. Discs that
-  hold pieces of the same large file are recorded together, once all of them are confirmed - a split file can only
-  be put back together from all of its pieces. Until then, confirming one of them tells you which discs you still
-  have to burn. If you close the app before that, the discs you already burned for those files are not in the JSON,
-  and the app will plan their files again ("Add missing files" puts them on new discs) - so note them down, in order
-  not to burn the same disc twice. A disc that was never confirmed stays an empty entry in the JSON; recovery,
-  "Verify integrity" and "Add missing files" all accept a JSON with such entries.
+  A disc is recorded in that JSON when you click "Confirm disc burned", not when you send it to ImgBurn - also a disc
+  that holds only some pieces of a large file. So you can close the app at any time: run "Add missing files" later
+  with that JSON, and it burns whatever is not on your discs yet, the missing pieces of a split file included. A disc
+  that was never confirmed stays an empty entry in the JSON, and its number is not used again - you may have burned it
+  without confirming it - so "Add missing files" numbers its new discs after it: with discs 1 and 2 of 5 confirmed,
+  the next new disc is disc 6. Recovery, "Verify integrity" and "Add missing files" all accept a JSON with such
+  entries.
 
 - **Verify integrity of cold storage disc:** a read-only wizard that checks a disc's SHA-256 checksums without
   recovering or copying anything - useful for periodically spot-checking discs you already have. Point it at the
@@ -201,7 +210,7 @@ These apply to more than one feature, or to the app as a whole.
 
 - **Long names and long paths** ("Backup to optical media", "Add missing files" and recovery): a disc holds file and
   folder names of at most 127 characters. Before planning the discs, the app lists every name that is longer - for a
-  large file split into pieces, counting the ".part.001" its pieces add - and recommends that you cancel and shorten
+  large file split into pieces, counting the ending such as ".outOf.23.part.001" its pieces add - and recommends that you cancel and shorten
   them in your folder. If you continue instead, each one is burned under a shorter name, on the disc only: its first
   part, then "~" and a code of 8 characters, then its extension. Your own files are never renamed or changed. The
   metadata JSON records each original name, and so does a file on each such disc, `my-backup original names.json`,
@@ -222,8 +231,8 @@ These apply to more than one feature, or to the app as a whole.
   e.g. many USB sticks and memory cards; format such a drive as NTFS first.
 
 - On startup, the app runs a couple of housekeeping checks:
-  - It checks whether its internal temp folder has leftover partial (`.part.NNN`) files from an interrupted
-    large-file split, and offers to clear them out.
+  - It checks whether its internal temp folder has leftover split pieces (`.part.NNN` files) from an interrupted
+    job, and offers to clear them out.
   - It checks whether `config.json` (see "Other stuff" below) is missing the paths to 7-Zip and/or ImgBurn, or
     whether a configured path no longer points to a real program (e.g. it was moved or reinstalled). If so, it
     walks you through picking the right `.exe` file(s) with a file picker - each path is required, so it keeps

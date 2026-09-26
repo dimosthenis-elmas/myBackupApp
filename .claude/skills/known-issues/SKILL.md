@@ -22,28 +22,11 @@ very simple fixes need none. Don't over-engineer the fix or the test.
 
 ### High
 
-#### 1. A split file's extra piece can end up on no disc
-- **What happens:** now and then 7-Zip makes one more piece than planned (a "sliver"). If sending the disc that would
-  take it then fails (hashing, the ImgBurn project), the sliver is dropped from the waiting list and never offered
-  again, so the file can't be rejoined on recovery.
-- **How likely:** very rare - needs a sliver and a failed send right after it.
-- **Simplest fix:** put the slivers back on the waiting list (`pendingOverflowPartials`) when a send fails.
-- **Test:** worth one, in `ui/test-backup-to-optical-media-overflow-disc.js`: make that send fail once, retry, and
-  check the sliver still reaches a disc.
-- **Code:** `sendToImgBurn` in both disc wizards.
-
-#### 2. A retry after a failed 7-Zip split may reuse broken pieces (unverified)
-- **What happens:** a large file is only split when no pieces exist yet. If 7-Zip fails part way (e.g. the temp drive
-  fills up) and leaves pieces behind, a retry uses them as they are - a short last piece gets burned, and only recovery
-  finds the file can't be rejoined.
-- **How likely:** rare - needs the temp drive to fill up during a split, and it's unverified whether 7-Zip leaves
-  pieces behind.
-- **Simplest fix:** when the split command fails, delete the pieces it left before reporting the error.
-- **Code:** `createOpticalMediaDiscPartials` in `app/workers/worker.ts`.
+None open.
 
 ### Medium
 
-#### 3. A file another program has open stops the whole run
+#### 1. A file another program has open stops the whole run
 - **What happens:** a file locked by another program (an open Outlook `.pst`, a browser's profile) can't be read.
   Cumulative backup and Sync stop at it and leave the rest uncopied; Sync's comparison fails outright; a disc with
   it can't be sent.
@@ -53,7 +36,7 @@ very simple fixes need none. Don't over-engineer the fix or the test.
   must then not report success).
 - **Code:** `insertBranch` / `copyEntryReplacingTarget`, `haveSameContent`, `sha256OfFile` in `app/workers/worker.ts`.
 
-#### 4. Splitting fails when the app's own folder is inside the folder being backed up
+#### 2. Splitting fails when the app's own folder is inside the folder being backed up
 - **What happens:** e.g. the app lives on the Desktop and the Desktop is backed up to discs. Split pieces live in the
   app's temp folder, which is then also inside the source, and their paths get trimmed wrongly - every disc with a
   piece fails to send ("plan the discs again", which doesn't help).
@@ -63,7 +46,7 @@ very simple fixes need none. Don't over-engineer the fix or the test.
 - **Code:** the path trimming in `WriteToOpticalMediaProceed` (Backup to optical media) and `sendToImgBurn` (Add
   missing files).
 
-#### 5. A disc full of very small files may not fit
+#### 3. A disc full of very small files may not fit
 - **What happens:** discs are planned by file sizes only, but each file also takes about 3 KB on a disc. The share
   kept free covers roughly 16,000 files on a CD, 46,000 on a DVD, 81,000 on a 25 GB Blu-ray; a full disc of smaller
   files than that doesn't fit and ImgBurn refuses it. (Estimate, not measured.)
@@ -73,7 +56,7 @@ very simple fixes need none. Don't over-engineer the fix or the test.
 - **Code:** `partitionBackupToOpticalMedia` in `app/workers/worker.ts`; the README table "How many files fit on one
   disc".
 
-#### 6. The metadata JSON is rewritten in place
+#### 4. The metadata JSON is rewritten in place
 - **What happens:** each confirmed disc rewrites the whole JSON; a crash or power cut in that instant leaves it empty
   or cut short. The discs themselves are fine - recovery and Add missing files can read the discs instead.
 - **How likely:** very unlikely (a write of a moment).
@@ -82,21 +65,21 @@ very simple fixes need none. Don't over-engineer the fix or the test.
 
 ### Low
 
-#### 7. A failed ImgBurn project write is reported as success
+#### 5. A failed ImgBurn project write is reported as success
 - **What happens:** if the `.ibb` file can't be written (the temp folder became unwritable), the disc is still marked
   sent and ImgBurn just doesn't open. Sending the disc again rebuilds it, so the job can go on.
 - **How likely:** rare.
 - **Simplest fix:** make that failure an error, so the wizard's existing message shows. No test needed.
 - **Code:** `createIBB_file` in `app/workers/worker.ts`.
 
-#### 8. Cumulative backup to an exFAT drive may copy everything again on every run (unverified)
+#### 6. Cumulative backup to an exFAT drive may copy everything again on every run (unverified)
 - **What happens:** exFAT keeps modified times to 10 ms; Cumulative copies when the source is newer by even 1 ms.
   The result is still correct - just slow.
 - **How likely:** exFAT is common on large USB drives, so worth one check: two runs onto an exFAT stick; the second
   must copy nothing.
 - **Simplest fix, if confirmed:** allow 2 seconds of difference, as Sync already does (`MIRROR_MTIME_TOLERANCE_MS`).
 
-#### 9. An unreadable folder inside Cumulative backup's backup folder is reported as "NOT backed up"
+#### 7. An unreadable folder inside Cumulative backup's backup folder is reported as "NOT backed up"
 - **What happens:** the "Some items were left out" warning also lists folders in the backup folder that can't be read,
   as if they were source folders left out.
 - **How likely:** rare (a drive root, which always did this, is now refused).
@@ -104,7 +87,7 @@ very simple fixes need none. Don't over-engineer the fix or the test.
 - **Also:** Backup to optical media still allows a drive root as its source, which also backs up the recycle bin.
   Simplest: refuse it there too, like Cumulative backup and Sync.
 
-#### 10. Small ones
+#### 8. Small ones
 - **A failed Cumulative copy shows two error dialogs** - one `.then(...).catch(...)` chain instead of two handlers in
   `incremental-copying.component.ts`.
 - **Cancel during the first count of "Planning discs" is ignored** - the scan resets the stop flag; reset it once, in
@@ -144,12 +127,20 @@ very simple fixes need none. Don't over-engineer the fix or the test.
   `src/app/shared/utils/shortened-names.ts`; tested by the three `test-long-names-*` scripts, with real ImgBurn builds.)
 - **A large file is split when its disc is sent**, not when the discs are planned. If it changed size enough to need a
   different number of pieces, that disc is refused - plan the discs again.
-- **A disc is recorded in the JSON when it is confirmed burned.** Discs sharing a split file are recorded together,
-  once all of them are confirmed; until then the app says which discs are still to burn. A never-confirmed disc stays
-  an empty entry, which recovery, Verify and Add missing files accept.
+- **A disc is recorded in the JSON when it is confirmed burned**, with no dialog - also one holding only some pieces
+  of a split file. Each piece is named `<file>.outOf.<total>.part.NNN` (`app/workers/split-pieces.ts`), the total
+  being the real one - a sliver counted - given right after the split, before any piece reaches a disc. So the app can
+  be closed at any time: Add missing files lists a file with pieces missing from the JSON, plans only those pieces,
+  and before burning them checks that the new split gives back the pieces already on discs (their SHA-256), refusing
+  the disc if the file changed. Needs the JSON - read from the discs, the pieces have no SHA-256, so it refuses. A
+  never-confirmed disc stays an empty entry, which recovery, Verify and Add missing files accept; its number is not
+  reused (it may have been burned unconfirmed), so new discs are numbered after it (`getNextDiscNumber`). Discs burned before
+  the total was added (`<file>.part.NNN`) are taken as complete. Tested in `worker-ipc/test-split-file-resume.js` and
+  `ui/test-add-missing-files-split-resume.js`.
 - **A split file's pieces are ticked together** on every disc, and chosen together in recovery.
-- **Add missing files doesn't notice a large (split) file that changed after it was burned** - accepted as a
-  compromise of cold storage. Ordinary files that changed are still caught ("cold storage out of sync").
+- **Add missing files doesn't notice a large (split) file that changed after all its pieces were burned** - accepted
+  as a compromise of cold storage. Ordinary files that changed are still caught ("cold storage out of sync"), and so
+  is a split file with pieces still missing (by the SHA-256 check above).
 - **Recovery stops with an error** where a name is a file on one disc but a folder on another - only possible when
   two discs of one backup disagree.
 - **No Linux build:** paths are joined with `\\`, and ImgBurn is Windows-only.

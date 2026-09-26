@@ -236,6 +236,26 @@ instead of hanging. Confirms the call now rejects with `err_code: 'FILE_TOO_LARG
 the exact same rejection shape the ordinary-file pass has always produced for this situation - instead of never
 returning at all.
 
+### `test-split-file-resume.js` — a split file finished in a later session
+```
+node test-harness/worker-ipc/test-split-file-resume.js
+```
+Each piece of a split file is named with how many pieces the file has (`<name>.outOf.<total>.part.NNN`, see
+`app/workers/split-pieces.ts`), and a disc is recorded in the metadata JSON as soon as it is confirmed burned - so
+the app can be closed with only some pieces of a file on discs, and "Add missing files" burns the rest later. This
+script plays that through the worker, with a 1.1 GB file (3 pieces) and real 7-Zip:
+1. Session 1: the plan names all three pieces `big.bin.outOf.3.part.001` to `.003`; only piece 1 is split and
+   "burned" (copied aside, its SHA-256 computed the way the wizard records it), and the app is closed.
+2. Session 2, a new app launch: planning with `incompleteSplitFiles` (piece 1 on a disc, as "Add missing files" finds
+   it in the JSON) plans exactly pieces 2 and 3, and splitting leaves just those two in the temp folder.
+3. `merge-file-parts` with piece 2 missing answers "Pieces missing: 2 (of 3)" and deletes nothing; with piece 1 from
+   session 1 and pieces 2 and 3 from session 2, the file is rejoined byte for byte.
+4. Session 3: the file is rewritten with other content, same size - splitting it for its missing pieces is refused
+   ("can no longer be split into the pieces already on your discs"), and no piece of it is left behind.
+
+The file is sparse, with 32 bytes of its own every 100 MB, so every piece has content of its own and a change shows
+in piece 1.
+
 ### `test-scan-edge-cases.js` — links, unreadable entries, too-large files, and a whole drive as the folder
 ```
 node test-harness/worker-ipc/test-scan-edge-cases.js
@@ -328,7 +348,7 @@ Recovery's copy (`incremental-copy-files` with `sourcePaths`, as the recovery wi
 name back, read from the disc's own list. Refused: a disc whose list would take the name of a user's file (nothing
 written), and a recovery path - or a disc path - leading outside its folder (the file to copy exists, so only the check
 stops it). The source files must be unchanged. Then a split file, the whole way: a real 700 MB file whose
-120-character name fits on a disc but whose pieces' names (`.part.001` added) do not - planned and split for real
+120-character name fits on a disc but whose pieces' names (`.outOf.2.part.001` added) do not - planned and split for real
 (the wizard's dialog would list the file itself, once), both discs built by the real ImgBurn without a warning, each
 recovered under the original piece names, and the pieces rejoined by `merge-file-parts` (7-Zip) into the file under
 its own name, byte for byte the original. Last, clearing the temp folder must remove everything left there, the lists

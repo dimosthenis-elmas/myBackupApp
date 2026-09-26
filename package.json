@@ -121,6 +121,7 @@
       "app/workers/worker-communicator.js",
       "app/workers/logsbuffer.js",
       "app/workers/disc-names.js",
+      "app/workers/split-pieces.js",
       "app/workers/preload/contextBridge_api.js",
       "app/workers/preload/preload.js",
       "app/node_modules/",

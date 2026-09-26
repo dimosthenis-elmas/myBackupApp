@@ -10,19 +10,18 @@
  *  is recorded. A whole path has no such limit on a disc: ImgBurn burns, and Windows reads back, paths of over 1,000
  *  characters. */
 
+import { PIECE_ENDING } from './split-pieces';
+
 export const MAX_DISC_NAME_LENGTH = 127;
 
 /** The longest full path - drive letter included ("E:\...") - that Windows Explorer and most other programs can
  *  open. The app itself reads and writes longer ones. */
 export const MAX_OPENABLE_PATH_LENGTH = 259;
 
-/** A split piece's own ending (the app's PART_FILE_PATTERN): kept whole when a piece's name is shortened, so the
- *  pieces of one file still read as that file's pieces. */
-const PIECE_SUFFIX = /\.part\.\d+$/i;
-
-/** The room a shortened piece's name keeps for its ending - one of up to 9999 pieces - so that every piece of a file
- *  gets the same shortened start, whatever its number. */
-const PIECE_SUFFIX_ROOM = '.part.0000'.length;
+/** The room a shortened piece's name keeps for its ending (PIECE_ENDING, kept whole so the pieces of one file still
+ *  read as that file's pieces) - piece up to 9999 of up to 9999 - so that every piece of a file gets the same
+ *  shortened start, whatever its number and total. */
+const PIECE_ENDING_ROOM = '.outOf.0000.part.0000'.length;
 
 /** The longest ending counted as an extension - which a shortened name keeps. */
 const MAX_KEPT_EXTENSION_LENGTH = 16;
@@ -89,13 +88,13 @@ const shortened = function (name: string, maxLength: number): string {
 };
 
 /** The name a file or folder named `name` gets on a disc: `name` itself when it is short enough, otherwise a
- *  shortened one - e.g. "End-to-End_Modeling_of_…~1f0c9a2e.pdf". A split piece keeps its ".part.NNN" ending, and all
- *  pieces of one file get the same shortened start. */
+ *  shortened one - e.g. "End-to-End_Modeling_of_…~1f0c9a2e.pdf". A split piece keeps its ".outOf.T.part.NNN" ending,
+ *  and all pieces of one file get the same shortened start. */
 export function discName(name: string): string {
   if (name.length <= MAX_DISC_NAME_LENGTH) { return name; }
-  const piece = PIECE_SUFFIX.exec(name);
+  const piece = PIECE_ENDING.exec(name);
   if (piece && piece.index > 0) {
-    return shortened(name.slice(0, piece.index), MAX_DISC_NAME_LENGTH - Math.max(piece[0].length, PIECE_SUFFIX_ROOM)) + piece[0];
+    return shortened(name.slice(0, piece.index), MAX_DISC_NAME_LENGTH - Math.max(piece[0].length, PIECE_ENDING_ROOM)) + piece[0];
   }
   return shortened(name, MAX_DISC_NAME_LENGTH);
 }
@@ -106,7 +105,7 @@ export function discPath(relativePath: string): string {
 }
 
 /** The items among `relativePaths` whose own name is too long for a disc (discName shortens it): each once - a
- *  folder, not every file in it; a split file (its path without ".part.NNN"), not each of its pieces. */
+ *  folder, not every file in it; a split file (its path without its piece ending), not each of its pieces. */
 export function itemsWithNamesTooLong(relativePaths: string[]): string[] {
   const items = new Set<string>();
   for (const p of relativePaths) {
@@ -114,19 +113,19 @@ export function itemsWithNamesTooLong(relativePaths: string[]): string[] {
     names.forEach((name, i) => {
       if (discName(name) === name) { return; }
       const item = names.slice(0, i + 1).join('\\');
-      items.add(i === names.length - 1 ? item.replace(PIECE_SUFFIX, '') : item);
+      items.add(i === names.length - 1 ? item.replace(PIECE_ENDING, '') : item);
     });
   }
   return [...items];
 }
 
 /** The files among `relativePaths` whose full path on a disc - a drive such as "E:\", then discPath - is longer than
- *  MAX_OPENABLE_PATH_LENGTH; a split file once (its path without ".part.NNN"). */
+ *  MAX_OPENABLE_PATH_LENGTH; a split file once (its path without its piece ending). */
 export function filesWithPathsTooLongOnDisc(relativePaths: string[]): string[] {
   const driveLength = 'E:\\'.length;
   const files = new Set<string>();
   for (const p of relativePaths) {
-    if (driveLength + discPath(p).length > MAX_OPENABLE_PATH_LENGTH) { files.add(p.replace(PIECE_SUFFIX, '')); }
+    if (driveLength + discPath(p).length > MAX_OPENABLE_PATH_LENGTH) { files.add(p.replace(PIECE_ENDING, '')); }
   }
   return [...files];
 }

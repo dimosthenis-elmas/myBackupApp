@@ -43,6 +43,7 @@ const { assertRealTempDataDirectoryIsSafeToUse } = require('./temp-dir-guard');
 const { printTree } = require('../lib/print-tree');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { backupAndRedirectConfigField, restoreConfig } = require('../lib/ibb-tools');
+const { parsePiece } = require('../../app/workers/split-pieces');
 
 // Must match LARGE_FILE_SPLIT_VOLUME_SIZE_MIB in app/workers/worker.ts (500 MiB).
 const VOLUME_SIZE_BYTES = 500 * 1024 * 1024; // 524,288,000
@@ -56,7 +57,8 @@ function writeExactSizeFile(filePath, sizeBytes) {
   fs.closeSync(fd);
 }
 
-/** Deletes any real piece files matching `${baseName}.part.NNN`, directly under `sessionTempDir` (both source
+/** Deletes any real piece files of `baseName` (with or without their total - see split-pieces.ts), directly under
+ *  `sessionTempDir` (both source
  *  files in this test live at the root of their own source tree, so their real pieces land directly under the
  *  session's own temp subdirectory too - no further subdirectory to also clean up, unlike a large file nested
  *  under e.g. "large-files/"). Then removes `sessionTempDir` itself if that leaves it empty - left behind
@@ -64,9 +66,8 @@ function writeExactSizeFile(filePath, sizeBytes) {
  *  can't tell "an empty leftover session folder" apart from real pending data). */
 function cleanupRealPieces(sessionTempDir, baseName) {
   if (!fs.existsSync(sessionTempDir)) { return; }
-  const pattern = new RegExp(`^${baseName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}\\.part\\.\\d+$`, 'i');
   for (const f of fs.readdirSync(sessionTempDir)) {
-    if (pattern.test(f)) { fs.rmSync(path.join(sessionTempDir, f), { force: true }); }
+    if (parsePiece(f)?.file === baseName) { fs.rmSync(path.join(sessionTempDir, f), { force: true }); }
   }
   try { if (fs.readdirSync(sessionTempDir).length === 0) { fs.rmdirSync(sessionTempDir); } } catch { /* not empty, or already gone - fine */ }
 }
@@ -252,7 +253,7 @@ async function main() {
     console.log(`  refused with "has changed since the discs were planned": ${results.refusesFileThatGrewSincePlanning}`);
     if (growErrorMessage) { console.log(`    error: ${growErrorMessage}`); }
     results.nothingSplitForFileThatGrew = !fs.existsSync(sessionTempDir3)
-      || fs.readdirSync(sessionTempDir3, { recursive: true }).every((f) => !/grow-file\.bin\.part/i.test(f));
+      || fs.readdirSync(sessionTempDir3, { recursive: true }).every((f) => parsePiece(path.basename(f))?.file !== 'grow-file.bin');
     console.log(`  no piece of the grown file was created: ${results.nothingSplitForFileThatGrew}`);
   } finally {
     if (app2) { await app2.close().catch(() => {}); }

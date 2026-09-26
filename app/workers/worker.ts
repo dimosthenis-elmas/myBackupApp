@@ -5,9 +5,10 @@ const crypto = require("crypto")
 import { WorkerCommunicator as ipc } from './worker-communicator'
 import { LogsBuffer } from './logsbuffer'
 import { filesMetadata } from '../../src/types/interface';
-import { ColdStorageMetadata, WorkerResponse, OpticalMediaPartitioning, DiffComparison, NameClash, CreatedIbbProject } from './ipc.interfaces';
+import { ColdStorageMetadata, WorkerResponse, OpticalMediaPartitioning, DiffComparison, NameClash, CreatedIbbProject, IncompleteSplitFile } from './ipc.interfaces';
 import { installConsoleLogging } from '../logging';
 import { discName, discPath, originalNamesFileFor, ORIGINAL_NAMES_FILE_NAME } from './disc-names';
+import { PIECE_ENDING, parsePiece, pieceName, missingPieceNumbers, Piece } from './split-pieces';
 import type { Dirent } from 'fs';
 
 const contextBridgeAPI =require("./preload/contextBridge_api");
@@ -250,9 +251,8 @@ const getAllFiles = async function (dirPath: string, arrayOfFiles: Array<string>
  *  you must manually re-confirm it still leaves comfortable headroom under the smallest medium's capacity. */
 const LARGE_FILE_SPLIT_VOLUME_SIZE_MIB = 500;
 
-/** Zero-pads to 7-Zip's own observed volume-suffix width (".part.001", ".002", ...) - shared by the planning
- *  estimate below and the real creation step (createOpticalMediaDiscPartials), so both agree on the
- *  exact predicted/real filename for a given partial. */
+/** Zero-pads to 7-Zip's own observed volume-suffix width (".part.001", ".002", ...) - the planned pieces' numbers
+ *  are written the way the real split (createOpticalMediaDiscPartials) writes them. */
 const zeroPad = (num: number, places: number) => String(num).padStart(places, '0');
 
 /** Pure-arithmetic prediction of how many partials the real `-v${LARGE_FILE_SPLIT_VOLUME_SIZE_MIB}m -mx0 a` split
@@ -286,13 +286,23 @@ const estimateLargeFileSplitPartials = function (fileSizeBytes: number): Array<{
   return partials;
 }
 
-/** For each job (its session id - see SESSION_FOLDER_NAME_PATTERN): how many pieces the job's disc plan gave each
- *  large file it splits, keyed by the file's path relative to the folder being backed up ("Videos\big.mkv"). Set by
+/** How the disc plan of a job splits one large file - see plannedSplitsBySession. */
+interface PlannedSplit {
+  /** How many pieces the file needed when the discs were planned (estimateLargeFileSplitPartials). */
+  estimatedPieceCount: number;
+  /** Only for a file whose first pieces were burned in an earlier job (see IncompleteSplitFile): its real number of
+   *  pieces and the SHA-256 of each piece on a disc, by number. The plan holds only its other pieces. */
+  burned?: { total: number, sha256ByNumber: Map<number, string | undefined> };
+}
+
+/** For each job (its session id - see SESSION_FOLDER_NAME_PATTERN): how the job's disc plan splits each large file,
+ *  keyed by the file's path relative to the folder being backed up ("Videos\big.mkv"). Set by
  *  partitionBackupToOpticalMedia, read by createOpticalMediaDiscPartials just before it splits a file. A file is only
  *  split when the first disc holding one of its pieces is sent, possibly hours after planning; if its size changed
  *  enough in between to need a different number of pieces, the pieces the plan does not have would be on no disc, so
- *  such a file is refused instead of split. A job never outlives the app (there is no resume), so neither does this. */
-const plannedPieceCountsBySession = new Map<string, Map<string, number>>();
+ *  such a file is refused instead of split. A job never outlives the app, so neither does this - a later job ("Add
+ *  missing files") finds a file's pieces still missing from the metadata JSON by the total in their names. */
+const plannedSplitsBySession = new Map<string, Map<string, PlannedSplit>>();
 
 const CONFIG_PATH = () => node_path_module.join(__dirname, `../../appData/config.json`);
 
@@ -349,12 +359,10 @@ const isPathStrictlyInside = function (candidatePath: string, containerPath: str
   return !!relative && relative !== '..' && !relative.startsWith('..' + node_path_module.sep) && !node_path_module.isAbsolute(relative);
 }
 
-/** Matches this app's own large-file split volumes (e.g. "video.mp4.part.001") - one of the two kinds of file
- *  clearTempDataDirectory is willing to delete (see IBB_PROJECT_FILE_PATTERN for the other). Kept identical to
- *  the pattern used everywhere else in the app that recognizes these (e.g. groupSelectedPartialFiles in
- *  optical-disc-backup-data-retriever.component.ts, and clearTempDataDirectoryOnStartup in
- *  app.component.ts). */
-const PART_FILE_PATTERN = /\.part\.\d+$/i;
+/** Matches this app's own large-file split volumes ("video.mp4.outOf.23.part.001", or 7-Zip's own
+ *  "video.mp4.part.001" - see split-pieces.ts) - one of the kinds of file clearTempDataDirectory is willing to delete
+ *  (see IBB_PROJECT_FILE_PATTERN for another). */
+const PART_FILE_PATTERN = PIECE_ENDING;
 
 /** Matches this app's own .ibb project files (e.g. "Disk_1.ibb" - see createIBB_file/saveIBB_toDisk), the
  *  other kind of disposable, one-time-use scratch file clearTempDataDirectory is willing to delete. Deliberately
@@ -1050,13 +1058,25 @@ const getAllFilePathsWithStats = async function (
  *  Only after all three checks pass do we unlink the .part.NNN files. Any failure along the way returns
  *  {merged: false, ...} without deleting anything, so the caller can leave the partial files in place and
  *  let the user deal with them (e.g. via the original naming convention documented in the README).
+ *  Pieces whose names say how many there are (split-pieces.ts) are first checked to be all there - the pieces
+ *  missing are named, rather than left to 7-Zip's own error.
  *
- * @param partFilePaths the absolute paths (on the local filesystem) of the .part.NNN files, all in one folder.
- * @param originalFileName the name 7-Zip is expected to restore the file under (the part before ".part.NNN").
+ * @param partFilePaths the absolute paths (on the local filesystem) of the pieces, all in one folder.
+ * @param originalFileName the name 7-Zip is expected to restore the file under (the part before the piece ending).
  */
 const mergeFileParts = async function(partFilePaths: Array<string>, originalFileName: string): Promise<{ merged: boolean, message: string }> {
   const util = require('util');
   const exec = util.promisify(require('child_process').exec);
+
+  const pieces = partFilePaths.map((p) => parsePiece(node_path_module.basename(p))).filter((piece): piece is Piece => piece !== null);
+  const total = pieces.find((piece) => piece.total !== undefined)?.total;
+  if (total !== undefined) {
+    const missing = missingPieceNumbers(total, pieces.map((piece) => piece.number));
+    if (missing.length > 0) {
+      return { merged: false, message: `Pieces missing: ${missing.join(', ')} (of ${total}). "Add missing files" burns ` +
+        `the pieces still missing from the cold storage.` };
+    }
+  }
 
   if (partFilePaths.length < 2) {
     return { merged: false, message: 'Not enough partial files were provided to attempt a reassembly.' };
@@ -1150,8 +1170,10 @@ const partitionArrayBasedOnFilter = <T,>(
  *  disc it fills (not per file - packing potentially hundreds of thousands of files into a couple dozen discs
  *  is already coarse-grained at that level, so there's no need for a separate throttling interval the way the
  *  per-item scan/hash loops elsewhere need one). Left undefined, behaves exactly as before (no probing overhead).
- *  @param linksLeftOut optional - the path of each link the scan leaves out is added here (see leaveOutLink). */
-const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, maxRepletionRatio: number, splitLargeFiles:boolean=false, sessionId: string, filesMetadata?:filesMetadata[], onProgress?: (line: string) => void, skipUnreadable: boolean = false, linksLeftOut?: string[]): Promise<ColdStorageMetadata>{
+ *  @param linksLeftOut optional - the path of each link the scan leaves out is added here (see leaveOutLink).
+ *  @param incompleteSplitFiles optional, with splitLargeFiles - files among filesMetadata whose first pieces are
+ *  already on discs: split whatever their size, into the same number of pieces, and only the missing pieces planned. */
+const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, maxRepletionRatio: number, splitLargeFiles:boolean=false, sessionId: string, filesMetadata?:filesMetadata[], onProgress?: (line: string) => void, skipUnreadable: boolean = false, linksLeftOut?: string[], incompleteSplitFiles: IncompleteSplitFile[] = []): Promise<ColdStorageMetadata>{
   assertValidSessionId(sessionId);
   process.env._stop="NoStop";
 
@@ -1211,16 +1233,17 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
   let Gb = Math.pow(1024, 3); // Windows style Gb
 
   let partitioning: ColdStorageMetadata = []
-  // See plannedPieceCountsBySession.
-  const plannedPieceCounts = new Map<string, number>();
+  // See plannedSplitsBySession.
+  const plannedSplits = new Map<string, PlannedSplit>();
+  const incompleteSplitFileByPath = new Map(incompleteSplitFiles.map((f) => [f.path, f]));
   let err_too_large_file_found: boolean = false
   let too_large_files_paths: {"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}[] = []
 
   if(splitLargeFiles){
-    //Filter files too large to fit to any single optical disc
+    //Filter files too large to fit to any single optical disc - and files already split on discs, whatever their size
     [filePathsAndStats, largeFilePathsAndStats] = partitionArrayBasedOnFilter(
       filePathsAndStats,
-      (item) => item.stats.size <= mediaCapacityInBytes,
+      (item) => item.stats.size <= mediaCapacityInBytes && !incompleteSplitFileByPath.has(item.path),
     );
   }
 
@@ -1303,8 +1326,9 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
     ESTIMATED sizes of the split partials are computed (see estimateLargeFileSplitPartials), so planning an entire
     multi-disc backup job never has to physically split every large file up front, before a single disc has even
     been burned. The real splitting only happens later, lazily, disc by disc, when the user actually sends a
-    disc to ImgBurn - see createOpticalMediaDiscPartials. The paths predicted here (the same "<name>.part.NNN"
-    naming convention 7-Zip itself produces) are exactly what that later, real split is found again by.
+    disc to ImgBurn - see createOpticalMediaDiscPartials. The paths predicted here ("<name>.outOf.<total>.part.NNN",
+    see split-pieces.ts) are what that later, real split is found again by - by the file and the piece's number: the
+    total here is the estimate's, and the real one can be one more (a "sliver").
   */
 
   if(splitLargeFiles){
@@ -1319,13 +1343,22 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
       const pathToLargeFileSplitsInTempDirectory = node_path_module.join(tempDataDirectoryPath, sessionId, relativeDirOfLargeFile);
 
       const predictedPartials = estimateLargeFileSplitPartials(itm.stats.size);
-      plannedPieceCounts.set(pathToLargeFileRelativeToOpticalMediumRoot, predictedPartials.length);
-      predictedPartials.forEach((partial, index) => {
-        largeFilePathsAndStats_.push({
-          path: node_path_module.join(pathToLargeFileSplitsInTempDirectory, `${fileName}.part.${zeroPad(index + 1, 3)}`),
-          stats: { size: partial.size, mtime: itm.stats.mtime, isDirectory: false }
-        });
+      // A file whose first pieces are already on discs keeps the real total those pieces' names have; only the
+      // others are planned (a piece past the estimate, a sliver, is planned as empty - it is a few bytes).
+      const incomplete = incompleteSplitFileByPath.get(itm.path);
+      const total = incomplete ? incomplete.total : predictedPartials.length;
+      const burnedNumbers = new Set(incomplete ? incomplete.burnedPieces.map((p) => p.number) : []);
+      plannedSplits.set(pathToLargeFileRelativeToOpticalMediumRoot, {
+        estimatedPieceCount: predictedPartials.length,
+        burned: incomplete ? { total, sha256ByNumber: new Map(incomplete.burnedPieces.map((p) => [p.number, p.sha256])) } : undefined,
       });
+      for (let number = 1; number <= total; number++) {
+        if (burnedNumbers.has(number)) { continue; }
+        largeFilePathsAndStats_.push({
+          path: node_path_module.join(pathToLargeFileSplitsInTempDirectory, pieceName(fileName, total, zeroPad(number, 3))),
+          stats: { size: predictedPartials[number - 1]?.size ?? 0, mtime: itm.stats.mtime, isDirectory: false }
+        });
+      }
     }
 
     largeFilePathsAndStats = largeFilePathsAndStats_
@@ -1403,9 +1436,109 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
        err_code: 'FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC'
       };
   }else{
-    if (process.env._stop != 'stop') { plannedPieceCountsBySession.set(sessionId, plannedPieceCounts); }
+    if (process.env._stop != 'stop') { plannedSplitsBySession.set(sessionId, plannedSplits); }
     return partitioning;
   }
+}
+
+/** The pieces of the large file `fileName` in `folder` (a job's temp folder, where it is split): each one's name and
+ *  what split-pieces.ts reads from it, by number. */
+const piecesInFolder = function (folder: string, fileName: string): Array<Piece & { name: string }> {
+  if (!fs.existsSync(folder)) { return []; }
+  return (fs.readdirSync(folder, { withFileTypes: true }) as Dirent[])
+    .filter((entry) => entry.isFile())
+    .map((entry) => ({ name: entry.name, piece: parsePiece(entry.name) }))
+    .filter((x) => x.piece !== null && x.piece.file === fileName)
+    .map((x) => ({ ...x.piece!, name: x.name }))
+    .sort((a, b) => a.number - b.number);
+}
+
+/** Splits the large file `originalAbsolutePath` (named `fileName`) with 7-Zip into `partialDir`, as `planned` - this
+ *  job's plan for it - says, and gives every piece its name with the real total ("<file>.outOf.<total>.part.NNN",
+ *  see split-pieces.ts): the total is only known once 7-Zip has split the file, so every piece of a file - a sliver
+ *  included - has the same, real total before any of them reaches a disc. A piece keeps 7-Zip's own name until then,
+ *  so a piece without its total is left over from a split that did not finish, and is removed before splitting.
+ *
+ *  For a file whose first pieces are already on discs (`planned.burned`), the new split must give back those very
+ *  pieces - the same total, and each such piece's SHA-256 as recorded - or the pieces still missing would not fit
+ *  together with them; its pieces already on discs are then removed here, as the plan holds only the others.
+ *
+ *  Returns the name of the one piece more than planned (a "sliver" - see estimateLargeFileSplitPartials), or null.
+ *  Throws, leaving no piece of the file behind, when the file cannot be split as planned. */
+const splitLargeFileIntoPieces = async function (originalAbsolutePath: string, fileName: string, partialDir: string, planned: PlannedSplit, _7zipExecutablePath: string): Promise<string | null> {
+  const pieceCountNow = estimateLargeFileSplitPartials(fs.statSync(originalAbsolutePath).size).length;
+  if (pieceCountNow !== planned.estimatedPieceCount) {
+    throw new Error(`"${originalAbsolutePath}" has changed since the discs were planned: it now needs ${pieceCountNow} ` +
+      `pieces, but the plan has ${planned.estimatedPieceCount}. Nothing was split - plan the discs again, so they are ` +
+      `planned with the file's new size.`);
+  }
+  const removeUnfinishedPieces = () => {
+    for (const piece of piecesInFolder(partialDir, fileName)) {
+      if (piece.total === undefined) { fs.unlinkSync(node_path_module.join(partialDir, piece.name)); }
+    }
+  };
+  removeUnfinishedPieces();
+  fs.mkdirSync(partialDir, { recursive: true });
+  const util = require('util');
+  const exec = util.promisify(require('child_process').exec);
+  let pieces: Array<Piece & { name: string }>;
+  try {
+    // See LARGE_FILE_SPLIT_VOLUME_SIZE_MIB's own comment for why this size.
+    await exec(`"${_7zipExecutablePath}" -v${LARGE_FILE_SPLIT_VOLUME_SIZE_MIB}m -mx0 a "${partialDir}\\${fileName}.part" "${originalAbsolutePath}"`);
+    pieces = piecesInFolder(partialDir, fileName).filter((piece) => piece.total === undefined);
+    const burned = planned.burned;
+    if (burned) {
+      const changed = `"${originalAbsolutePath}" can no longer be split into the pieces already on your discs - the file ` +
+        `has changed since they were burned, or another version of 7-Zip is installed`;
+      const outOfSync = `Nothing was sent. Your cold storage is out of sync with this file: start "Add missing files" ` +
+        `again and leave it out, or re-create your cold storage.`;
+      if (pieces.length !== burned.total) {
+        throw new Error(`${changed} (it now makes ${pieces.length} pieces, those on your discs are of ${burned.total}). ${outOfSync}`);
+      }
+      for (const piece of pieces) {
+        if (!burned.sha256ByNumber.has(piece.number)) { continue; }
+        const recorded = burned.sha256ByNumber.get(piece.number);
+        if (!recorded) {
+          throw new Error(`"${originalAbsolutePath}": no SHA-256 is known for its piece ${piece.number} of ${burned.total} ` +
+            `already on a disc, so the app cannot check that the pieces still missing fit together with it. Nothing was ` +
+            `sent - give "Add missing files" the cold storage metadata JSON, rather than reading the discs.`);
+        }
+        if (await sha256OfFile(node_path_module.join(partialDir, piece.name)) !== recorded) {
+          throw new Error(`${changed} (its piece ${piece.number} of ${burned.total} is no longer the same). ${outOfSync}`);
+        }
+      }
+    } else if (pieces.length !== planned.estimatedPieceCount && pieces.length !== planned.estimatedPieceCount + 1) {
+      throw new Error(`Splitting "${originalAbsolutePath}" produced ${pieces.length} pieces but the disc plan expected ` +
+        `${planned.estimatedPieceCount} - the capacity plan is out of date for this file. Please redo the planning step ` +
+        `before burning.`);
+    }
+  } catch (error) {
+    removeUnfinishedPieces();
+    throw error;
+  }
+
+  const total = pieces.length;
+  let sliver: string | null = null;
+  try {
+    for (const piece of pieces) {
+      if (planned.burned?.sha256ByNumber.has(piece.number)) {
+        fs.unlinkSync(node_path_module.join(partialDir, piece.name));
+        continue;
+      }
+      const name = pieceName(fileName, total, piece.numberText);
+      fs.renameSync(node_path_module.join(partialDir, piece.name), node_path_module.join(partialDir, name));
+      if (!planned.burned && piece.number > planned.estimatedPieceCount) { sliver = name; }
+    }
+  } catch (error) {
+    // E.g. another program still had a piece open. Some pieces may have their total by now, which would make them
+    // look like a finished split: all of this split's pieces go - none has reached a disc yet - so that sending the
+    // disc again splits the file afresh.
+    for (const piece of piecesInFolder(partialDir, fileName)) {
+      fs.rmSync(node_path_module.join(partialDir, piece.name), { force: true });
+    }
+    throw error;
+  }
+  return sliver;
 }
 
 /** Given `dirPath` (the same backup source root partitionBackupToOpticalMedia was called with) and `paths`
@@ -1414,13 +1547,9 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
  *  FilesTreeComponent.getSelectedData() already hands calling components), returns fresh, real stats for each:
  *   - An ordinary file (real, exists under dirPath): a plain fs.statSync pass-through - it never needed
  *     splitting, so its stats were already correct.
- *   - An already-created split partial (exists under the temp directory from an earlier call): also just a
- *     pass-through.
- *   - A predicted-but-not-yet-real split partial (matches PART_FILE_PATTERN, exists under neither): reconstructs
- *     the original file's real path by stripping the ".part.NNN" suffix, runs the real 7-Zip split for that
- *     original file if not already done (idempotent - same "does a part file already exist" check
- *     partitionBackupToOpticalMedia used to do inline before this function existed), then statSyncs the
- *     specific requested partial.
+ *   - A planned split piece ("<file>.outOf.<total>.part.NNN" - see split-pieces.ts): the file is split first if this
+ *     job has not split it yet (splitLargeFileIntoPieces), and the piece is returned under its real name - the same
+ *     file and number, but the real total, which can be one more than planned (see below).
  *
  *  This is deliberately the ONLY place the real `7z -v...m -mx0 a` command still runs - planning
  *  (partitionBackupToOpticalMedia) never does any more. Splitting one file necessarily creates ALL of its
@@ -1428,11 +1557,11 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
  *  incidentally also create partials belonging to OTHER, not-yet-sent discs that happen to share the same
  *  source file - that is expected, not a bug.
  *
- *  Before a file is actually split (never on a later call that finds its partials already present - see
- *  alreadyProcessedOriginalFiles below), it must still need the number of pieces this job's plan gave it
- *  (plannedPieceCountsBySession); a file the plan does not split, or whose size has changed enough since planning to
- *  need a different number, throws and nothing is split. After the split, the real partial count is compared against
- *  that planned count (see estimateLargeFileSplitPartials's own comment for why this can, rarely, disagree):
+ *  Before a file is actually split (never on a later call that finds its pieces already present), it must still need
+ *  the number of pieces this job's plan gave it (plannedSplitsBySession); a file the plan does not split, or whose size
+ *  has changed enough since planning to need a different number, throws and nothing is split. After the split, the
+ *  real piece count is compared against that planned count (see estimateLargeFileSplitPartials's own comment for why
+ *  this can, rarely, disagree):
  *   - Equal: nothing further to do.
  *   - Real count is exactly one more than estimated: the one extra, unplanned partial ("sliver") is appended to
  *     the returned results too, even though it wasn't requested - reported exactly once, by the one call that
@@ -1441,7 +1570,8 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
  *     That check, and what happens to a sliver that doesn't fit (deferred onto a later, appended disc rather
  *     than silently written past the disc's margin-discounted capacity), is entirely the caller's
  *     responsibility - see sendToImgBurn/maybeAppendOverflowDiscs in backup-to-optical-media.component.ts.
- *   - Any other difference: throws - genuinely unexpected, not the one known/reconciled case. */
+ *   - Any other difference: throws - genuinely unexpected, not the one known/reconciled case.
+ *  A file whose first pieces are already on discs is split into exactly as many pieces as they say, never a sliver. */
 const createOpticalMediaDiscPartials = async function (dirPath: string, paths: Array<string>, sessionId: string): Promise<filesMetadata[]> {
   assertValidSessionId(sessionId);
   const ownership = await ensureTempDataDirectoryIsAppOwned();
@@ -1456,8 +1586,8 @@ const createOpticalMediaDiscPartials = async function (dirPath: string, paths: A
   const config = await readConfig();
   const _7zipExecutablePath = config._7zipExecutablePath;
 
-  // Which original large files this call has already (re-)split, so requesting several partials of the same
-  // file only checks/splits it once, and so the surplus-partial check below only ever runs once per file too.
+  // Which original large files this call has already split or found split, so requesting several pieces of the same
+  // file only checks/splits it once, and so a sliver is only ever reported once per file too.
   const alreadyProcessedOriginalFiles = new Set<string>();
   const surplusPartials: filesMetadata[] = [];
 
@@ -1472,75 +1602,41 @@ const createOpticalMediaDiscPartials = async function (dirPath: string, paths: A
       continue;
     }
 
-    const tempAbsolutePath = node_path_module.join(tempDataDirectoryPath, relPath);
-    if (fs.existsSync(tempAbsolutePath)) {
-      // Already created (this call or an earlier one) - a split partial.
-      const s = fs.statSync(tempAbsolutePath);
-      results.push({ path: relPath, stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
-      continue;
+    const requested = parsePiece(relPath);
+    if (!requested) {
+      throw new Error(`createOpticalMediaDiscPartials: "${relPath}" was not found under the source directory, and does not look like a large-file split piece.`);
     }
-
-    if (!PART_FILE_PATTERN.test(relPath)) {
-      throw new Error(`createOpticalMediaDiscPartials: "${relPath}" was not found under the source directory or the temp directory, and does not look like a large-file split partial.`);
-    }
-
     const relDir = relPath.split('\\').slice(0, -1).join('\\');
-    const partialFileName = relPath.split('\\').slice(-1)[0];                   // e.g. "video.mp4.part.003"
-    const originalFileName = partialFileName.replace(PART_FILE_PATTERN, '');    // e.g. "video.mp4"
-    const originalRelPath = relDir ? `${relDir}\\${originalFileName}` : originalFileName;
+    const originalRelPath = requested.file;                                     // e.g. "Videos\video.mp4"
+    const originalFileName = originalRelPath.split('\\').slice(-1)[0];           // e.g. "video.mp4"
     const originalAbsolutePath = node_path_module.join(dirPath, originalRelPath);
     const partialDir = node_path_module.join(tempDataDirectoryPath, relDir);
+    const inTempFolder = (name: string) => relDir ? `${relDir}\\${name}` : name;
 
-    if (!alreadyProcessedOriginalFiles.has(originalAbsolutePath)) {
-      alreadyProcessedOriginalFiles.add(originalAbsolutePath);
-
-      const re = new RegExp(`^${originalFileName.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}.part`);
-      let partFileNames: string[] = fs.existsSync(partialDir) ? fs.readdirSync(partialDir).filter((v: string) => re.test(v)) : [];
-
-      if (partFileNames.length === 0) {
-        // The plan gave this file its pieces for the size it had then (see plannedPieceCountsBySession).
-        const plannedPieceCount = plannedPieceCountsBySession.get(sessionId)?.get(originalRelPath);
-        if (plannedPieceCount === undefined) {
+    if (!alreadyProcessedOriginalFiles.has(originalRelPath)) {
+      alreadyProcessedOriginalFiles.add(originalRelPath);
+      // Already split in this job if its pieces are here with their total (see splitLargeFileIntoPieces).
+      if (!piecesInFolder(partialDir, originalFileName).some((piece) => piece.total !== undefined)) {
+        const planned = plannedSplitsBySession.get(sessionId)?.get(originalRelPath);
+        if (planned === undefined) {
           throw new Error(`"${originalAbsolutePath}" is not a file this backup's disc plan splits into pieces. Nothing was split - plan the discs again.`);
         }
-        const pieceCountNow = estimateLargeFileSplitPartials(fs.statSync(originalAbsolutePath).size).length;
-        if (pieceCountNow !== plannedPieceCount) {
-          throw new Error(`"${originalAbsolutePath}" has changed since the discs were planned: it now needs ${pieceCountNow} ` +
-            `pieces, but the plan has ${plannedPieceCount}. Nothing was split - plan the discs again, so they are planned ` +
-            `with the file's new size.`);
-        }
-        fs.mkdirSync(partialDir, { recursive: true });
-        const util = require('util');
-        const exec = util.promisify(require('child_process').exec);
-        // Same invocation shape partitionBackupToOpticalMedia used to run inline - see
-        // LARGE_FILE_SPLIT_VOLUME_SIZE_MIB's own comment for why this size.
-        await exec(`"${_7zipExecutablePath}" -v${LARGE_FILE_SPLIT_VOLUME_SIZE_MIB}m -mx0 a "${partialDir}\\${originalFileName}.part" "${originalAbsolutePath}"`);
-        partFileNames = fs.readdirSync(partialDir).filter((v: string) => re.test(v));
-
-        if (partFileNames.length === plannedPieceCount + 1) {
-          // The known, rare boundary case (see estimateLargeFileSplitPartials) - one real partial the plan never
-          // assigned to any disc: a "sliver". Surface it so the caller can attach it to the disc it just
-          // created for.
-          const surplusName = partFileNames.slice().sort()[partFileNames.length - 1];
-          const surplusRelPath = relDir ? `${relDir}\\${surplusName}` : surplusName;
-          const surplusAbsolutePath = node_path_module.join(partialDir, surplusName);
-          const s = fs.statSync(surplusAbsolutePath);
-          surplusPartials.push({ path: surplusRelPath, stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
-        } else if (partFileNames.length !== plannedPieceCount) {
-          throw new Error(
-            `Splitting "${originalAbsolutePath}" produced ${partFileNames.length} real partial(s) but the disc plan ` +
-            `expected ${plannedPieceCount} - the capacity plan is out of date for this file. Please redo the ` +
-            `planning step before burning.`
-          );
+        const sliver = await splitLargeFileIntoPieces(originalAbsolutePath, originalFileName, partialDir, planned, _7zipExecutablePath);
+        if (sliver) {
+          // The known, rare boundary case - one real piece the plan never assigned to any disc. Surfaced so the
+          // caller can attach it to the disc it just created for.
+          const s = fs.statSync(node_path_module.join(partialDir, sliver));
+          surplusPartials.push({ path: inTempFolder(sliver), stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
         }
       }
     }
 
-    if (!fs.existsSync(tempAbsolutePath)) {
-      throw new Error(`createOpticalMediaDiscPartials: expected partial "${relPath}" was not produced by the real split.`);
+    const piece = piecesInFolder(partialDir, originalFileName).find((p) => p.total !== undefined && p.number === requested.number);
+    if (!piece) {
+      throw new Error(`createOpticalMediaDiscPartials: expected piece "${relPath}" was not produced by the real split.`);
     }
-    const s = fs.statSync(tempAbsolutePath);
-    results.push({ path: relPath, stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
+    const s = fs.statSync(node_path_module.join(partialDir, piece.name));
+    results.push({ path: inTempFolder(piece.name), stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
   }
 
   return results.concat(surplusPartials);
@@ -3363,7 +3459,7 @@ const init = function() : void
         console.log("(worker) in partition-backup-to-optical-media")
         logsBuffer.setChannel('partition-backup-to-optical-media');
         const linksLeftOutByPlanning: string[] = [];
-        partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.maxRepletionRatio, arg.params.splitLargeFiles, arg.params.sessionId, arg.params.filesMetadata, (line) => logsBuffer.push(line), arg.params.skipUnreadable === true, linksLeftOutByPlanning).then((d)=>{
+        partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.maxRepletionRatio, arg.params.splitLargeFiles, arg.params.sessionId, arg.params.filesMetadata, (line) => logsBuffer.push(line), arg.params.skipUnreadable === true, linksLeftOutByPlanning, arg.params.incompleteSplitFiles || []).then((d)=>{
           logsBuffer.flush(); // whatever remained in the buffer
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'partition-backup-to-optical-media', res: d, status: "completed", linksLeftOut: linksLeftOutByPlanning.length });

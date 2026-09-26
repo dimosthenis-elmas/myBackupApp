@@ -16,7 +16,7 @@
  *  4. Refused: a disc on which the list of original names would take the name of a file of the user's; a recovery
  *     path, or a disc path, leading outside its folder.
  *  5. The source files are never renamed or changed.
- *  6. A real 700 MB file whose 120-character name fits on a disc but whose pieces' names (".part.001" added) do not,
+ *  6. A real 700 MB file whose 120-character name fits on a disc but whose pieces' names (".outOf.2.part.001" added) do not,
  *     the whole way: planned and split for real (the wizard's dialog would list the file itself, once), both discs
  *     built by the real ImgBurn without a warning, each recovered under the original piece names, and the pieces
  *     rejoined by merge-file-parts (7-Zip) into the file under its own name - byte for byte the original.
@@ -50,7 +50,7 @@ const GREEK_FOLDER = 'Φάκελος_' + 'α'.repeat(125);                      
 const EMOJI_FILE = 'x'.repeat(122) + '\u{1F600}\u{1F600}.txt';               // 130 UTF-16 units
 const EXACTLY_127 = 'e'.repeat(123) + '.txt';
 const EMPTY_LONG_FOLDER = 'E'.repeat(130);
-// Section 6: fits on a disc (120), its pieces' names (129) do not. Split into two pieces on two CDs (see
+// Section 6: fits on a disc (120), its pieces' names (138) do not. Split into two pieces on two CDs (see
 // test-large-file-split.js for the 700 MB / 500 MiB / CD arithmetic).
 const SPLIT_FILE = 'videos\\Conference_talk_recording_' + 'r'.repeat(90) + '.mkv';
 const SPLIT_FILE_BYTES = 700_000_000;
@@ -116,7 +116,7 @@ async function main() {
   }
   fs.mkdirSync(path.join(source, EMPTY_LONG_FOLDER), { recursive: true });
   // A split file's two pieces, as createOpticalMediaDiscPartials leaves them in the session's temp folder.
-  const pieces = { [`big\\${PAPER}.part.001`]: 'piece one', [`big\\${PAPER}.part.002`]: 'piece two' };
+  const pieces = { [`big\\${PAPER}.outOf.2.part.001`]: 'piece one', [`big\\${PAPER}.outOf.2.part.002`]: 'piece two' };
   // What a wizard sends: every planned path, relative to the disc's root - an empty folder with its "\".
   const planned = [...Object.keys(files), EMPTY_LONG_FOLDER + '\\', ...Object.keys(pieces)];
   const sourceBefore = snapshot(source);
@@ -165,7 +165,7 @@ async function main() {
     report(results, 'aNameOfExactly127IsKept', fileLines.has(`edge\\${EXACTLY_127}`));
     const pieceNames = Object.keys(pieces).map((rel) => discPath(rel).split('\\').pop());
     report(results, 'piecesKeepTheirEndingAndShareOneStart',
-      /\.part\.001$/.test(pieceNames[0]) && /\.part\.002$/.test(pieceNames[1]) && pieceNames[0].slice(0, -4) === pieceNames[1].slice(0, -4), pieceNames.join(' | '));
+      /\.outOf\.2\.part\.001$/.test(pieceNames[0]) && /\.outOf\.2\.part\.002$/.test(pieceNames[1]) && pieceNames[0].slice(0, -4) === pieceNames[1].slice(0, -4), pieceNames.join(' | '));
     report(results, 'theEmptyFolderIsShortenedToo',
       entries.some((e) => e.type === 'D' && e.parentPath === '\\' && e.name === discPath(EMPTY_LONG_FOLDER)));
 
@@ -276,7 +276,7 @@ async function main() {
     report(results, 'bothDiscsAreBuiltWithTheirPiecesShortenedAndNothingElseChanged', discNamesOk.length === 2 && discNamesOk.every(Boolean), JSON.stringify(discNamesOk));
     const recoveredPieces = listTree(recoveredLarge);
     report(results, 'bothPiecesAreRecoveredUnderTheirOriginalNames',
-      JSON.stringify(recoveredPieces) === JSON.stringify([`${SPLIT_FILE}.part.001`, `${SPLIT_FILE}.part.002`]), recoveredPieces.join(' | '));
+      JSON.stringify(recoveredPieces) === JSON.stringify([`${SPLIT_FILE}.outOf.2.part.001`, `${SPLIT_FILE}.outOf.2.part.002`]), recoveredPieces.join(' | '));
 
     const merged = (await callWorker(win, 'merge-file-parts', {
       partFilePaths: recoveredPieces.map((rel) => path.join(recoveredLarge, rel)), originalFileName: SPLIT_FILE.split('\\').pop(),

@@ -6,7 +6,7 @@
  * built by the real ImgBurn from the projects the app wrote:
  *
  *  1. Backup to optical media, of a real 700 MB file whose 120-character name fits on a disc (at most 127) but whose
- *     pieces' names (".part.001" added, 129) do not: "Large files found" -> split; "Names too long for a disc" lists
+ *     pieces' names (".outOf.2.part.001" added, 138) do not: "Large files found" -> split; "Names too long for a disc" lists
  *     the file itself, once, by its full path; "Continue" plans two discs, one piece each. Both are sent (ImgBurn is a
  *     no-op stub for the wizard), built by the real ImgBurn without a single name changed, and confirmed burned.
  *  2. Recover data from that JSON: the tree shows the pieces under their original names; both discs are inserted in
@@ -29,14 +29,14 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { launchApp } = require('../worker-ipc/call-worker');
-const { backupAndRedirectConfigField, restoreConfig, writeStubImgBurnBat, waitForFile, confirmedAfterDismissingLinkedDiscsNotice } = require('../lib/ibb-tools');
+const { backupAndRedirectConfigField, restoreConfig, writeStubImgBurnBat, waitForFile, waitForDiscConfirmed } = require('../lib/ibb-tools');
 const { realImgBurnPath, buildIsoWithImgBurn } = require('../lib/imgburn-build');
 const { writeRandomFile } = require('../lib/random-file-writer');
 const { assertNoOpticalMediaAlreadyMounted, mountIso, dismountIso } = require('./iso-disc');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { discName } = require('../../app/workers/disc-names');
 
-// Fits on a disc (120); its pieces' names (129) do not. 700 MB splits into two 500 MiB-based pieces, one per CD (see
+// Fits on a disc (120); its pieces' names (138) do not. 700 MB splits into two 500 MiB-based pieces, one per CD (see
 // worker-ipc/test-large-file-split.js for the arithmetic).
 const FILE_NAME = 'Conference_talk_recording_' + 'r'.repeat(90) + '.mkv';
 const FILE_REL = `videos\\${FILE_NAME}`;
@@ -172,7 +172,7 @@ async function main() {
         await win.getByRole('tab', { name: `Optical disk ${d}`, exact: false }).click({ timeout: 15_000 });
         await pause(700); // the step's expand animation - both panels are on screen until it ends
         await win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 15_000 });
-        await confirmedAfterDismissingLinkedDiscsNotice(win);
+        await waitForDiscConfirmed(win);
       });
     }
     const recordedDiscs = () => { try { return JSON.parse(fs.readFileSync(metadataJsonPath, 'utf8')).filter((disc) => disc.length > 0).length; } catch { return 0; } };
@@ -200,8 +200,8 @@ async function main() {
     });
     const shown = async (name) => win.getByRole('checkbox', { name: new RegExp(escapeRegExp(name)) }).count();
     report('theTreeShowsThePiecesUnderTheirOriginalNames',
-      (await shown(`${FILE_NAME}.part.001`)) === 1 && (await shown(`${FILE_NAME}.part.002`)) === 1
-      && (await shown(discName(`${FILE_NAME}.part.001`))) === 0);
+      (await shown(`${FILE_NAME}.outOf.2.part.001`)) === 1 && (await shown(`${FILE_NAME}.outOf.2.part.002`)) === 1
+      && (await shown(discName(`${FILE_NAME}.outOf.2.part.001`))) === 0);
     await step('"Select all", "Recover selected data" (and "Continue" if the recovered paths are too long)', async () => {
       await win.getByRole('checkbox', { name: 'Select all' }).click({ timeout: 15_000 });
       await win.getByRole('button', { name: 'Recover selected data' }).click({ timeout: 15_000 });

@@ -363,9 +363,9 @@ confirmation (both wizard steppers are non-linear, and nothing about `confirmDis
 was confirmed first) is a real, explicit part of this feature's design that confirming in send-order would never
 actually exercise. For each disc it checks that confirming deletes ONLY that disc's own real split-piece files
 (tracked per-disc, never the flattened all-discs list) - a different, not-yet-confirmed disc sharing the same
-source file must keep its own pending pieces untouched. The first of the two discs with the large file's pieces to
-be confirmed shows an "Also burn disc ..." notice (they are recorded in the metadata JSON together), which the script
-dismisses; once every disc is confirmed, every disc must be recorded in the JSON.
+source file must keep its own pending pieces untouched. Each disc is recorded in the metadata JSON as it is
+confirmed, with no dialog - also a disc holding only one of the large file's pieces, whose name says how many there
+are (`<name>.outOf.2.part.001`); once every disc is confirmed, every disc must be recorded in the JSON.
 
 **Also checks that a split file's pieces are ticked together across discs.** Before sending, it finds the two discs
 holding the large file's two pieces, unticks the first piece - the second must be unticked too - and ticks the second
@@ -394,10 +394,10 @@ send order doesn't matter here). Verifies the saved cold storage metadata JSON's
 checks the real `.ibb` files' own entry counts, and confirms every disc burned leaves no leftover split-piece
 files behind.
 
-It also checks when discs are recorded in that JSON: every disc of a phase holds a piece of the one large file, so
-none is recorded when sent; confirming each disc but the last shows an "Also burn disc ..." notice (naming the discs
-still to burn, and saying the already-burned ones will be re-planned if the app is closed now) and records nothing;
-confirming the last one records them all at once, with no notice.
+It also checks when discs are recorded in that JSON: none when sent, and each one as it is confirmed, with no dialog -
+though every disc of a phase holds only some pieces of the one large file. And that every piece is named with the
+real total, the sliver counted: the plan has 2 pieces, the stub 7-Zip makes 3, and all three are recorded as
+`<name>.outOf.3.part.001` to `.003`.
 
 ## `test-add-missing-files.js`
 
@@ -451,14 +451,30 @@ both the `.ibb` and the JSON.
 **Also covers "Confirm disc burned" - in reverse order, on purpose**, the same way and for the same reason as
 `test-backup-to-optical-media.js` above: confirms the new discs starting from the LAST one rather than
 sequentially, and checks that confirming a disc deletes ONLY that disc's own real split-piece files, never a
-different, not-yet-confirmed disc's. The two discs with the large file's pieces are recorded in the JSON together, so
-confirming the first of them shows an "Also burn disc ..." notice, which the script dismisses; the JSON is checked
-once every disc is confirmed.
+different, not-yet-confirmed disc's. Each disc is recorded in the JSON as it is confirmed, with no dialog; the JSON is
+checked once every disc is confirmed.
 
 `add-missing-files-to-optical-media-cold-storage.component.ts`'s `ngAfterViewInit()` unconditionally opens an
 "Info" dialog (explaining that large-file split pieces are materialized lazily, per disc, only when that disc is
 sent to ImgBurn, and deleted automatically once confirmed) the instant the wizard loads, before step 1's own form
 is usable at all - not a bug, just something the script has to click through before anything else.
+
+## `test-add-missing-files-split-resume.js`
+
+```
+node test-harness/ui/test-add-missing-files-split-resume.js
+```
+
+"Add missing files" finishing a large file an earlier job left with only some of its pieces on discs (the app was
+closed before the rest were burned). The earlier job is played over the worker's IPC: a 700 MB file is planned for
+CDs (2 pieces), only piece 1 is split and "burned" (kept aside), and the metadata JSON gets disc 1 - that piece,
+named `big.bin.outOf.2.part.001`, with its SHA-256, and one small file. Then the wizard is clicked through with that
+JSON: the large file must be listed as missing and the small one not; "Cold storage metadata prepared" must say only
+its missing pieces are planned; there must be exactly one new disc, whose `.ibb` holds exactly
+`big.bin.outOf.2.part.002` (ImgBurn is a stub); "Confirm disc burned" must open no dialog and record that piece on
+disc 2 with its SHA-256. Last, piece 1 from the earlier job and piece 2 from this one must rejoin
+(`merge-file-parts`) into the file, byte for byte. `worker-ipc/test-split-file-resume.js` covers the worker side in
+more detail - a file that changed since is refused there.
 
 ## `test-backup-to-optical-media-sha256.js`
 
@@ -644,7 +660,7 @@ node test-harness/ui/test-long-names-split-file.js
 ```
 
 A split file whose pieces' names are too long for a disc, clicked through the real wizards. The source is one real
-700 MB file whose 120-character name fits on a disc (at most 127) but whose pieces' names (`.part.001` added, 129) do
+700 MB file whose 120-character name fits on a disc (at most 127) but whose pieces' names (`.outOf.2.part.001` added, 138) do
 not. "Backup to optical media": "Large files found" -> split; "Names too long for a disc" must list the file itself,
 once, by its full path (not its pieces); "Continue" plans two CDs, one piece each; both are sent (ImgBurn is a stub for
 the wizard), built by the **real ImgBurn** (`lib/imgburn-build.js`) without a warning, then confirmed burned, and the

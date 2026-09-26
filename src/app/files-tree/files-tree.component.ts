@@ -3,6 +3,7 @@
   import {Component, EventEmitter, Injectable, Input, Output} from '@angular/core';
   import {MatTreeFlatDataSource, MatTreeFlattener} from '@angular/material/tree';
   import {BehaviorSubject} from 'rxjs';
+  import { parsePiece } from '../../../app/workers/split-pieces';
   
   /**
    * Node for to-do item
@@ -262,10 +263,10 @@
   })
   export class FilesTreeComponent {
     /** When true, selecting (or deselecting) one part of a large file that was split across multiple pieces
-     *  (see PART_FILE_PATTERN below) automatically selects/deselects every OTHER part of that same file too -
+     *  (see split-pieces.ts) automatically selects/deselects every OTHER part of that same file too -
      *  so recovering a file split into many pieces (possibly across several discs) only takes one click instead
      *  of one click per part. Only ever meaningful in a recovery context - split-file naming
-     *  ("<name>.part.<digits>") only ever shows up there, never in a backup-direction file picker, so this is a
+     *  ("<name>.outOf.<total>.part.<digits>") only ever shows up there, never in a backup-direction file picker, so this is a
      *  harmless no-op wherever it's left false (the default, for every <files-tree> usage that doesn't opt in). */
     @Input() groupPartialFiles = false;
 
@@ -289,12 +290,6 @@
      *  of the files whose tick changed, and their new state. Not emitted for selectAllNodes/deselectAllNodes or
      *  setFilesSelected - those are called by the parent, which knows what it changed. */
     @Output() userSelectionChange = new EventEmitter<{ paths: string[], selected: boolean }>();
-
-    /** Matches this app's own large-file split volume naming convention - see PART_FILE_PATTERN in
-     *  app/workers/worker.ts and groupSelectedPartialFiles in optical-disc-backup-data-retriever.component.ts,
-     *  which this mirrors exactly (kept as its own copy here since this component doesn't otherwise depend on
-     *  that one). */
-    private static readonly PART_FILE_PATTERN = /^(.+)\.part\.\d+$/i;
 
     /** Map from flat node to nested node. This helps us finding the nested node to be modified */
     flatNodeMap = new Map<TodoItemFlatNode, TodoItemNode>();
@@ -459,17 +454,17 @@
       return files;
     }
 
-    /** When groupPartialFiles is on and `node` is one part of a split large file (PART_FILE_PATTERN), selects
+    /** When groupPartialFiles is on and `node` is one part of a split large file (see split-pieces.ts), selects
      *  or deselects every OTHER part of that same file to match `node`'s own just-toggled state - e.g. checking
-     *  any one of "video.mp4.part.001" .. "video.mp4.part.025" checks the whole set in one click. Siblings are
+     *  any one of "video.mp4.outOf.25.part.001" .. "video.mp4.outOf.25.part.025" checks the whole set in one click. Siblings are
      *  looked for among the toggled node's own parent's children (via flatNodeMap/nestedNodeMap, or the
      *  top-level nodes if there is no parent) - the app's own split-file convention always puts every part of a
      *  file in the very same folder (see partitionBackupToOpticalMedia in worker.ts), so this is always a
      *  same-parent search, never a whole-tree scan. */
     private toggleSiblingPartialFiles(node: TodoItemFlatNode): void {
-      const match = FilesTreeComponent.PART_FILE_PATTERN.exec(node.item);
-      if (!match) { return; }
-      const baseName = match[1];
+      const piece = parsePiece(node.item);
+      if (!piece) { return; }
+      const baseName = piece.file;
       const nowSelected = this.checklistSelection.isSelected(node);
 
       const parentFlat = this.getParentNode(node);
@@ -478,8 +473,7 @@
       for (const nestedSibling of siblingNestedNodes) {
         const siblingFlat = this.nestedNodeMap.get(nestedSibling);
         if (!siblingFlat || siblingFlat === node || siblingFlat.expandable) { continue; }
-        const siblingMatch = FilesTreeComponent.PART_FILE_PATTERN.exec(siblingFlat.item);
-        if (!siblingMatch || siblingMatch[1] !== baseName) { continue; }
+        if (parsePiece(siblingFlat.item)?.file !== baseName) { continue; }
         if (nowSelected) {
           this.checklistSelection.select(siblingFlat);
         } else {
