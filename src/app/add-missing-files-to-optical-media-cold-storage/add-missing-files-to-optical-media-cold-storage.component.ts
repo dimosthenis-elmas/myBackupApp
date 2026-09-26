@@ -203,8 +203,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     let tempDataDirectoryPath = (await ipc.getTempDataDirectoryPath()).res;
     const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '600px'});
     loadingDialogRef.componentInstance.title = "Info";
-    loadingDialogRef.componentInstance.message = `Since you want to burn your cold storage backup to a set of optical discs you may come across files which are too large to fit on any single optical disc. In such a case
-    we have to split those large files into multiple parts (chunks of 500 MB), in a subfolder created just for this job under the temp data directory located in ${tempDataDirectoryPath}. Each large file's parts are only physically created when the disc that needs them is actually sent to ImgBurn, and are deleted again automatically once you confirm that disc was burned - so normally you don't need to clean this up yourself. If this job ends before every disc is confirmed (e.g. the app was closed before you got to it), that whole subfolder is harmless to delete by hand, or the app will offer to clear it the next time it starts.`;
+    loadingDialogRef.componentInstance.message = `Files too large for one disc are split into 500 MB pieces, in a folder ` +
+      `of their own under ${tempDataDirectoryPath}. A disc's pieces are created when you send it to ImgBurn and deleted ` +
+      `when you confirm it burned; the app offers to clear any left over at its next start.`;
   }
 
   async chooseDirectory (): Promise<string>{
@@ -273,7 +274,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
         infoDialog.disableClose = true;
         infoDialog.componentInstance.title = "Save location required";
-        infoDialog.componentInstance.message = `You need to choose where to save the updated cold storage metadata JSON file to continue.`;
+        infoDialog.componentInstance.message = `Choose where to save the updated metadata JSON to continue.`;
         infoDialog.componentInstance.actionsNum = 2;
         infoDialog.componentInstance.action1Label = "Retry";
         infoDialog.componentInstance.action2Label = "Cancel";
@@ -293,8 +294,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         const warnDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
         warnDialog.disableClose = true;
         warnDialog.componentInstance.title = "Overwrite original metadata JSON?";
-        warnDialog.componentInstance.message = `You picked the same file you originally loaded the existing metadata from (${chosenPath}).
-        Saving here will overwrite your original JSON with the updated one, so you won't be able to use the original on its own afterwards (e.g. for testing).`;
+        warnDialog.componentInstance.message = `This is the JSON you loaded (${chosenPath}). Saving here replaces it with the updated one.`;
         warnDialog.componentInstance.actionsNum = 2;
         warnDialog.componentInstance.action1Label = "Overwrite anyway";
         warnDialog.componentInstance.action2Label = "Choose a different location";
@@ -448,7 +448,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       (this.useExternalMetadata && !this.externalMetadataJSONpath)
     ){
       const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
-      loadingDialogRef.componentInstance.title = "Missing fileds";
+      loadingDialogRef.componentInstance.title = "Missing fields";
       loadingDialogRef.componentInstance.message = `You have not filled all of the required fields.`;
     }else{
       if(this.json_coldStorageFilesMetadata){
@@ -552,9 +552,8 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         this.step = "step_4";
         const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
         errorDialog.componentInstance.title = "Error";
-        errorDialog.componentInstance.message = `It looks like your cold storage does not meet the specifications. Some already backed-up
-        files appear to have been modified in your master directory and your cold storage is now out of sync with these changes.
-        This operation cannot proceed and you are advised to re-create your cold storage again. We will now cancel the operation.`;
+        errorDialog.componentInstance.message = `Some files already on your discs have changed in the master folder since ` +
+          `they were burned. Adding files cannot fix that - burn a new backup instead.`;
         errorDialog.afterClosed().subscribe(()=>{
           // Exit to main menu.
           goToMainMenuAndReload(this.router);
@@ -585,8 +584,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         loadingDialogRef.close();
         const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
         infoDialog.componentInstance.title = "Info";
-        infoDialog.componentInstance.message = withLinksLeftOutNote(`It looks like your cold storage is already up to date. There are no new files in your 'master'
-        that are missing from your cold storage.`, this.linksLeftOut);
+        infoDialog.componentInstance.message = withLinksLeftOutNote(`Your cold storage is up to date: no files are missing from it.`, this.linksLeftOut);
         infoDialog.afterClosed().subscribe(()=>{
           // Exit to main menu.
           goToMainMenuAndReload(this.router);
@@ -625,7 +623,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
       infoDialog.disableClose = true;
       infoDialog.componentInstance.title = "Collection name required";
-      infoDialog.componentInstance.message = `Please provide a name for this cold storage collection of discs before continuing.`;
+      infoDialog.componentInstance.message = `Enter a name for this collection first.`;
       infoDialog.componentInstance.actionsNum = 1;
       infoDialog.componentInstance.action1Label = "Ok";
       infoDialog.componentInstance.action1Callback = () => { infoDialog.close(); }
@@ -731,12 +729,14 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       loadingDialogRef.close();
 
       const completing = incompleteSplitFilesSelected.length === 0 ? '' : ` ${incompleteSplitFilesSelected.length === 1
-        ? 'One large file has only some of its pieces on your discs so far; only its missing pieces are'
-        : `${incompleteSplitFilesSelected.length} large files have only some of their pieces on your discs so far; only their missing pieces are`} planned.`;
+        ? 'One large file has only some of its pieces on your discs; only its missing pieces are'
+        : `${incompleteSplitFilesSelected.length} large files have only some of their pieces on your discs; only their missing pieces are`} planned.`;
       let loadingDialogRef2 = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '600px'});
       loadingDialogRef2.componentInstance.title = "Cold storage metadata prepared";
-      loadingDialogRef2.componentInstance.message = withLinksLeftOutNote(`A scaffold for the updated cold storage metadata (containing placeholders for the new missing files' discs) has been saved to ${this.coldStorageMetadataJSONPathToSave}.
-      It will be filled in as you confirm each new disc burned below - you may keep this .json file for future updates to your cold storage without having to input all the optical discs one by one again. If you close the app before every disc is confirmed, run "Add missing files" again with this .json file to burn the rest.${completing}`, this.linksLeftOut);
+      loadingDialogRef2.componentInstance.message = withLinksLeftOutNote(`The updated metadata JSON is saved to ` +
+        `${this.coldStorageMetadataJSONPathToSave} - keep it for future updates. Each new disc is recorded in it when you ` +
+        `confirm it burned; if you close the app before then, run "Add missing files" again with this JSON to burn the ` +
+        `rest.${completing}`, this.linksLeftOut);
     } finally {
       this.isPartitioning = false;
       partitionProgressListener?.removeListener();
@@ -982,8 +982,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         labelDialog.disableClose = true;
         labelDialog.componentInstance.title = "Disc label";
         labelDialog.componentInstance.message =
-          `Please physically label this disc as disc ${nextDiscNumber}. During a future recovery, the app asks for ` +
-          `each disc by this number.`;
+          `Write "Disc ${nextDiscNumber}" on this disc - recovery asks for discs by number.`;
         labelDialog.componentInstance.actionsNum = 1;
         labelDialog.componentInstance.action1Label = "Ok";
         labelDialog.componentInstance.action1Callback = () => {
@@ -1079,9 +1078,8 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       infoDialog.disableClose = true;
       infoDialog.componentInstance.title = "Disc count updated";
       infoDialog.componentInstance.message =
-        `The estimated number of new discs needed has changed: it was ${previousTotal}, but a rare ` +
-        `file-splitting edge case means ${overflowPartitions.length} more disc(s) are needed to fit ` +
-        `everything. You will now need ${newTotal} new discs in total.`;
+        `A large file's pieces need more room than estimated: you now need ${newTotal} new discs in total (was ` +
+        `${previousTotal}).`;
       infoDialog.componentInstance.actionsNum = 1;
       infoDialog.componentInstance.action1Label = "Ok";
       infoDialog.componentInstance.action1Callback = () => {
@@ -1124,7 +1122,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         if (!result.cleared) {
           const warnDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
           warnDialog.componentInstance.title = "Temp cleanup incomplete";
-          warnDialog.componentInstance.message = `Disc ${this.getNextDiscNumber(i)} was confirmed burned, but its temporary split-part files could not all be removed: ${result.message} You can safely ignore this - the app offers to clear leftover temp files the next time it starts.`;
+          warnDialog.componentInstance.message = `Disc ${this.getNextDiscNumber(i)} is recorded as burned, but some of its temporary pieces could not be deleted: ${result.message} The app offers to clear them at its next start.`;
           if (result.notClearedItems?.length) {
             warnDialog.componentInstance.lists = [{ label: `Not removed (${result.notClearedItems.length}):`, items: result.notClearedItems }];
           }

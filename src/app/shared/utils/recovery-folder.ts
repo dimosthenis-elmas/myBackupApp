@@ -13,8 +13,7 @@ export async function confirmRecoveryFolderIsEmpty(dialog: MatDialog, folder: st
     ref.disableClose = true;
     ref.componentInstance.title = 'Choose an empty folder';
     ref.componentInstance.message = (state === 'missing' ? `"${folder}" no longer exists. ` : `"${folder}" is not empty. `) +
-      `The app recovers files only into an empty folder, so that no file already there can be replaced. Choose an ` +
-      `empty folder, or create a new one.`;
+      `Recovery only writes into an empty folder, so no existing file is replaced. Choose or create an empty folder.`;
     if (offerAnotherFolder) {
       ref.componentInstance.actionsNum = 2;
       ref.componentInstance.action1Label = 'Cancel';

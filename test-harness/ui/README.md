@@ -268,9 +268,9 @@ than one combined wait-and-click call.
 **Worth knowing if you add more empty directories to a multi-disc fixture:** the app tracks empty directories as
 path entries the identical way it tracks files (see `getAllFiles`/`getAllFilesSet` in `worker.ts`), so two
 identically-named empty directories on different discs are indistinguishable from a genuine duplicate filename to
-its "does every disc have unique names" check, and it will correctly refuse the second one with "It looks like
-the disk you inserted has some files in common with disks you inserted previously." Give each disc's own extra
-empty directory a distinct name.
+its "does every disc have unique names" check, and it will correctly refuse the second one with "This disc has
+files in common with a disc read before, so it is skipped". Give each disc's own extra empty directory a distinct
+name.
 
 ## `test-recover-from-json-metadata.js`
 

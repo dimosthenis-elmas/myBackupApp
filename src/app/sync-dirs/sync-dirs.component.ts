@@ -133,13 +133,11 @@ export class SyncDirsComponent {
 
     const confirmDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '650px' });
     confirmDialog.disableClose = true;
-    confirmDialog.componentInstance.message = `You have requested the synchronization of the directories: ${this.backup.sourcePath} and 
-      ${this.backup.targetPath}. This means that at the end of the process, the two directories will have exactly the same contents.
-      That is, if there is a file in ${this.backup.sourcePath} (template directory) which does not exist (or has been modified) in ${this.backup.targetPath}
-      then the file will be copied from ${this.backup.sourcePath} to ${this.backup.targetPath}. Also in case there is a file in
-      ${this.backup.targetPath} which does not exist in ${this.backup.sourcePath} then this file will be DELETED. So be careful as this
-      option may delete files from ${this.backup.targetPath}. If you are not sure you want to proceed press 'cancel'.
-      Otherwise press 'continue'.\n\nLinks (symbolic links and junctions) are never copied, and links in ${this.backup.targetPath} are deleted - only the link itself, never what it points to.`;
+    const source = `"${this.backup.sourcePath}"`, target = `"${this.backup.targetPath}"`;
+    confirmDialog.componentInstance.message = `${target} will be made identical to ${source}: new and changed files are ` +
+      `copied from ${source}, and anything in ${target} that is not in ${source} is DELETED.\n\n` +
+      `Links (symbolic links and junctions) are not copied; links in ${target} are deleted - only the link, never what ` +
+      `it points to.`;
     confirmDialog.componentInstance.title = "Warning"
     confirmDialog.componentInstance.actionsNum = 2;
     confirmDialog.componentInstance.action1Label = "Cancel";
@@ -169,7 +167,7 @@ export class SyncDirsComponent {
     if(!this.backup.sourcePath || !this.backup.targetPath){
       const confirmDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '650px' });
       confirmDialog.disableClose = true;
-      confirmDialog.componentInstance.message = `You have not selected the directories' paths`;
+      confirmDialog.componentInstance.message = `Choose both folders first.`;
       confirmDialog.componentInstance.title = "Synchronize directories"
       confirmDialog.componentInstance.actionsNum = 1;
       confirmDialog.componentInstance.action1Label = "Ok";
@@ -183,8 +181,8 @@ export class SyncDirsComponent {
       const confirmDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '650px' });
       confirmDialog.disableClose = true;
       confirmDialog.componentInstance.message = `${driveRoots.map((p) => `"${p}"`).join(' and ')} ` +
-        `${driveRoots.length > 1 ? 'are whole drives' : 'is a whole drive'}. Synchronize directories cannot use the root ` +
-        `of a drive - Windows keeps folders of its own there. Choose a folder on the drive instead.`;
+        `${driveRoots.length > 1 ? 'are whole drives' : 'is a whole drive'}, where Windows keeps folders of its own. ` +
+        `Choose a folder on the drive instead.`;
       confirmDialog.componentInstance.title = "Synchronize directories"
       confirmDialog.componentInstance.actionsNum = 1;
       confirmDialog.componentInstance.action1Label = "Ok";
@@ -462,8 +460,7 @@ export class SyncDirsComponent {
           this.dialog.closeAll();
           const confirmCopyDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
           confirmCopyDialog.componentInstance.message = withLinksLeftOutNote(
-            `Are you sure you want to sync the directories? This means that after the end of the process the directory
-            ${this.backup.targetPath} will become exactly the same as the directory: ${this.backup.sourcePath}.`, this.linksLeftOut);
+            `Make "${this.backup.targetPath}" identical to "${this.backup.sourcePath}"?`, this.linksLeftOut);
           confirmCopyDialog.componentInstance.title = "Confirmation"
           confirmCopyDialog.componentInstance.actionsNum = 2;
           confirmCopyDialog.componentInstance.action1Label = "No, cancel"
@@ -649,12 +646,12 @@ export class SyncDirsComponent {
       resultDialog.componentInstance.message = `Directory synchronization completed, but checking the result afterwards failed: ${checkError}`;
     } else if (result.matched) {
       resultDialog.componentInstance.title = "Directory synchronization successful";
-      resultDialog.componentInstance.message = `Directory synchronization completed successfully. Both directories now ` +
-        `hold exactly the same files: ${result.fileCount} file(s), ${formatBytes(result.totalBytes)} in total.`;
+      resultDialog.componentInstance.message = `Directory synchronization completed successfully. Both directories hold ` +
+        `the same ${result.fileCount} file(s), ${formatBytes(result.totalBytes)} in total.`;
     } else {
       resultDialog.componentInstance.title = "Directory synchronization - differences found";
-      resultDialog.componentInstance.message = `The synchronization finished, but the two directories do not hold ` +
-        `exactly the same files: ${result.mismatches.length} item(s) differ by name or size.`;
+      resultDialog.componentInstance.message = `The synchronization finished, but ${result.mismatches.length} item(s) still ` +
+        `differ by name or size.`;
       resultDialog.componentInstance.lists = [{ label: `Differences (${result.mismatches.length}):`, items: result.mismatches }];
     }
   }
@@ -681,8 +678,7 @@ export class SyncDirsComponent {
     this.workFinished_=true;
     this.workIsInProgess_=false;
     const confirmCopyDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
-    confirmCopyDialog.componentInstance.message =`Directory synchronization has stopped.
-    You can see the actions performed before the interruption in the logs.`;
+    confirmCopyDialog.componentInstance.message =`Directory synchronization has stopped. The log shows what was done before.`;
     confirmCopyDialog.componentInstance.title = "Dir Sync"
     confirmCopyDialog.componentInstance.actionsNum = 1;
     confirmCopyDialog.componentInstance.action1Label = "Ok";

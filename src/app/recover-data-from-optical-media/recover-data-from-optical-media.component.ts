@@ -44,8 +44,8 @@ export class RecoverDataFromOpticalMediaComponent implements OnInit, OnDestroy{
    *  already checks json_coldStorageFilesMetadata rather than externalMetadataJSONpath, so this can't misroute
    *  into the wrong workflow the way add-missing-files-to-optical-media-cold-storage.component.ts's identical
    *  getJSON()/afterJSONpathIsGiven() once did (see that component's loadingExternalMetadataJSON for the full
-   *  story) - but without this, clicking "Next" in the same narrow window still shows an incorrect "no valid JSON
-   *  file has been selected yet" dialog for a JSON that WAS selected and is just still loading. Bound to the
+   *  story) - but without this, clicking "Next" in the same narrow window still shows an incorrect "Choose a valid
+   *  metadata JSON first" dialog for a JSON that WAS selected and is just still loading. Bound to the
    *  "Next" button's [disabled] in the template. */
   loadingExternalMetadataJSON = false;
 
@@ -159,7 +159,7 @@ export class RecoverDataFromOpticalMediaComponent implements OnInit, OnDestroy{
     // Second guard on top of the "Next" button's own [disabled]="loadingExternalMetadataJSON" - belt-and-braces
     // against anything else that might invoke step1() while a JSON is still being read/validated (see
     // loadingExternalMetadataJSON's own doc comment). Without this, the check below would otherwise show a
-    // misleading "no valid JSON file has been selected yet" dialog for a JSON that WAS selected and is just
+    // misleading "Choose a valid metadata JSON first" dialog for a JSON that WAS selected and is just
     // still loading.
     if(this.useExternalMetadata && this.loadingExternalMetadataJSON){
       return;
@@ -168,8 +168,8 @@ export class RecoverDataFromOpticalMediaComponent implements OnInit, OnDestroy{
       const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
       loadingDialogRef.componentInstance.title = "Paths selection";
       loadingDialogRef.componentInstance.message = !this.backup.targetPath
-        ? `You have not selected the directory to restore the backup to.`
-        : `You have chosen to provide the cold storage files metadata via a JSON file, but no valid JSON file has been selected yet.`;
+        ? `Choose the folder to recover into first.`
+        : `Choose a valid metadata JSON first.`;
     }else if((await confirmRecoveryFolderIsEmpty(this.dialog, this.backup.targetPath, false)) !== 'empty'){
       // Told why; the user chooses another folder on this same screen. Checked again right before copying (see
       // getPathsOfFilesToBeRecovered in optical-disc-backup-data-retriever.component.ts).

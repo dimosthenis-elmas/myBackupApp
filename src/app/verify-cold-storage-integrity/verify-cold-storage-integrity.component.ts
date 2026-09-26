@@ -138,10 +138,8 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
         // disc for nothing if the loaded metadata carries no integrity data anywhere at all.
         this.showOkDialog(
           "No integrity data to verify",
-          `This cold storage metadata JSON does not contain any SHA-256 integrity data for any file - it was ` +
-          `most likely created by an older version of this app, before SHA-256 checksums existed. There is ` +
-          `nothing for this wizard to check, so no disc needs to be inserted. Choose a different JSON file, or ` +
-          `go back to the main menu.`
+          `This metadata JSON has no SHA-256 data (it was likely made by an older version of the app), so there is ` +
+          `nothing to verify. Choose another JSON file.`
         );
         return;
       }
@@ -150,7 +148,7 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
       // Same guard seedFromExternalMetadata (optical-disc-backup-data-retriever.component.ts) already applies
       // to this exact JSON shape - without it, two discs producing the same id (the same disc listed twice) would
       // make discIdHashes.indexOf() always resolve to the FIRST one: the second could never actually be
-      // identified/verified - inserting it would just look like "you already verified this disc" forever, even
+      // identified/verified - inserting it would just look like "Disc N is already verified" forever, even
       // though it never really was. Discs with no entries are left out, like there: a disc never confirmed burned
       // stays an empty entry, all empty discs share one id, and there is nothing on them to verify.
       const idsOfDiscsWithFiles = discIdHashes.filter((id, i) => metadata[i].length > 0);
@@ -158,8 +156,7 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
         loadingDialogRef.close();
         this.showOkDialog(
           "Error",
-          `The provided cold storage metadata JSON looks malformed: two or more discs produce the same ` +
-          `identifier (for example, the same disc listed twice). Please check the JSON file and try again.`
+          `This metadata JSON is malformed: two discs have the same identifier (for example, the same disc listed twice).`
         );
         return;
       }
@@ -266,11 +263,11 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
     const discIndex = this.discIdHashes.indexOf(currentDiscIdHash);
 
     if (discIndex === -1) {
-      this.askRetryOrFinish(`This disc does not match any disc listed in the loaded cold storage metadata JSON. Are you sure you inserted the right disc?`);
+      this.askRetryOrFinish(`This disc is not one of the discs in the metadata JSON.`);
       return;
     }
     if (this.verifiedDiscs[discIndex] !== undefined) {
-      this.askRetryOrFinish(`It looks like you have already verified this disc (disc ${discIndex + 1}) during this session. Insert a different disc, or finish.`);
+      this.askRetryOrFinish(`Disc ${discIndex + 1} is already verified. Insert another disc, or finish.`);
       return;
     }
 
@@ -345,7 +342,7 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
     // field: each renders as a real virtualized scrolling list, so however many files are on this disc, only
     // the ones actually visible are ever real DOM nodes.
     resultDialog.componentInstance.lists = [
-      failedPaths.length ? { label: `FAILED - did NOT match their recorded hash (this can mean real data corruption - a bad drive read, disc handling damage):`, items: failedPaths } : undefined,
+      failedPaths.length ? { label: `FAILED - not the same as when burned:`, items: failedPaths } : undefined,
       verifiedPaths.length ? { label: `Verified:`, items: verifiedPaths } : undefined,
       noDataPaths.length ? { label: `No integrity data available, not checked:`, items: noDataPaths } : undefined,
     ].filter((s): s is { label: string, items: string[] } => !!s);

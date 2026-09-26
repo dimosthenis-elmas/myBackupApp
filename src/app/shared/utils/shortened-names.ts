@@ -36,29 +36,25 @@ export async function confirmDiscNameAndPathLimits(dialog: MatDialog, relativePa
   const cancelLabel = `Cancel - I'll shorten them myself`;
 
   const namesTooLong = itemsWithNamesTooLong(relativePaths);
+  const oneName = namesTooLong.length === 1;
   if (namesTooLong.length > 0 && !(await askToContinue(dialog, 'Names too long for a disc',
-    `A disc holds file and folder names of at most ${MAX_DISC_NAME_LENGTH} characters. The ${namesTooLong.length === 1 ? 'name' : `${namesTooLong.length} names`} ` +
-    `below ${namesTooLong.length === 1 ? 'is' : 'are'} longer - for a large file split into pieces, counting the ending such as ".outOf.23.part.001" its pieces add.\n\n` +
-    `We recommend that you cancel, shorten ${namesTooLong.length === 1 ? 'it' : 'them'} in your folder, and then ${howToRetry}.\n\n` +
-    `If you continue instead, each one is burned under a shorter name, on the disc only: its first part, then "~" and a ` +
-    `code of 8 characters, then its extension - for example "…Autoregressive_Transformer_and_Conditio~1f0c9a2e.pdf". Your ` +
-    `own files are not renamed or changed. The original names are recorded in the metadata JSON and in a file on each such ` +
-    `disc ("${ORIGINAL_NAMES_FILE_NAME}"), and recovering with this app puts them back; other programs show the shorter ` +
-    `names on the disc.`,
+    `A disc allows names of up to ${MAX_DISC_NAME_LENGTH} characters. ${oneName ? 'This name is' : `These ${namesTooLong.length} names are`} ` +
+    `longer (a split file's name counts its pieces' ending, such as ".outOf.23.part.001").\n\n` +
+    `Recommended: cancel, shorten ${oneName ? 'it' : 'them'} in your folder, then ${howToRetry}.\n\n` +
+    `Or continue: ${oneName ? 'it gets' : 'they get'} a shorter name on the disc only, such as "…and_Conditio~1f0c9a2e.pdf". ` +
+    `Your files are not changed, and recovering with this app restores the original names.`,
     [{ label: `Names over ${MAX_DISC_NAME_LENGTH} characters (${namesTooLong.length}):`, items: namesTooLong.map((p) => root + p) }],
     'Continue - shorten them on the disc', cancelLabel))) {
     return false;
   }
 
   const pathsTooLong = filesWithPathsTooLongOnDisc(relativePaths);
+  const onePath = pathsTooLong.length === 1;
   if (pathsTooLong.length > 0 && !(await askToContinue(dialog, 'Paths too long for some programs',
-    `On the disc, the ${pathsTooLong.length === 1 ? 'file' : `${pathsTooLong.length} files`} below would have a full path ` +
-    `of more than ${MAX_OPENABLE_PATH_LENGTH} characters, counting the drive (such as "E:\\"). The app burns and recovers ` +
-    `such files without trouble, but some programs cannot open a file with a path that long - ` +
-    `on the disc, or wherever it is recovered to.\n\n` +
-    `We recommend that you cancel, shorten some of the folder or file names on the way to ${pathsTooLong.length === 1 ? 'it' : 'them'} ` +
-    `in your folder, and then ${howToRetry}.\n\n` +
-    `If you continue instead, ${pathsTooLong.length === 1 ? 'it is' : 'they are'} burned as ${pathsTooLong.length === 1 ? 'it is' : 'they are'}.`,
+    `On the disc, ${onePath ? 'this file' : `these ${pathsTooLong.length} files`} would have a path over ` +
+    `${MAX_OPENABLE_PATH_LENGTH} characters (counting "E:\\"). The app handles that, but some programs cannot open a ` +
+    `file with a path that long - on the disc, or wherever it is recovered to.\n\n` +
+    `Recommended: cancel, shorten some folder or file names on the way to ${onePath ? 'it' : 'them'}, then ${howToRetry}.`,
     [{ label: `Paths over ${MAX_OPENABLE_PATH_LENGTH} characters on the disc (${pathsTooLong.length}):`, items: pathsTooLong.map((p) => root + p) }],
     'Continue - burn them as they are', cancelLabel))) {
     return false;
@@ -75,11 +71,10 @@ export async function confirmRecoveredPathLengths(dialog: MatDialog, relativePat
   const tooLong = relativePaths.map((p) => target + p).filter((p) => p.length > MAX_OPENABLE_PATH_LENGTH);
   if (tooLong.length === 0) { return 'recover'; }
   const recover = await askToContinue(dialog, 'Paths too long for some programs',
-    `Recovered into "${targetFolder}", the ${tooLong.length === 1 ? 'file' : `${tooLong.length} files`} below would have a ` +
-    `full path of more than ${MAX_OPENABLE_PATH_LENGTH} characters. The app recovers such files without trouble, but ` +
-    `some programs cannot open a file with a path that long.\n\n` +
-    `We recommend that you choose a folder with a shorter path, such as "D:\\Recovered".\n\n` +
-    `If you continue instead, ${tooLong.length === 1 ? 'it is' : 'they are'} recovered into "${targetFolder}" anyway.`,
+    `Recovered into "${targetFolder}", ${tooLong.length === 1 ? 'this file' : `these ${tooLong.length} files`} would have ` +
+    `a path over ${MAX_OPENABLE_PATH_LENGTH} characters. The app handles that, but some programs cannot open a file with ` +
+    `a path that long.\n\n` +
+    `Recommended: choose a folder with a shorter path, such as "D:\\Recovered".`,
     [{ label: `Paths over ${MAX_OPENABLE_PATH_LENGTH} characters (${tooLong.length}):`, items: tooLong }],
     'Continue - recover them here', 'Choose another folder');
   return recover ? 'recover' : 'choose-folder';

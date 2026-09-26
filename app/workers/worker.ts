@@ -592,7 +592,7 @@ const ensureTempDataDirectoryIsAppOwned = async function (): Promise<{ ok: boole
 
   const parsedPath = node_path_module.parse(tempDataDirectoryPath);
   if (parsedPath.root === tempDataDirectoryPath) {
-    return { ok: false, path: tempDataDirectoryPath, message: 'The configured temp/cache directory (cacheDataDirectoryPath in appData\\config.json) resolves to an entire drive (' + tempDataDirectoryPath + '), which cannot be right for a temp/cache folder.' };
+    return { ok: false, path: tempDataDirectoryPath, message: 'The temp folder (cacheDataDirectoryPath in appData\\config.json) is a whole drive (' + tempDataDirectoryPath + '). Set it to a folder.' };
   }
 
   if (!fs.existsSync(tempDataDirectoryPath)) {
@@ -616,10 +616,8 @@ const ensureTempDataDirectoryIsAppOwned = async function (): Promise<{ ok: boole
     return {
       ok: false,
       path: tempDataDirectoryPath,
-      message: 'The configured temp/cache directory ("' + tempDataDirectoryPath + '") already exists and was ' +
-        'not created by this app, so its contents cannot be trusted to be safe to ever delete. Please change ' +
-        'cacheDataDirectoryPath in appData\\config.json to a path that does not exist yet - the app will ' +
-        'create it fresh and use it from then on.'
+      message: 'The temp folder "' + tempDataDirectoryPath + '" was not created by this app, so the app will not ' +
+        'delete anything in it. In appData\\config.json, set cacheDataDirectoryPath to a path that does not exist yet.'
     };
   }
 
@@ -644,7 +642,7 @@ interface RequiredExecutable {
 const REQUIRED_EXECUTABLES: { [key: string]: RequiredExecutable } = {
   '_7zipExecutablePath': {
     program: '7-Zip', fileName: '7z.exe', folderName: '7-Zip',
-    purpose: 'to split files that are too large for one disc, and to put them back together when you recover them',
+    purpose: 'to split files too large for one disc, and to put them back together on recovery',
     usualFolder: 'C:\\Program Files\\7-Zip', website: 'https://www.7-zip.org',
     registryFolders: [
       { key: 'HKLM\\SOFTWARE\\7-Zip', value: 'Path64' }, { key: 'HKLM\\SOFTWARE\\7-Zip', value: 'Path' },
@@ -953,9 +951,8 @@ const clearTempDataDirectory = async function (): Promise<{ cleared: boolean, me
   // false) to actually surface which entries didn't clear and why, instead of that detail being silently lost.
   return {
     cleared: false,
-    message: `Cleared ${deletedCount} of ${clearableEntryCount} item(s) from the temp directory. The ones listed below were ` +
-      `not cleared (only .partNNN split files, .ibb project files with their lists of original names, and folders ` +
-      `containing only such files are ever deleted).`,
+    message: `Cleared ${deletedCount} of ${clearableEntryCount} item(s) from the temp folder; the ones below were not. ` +
+      `Only the app's own split pieces and ImgBurn project files are ever deleted.`,
     deletedItems,
     notClearedItems
   };

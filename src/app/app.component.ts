@@ -121,13 +121,10 @@ export class AppComponent implements OnInit {
         dialog.disableClose = true;
         dialog.componentInstance.title = `${executable.program} not found`;
         dialog.componentInstance.message =
-          `The app needs ${executable.program} ${executable.purpose}. It looked where ${executable.program} is usually ` +
-          `installed, and did not find it.\n\n` +
-          `If ${executable.program} is installed, click "Choose ${executable.fileName}" and select the file ` +
-          `${executable.fileName} in its folder (usually ${executable.usualFolder}). If it is not, install it from ` +
-          `${executable.website}, then start this app again.\n\n` +
-          `With "Not now", Cumulative backup and Synchronize directories still work; the app asks again the next time ` +
-          `it starts.`;
+          `${executable.program} is needed ${executable.purpose}, and was not found where it is usually installed.\n\n` +
+          `If it is installed, click "Choose ${executable.fileName}" and select it (usually in ${executable.usualFolder}). ` +
+          `If not, install it from ${executable.website} and restart the app.\n\n` +
+          `With "Not now", Cumulative backup and Synchronize directories still work; the app asks again at its next start.`;
         // The second button is the focused one (Enter) - what the dialog recommends.
         dialog.componentInstance.actionsNum = 2;
         dialog.componentInstance.action1Label = "Not now";

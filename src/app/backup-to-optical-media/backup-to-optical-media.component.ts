@@ -360,7 +360,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
           // "Estimated": the real count can still grow later, in the rare case a large file's real split turns
           // out to need one more partial than planning predicted and that surplus doesn't fit on the disc that
           // triggers it - see maybeAppendOverflowDiscs, which is what actually updates the count if that happens.
-          const info_msg = withLinksLeftOutNote(`To burn the backup to the optical medium of your choice (${this.selected_optical_medium.viewValue}) you will need an estimated ${response.res.length} discs in total.`, response.linksLeftOut)
+          const info_msg = withLinksLeftOutNote(`You will need an estimated ${response.res.length} discs (${this.selected_optical_medium.viewValue}).`, response.linksLeftOut)
           infoDialog.componentInstance.message = info_msg;
           infoDialog.componentInstance.actionsNum = 2
           infoDialog.componentInstance.action2Label = "Cancel"
@@ -389,13 +389,10 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
             const tooLargeFiles: Array<{ path: string, size: number }> = Array.isArray(err.res.too_large_files) ? err.res.too_large_files : [];
             confirmDialog.componentInstance.message =
               (tooLargeFiles.length > 0
-                ? `${tooLargeFiles.length} file(s) are too large to fit on any single ${this.selected_optical_medium.viewValue} disc - see the list below.`
+                ? `${tooLargeFiles.length} file(s) are too large for a single ${this.selected_optical_medium.viewValue} disc.`
                 : `${err.res.msg}`) +
-              `\n\nBut wait, there might be a fix to this! This app can split each of those files into 500 MB parts ` +
-              `and write the parts to the discs like any other file. For example, a large file myFile.zip split into ` +
-              `23 parts becomes myFile.zip.outOf.23.part.001, myFile.zip.outOf.23.part.002 and so on, in the same folder. ` +
-              `When you recover the data, the app offers to reassemble the original file from its parts. Would you like ` +
-              `to proceed with this approach?`;
+              `\n\nThe app can split each one into 500 MB pieces (myFile.zip.outOf.23.part.001, ...) and burn them like ` +
+              `any other file. When you recover, it offers to put them back together. Split them?`;
             if (tooLargeFiles.length > 0) {
               confirmDialog.componentInstance.lists = [{ label: `Too large for a single disc (${tooLargeFiles.length}):`, items: tooLargeFiles.map(f => f.path) }];
             }
@@ -429,9 +426,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
 
                 const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
                 infoDialog.componentInstance.title = "Info";
-                const info_msg = `The feature you selected will split any too-large files into parts, one disc's worth at a time, in the temp data directory located in
-                ${this.tempDataDirectoryPath}. Each disc's parts are only physically created when that disc is actually sent to ImgBurn, and are deleted again
-                automatically once you confirm that disc was burned - so you don't need to manually clean up this directory yourself.`
+                const info_msg = `Each disc's pieces are created in ${this.tempDataDirectoryPath} when you send that disc to ` +
+                  `ImgBurn, and deleted once you confirm it burned.`
                 infoDialog.componentInstance.message = info_msg;
                 infoDialog.componentInstance.actionsNum = 1
                 infoDialog.componentInstance.action1Label = "Ok, got it."
@@ -459,7 +455,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       }else{
         const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent);
         loadingDialogRef.componentInstance.title = "Info";
-        loadingDialogRef.componentInstance.message = `You must first select the path to the backup directory, the type of optical medium, and provide a name for this cold storage collection of discs.`;
+        loadingDialogRef.componentInstance.message = `Choose the folder to back up, the disc type and a name for this collection first.`;
       }
 
     }
@@ -474,7 +470,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
       infoDialog.disableClose = true;
       infoDialog.componentInstance.title = "Save location required";
-      infoDialog.componentInstance.message = `You need to choose where to save the cold storage metadata JSON file to continue.`;
+      infoDialog.componentInstance.message = `Choose where to save the metadata JSON to continue.`;
       infoDialog.componentInstance.actionsNum = 2;
       infoDialog.componentInstance.action1Label = "Retry";
       infoDialog.componentInstance.action2Label = "Cancel";
@@ -604,10 +600,9 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     if (refused.length > 0) {
       const dialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
       dialog.componentInstance.title = "Split file not changed";
-      dialog.componentInstance.message = `A large file split into pieces is burned with all of its pieces or with none - it ` +
-        `can only be put back together from all of them. The file(s) below have a disc that was already sent ` +
-        `${change.selected ? 'without' : 'with'} their pieces, so they cannot be ${change.selected ? 'added' : 'left out'} ` +
-        `now; this disc's pieces of them were set back.`;
+      dialog.componentInstance.message = `A split file is burned with all of its pieces or none, and a disc was already ` +
+        `sent ${change.selected ? 'without' : 'with'} pieces of the file(s) below - so they cannot be ` +
+        `${change.selected ? 'added' : 'left out'} now.`;
       dialog.componentInstance.lists = [{ label: `Not changed (${refused.length}):`, items: refused }];
       dialog.componentInstance.actionsNum = 1;
       dialog.componentInstance.action1Label = "Ok";
@@ -870,8 +865,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         labelDialog.disableClose = true;
         labelDialog.componentInstance.title = "Disc label";
         labelDialog.componentInstance.message =
-          `Please physically label this disc as disc ${i + 1}. During a future recovery, the app asks for each ` +
-          `disc by this number.`;
+          `Write "Disc ${i + 1}" on this disc - recovery asks for discs by number.`;
         labelDialog.componentInstance.actionsNum = 1;
         labelDialog.componentInstance.action1Label = "Ok";
         labelDialog.componentInstance.action1Callback = () => {
@@ -964,9 +958,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       infoDialog.disableClose = true;
       infoDialog.componentInstance.title = "Disc count updated";
       infoDialog.componentInstance.message =
-        `The estimated number of discs needed has changed: it was ${previousTotal}, but a rare file-splitting ` +
-        `edge case means ${overflowPartitions.length} more disc(s) are needed to fit everything. You will now ` +
-        `need ${newTotal} discs in total.`;
+        `A large file's pieces need more room than estimated: you now need ${newTotal} discs in total (was ` +
+        `${previousTotal}).`;
       infoDialog.componentInstance.actionsNum = 1;
       infoDialog.componentInstance.action1Label = "Ok";
       infoDialog.componentInstance.action1Callback = () => {
@@ -1026,7 +1019,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         if (!result.cleared) {
           const warnDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
           warnDialog.componentInstance.title = "Temp cleanup incomplete";
-          warnDialog.componentInstance.message = `Disc ${i + 1} was confirmed burned, but its temporary split-part files could not all be removed: ${result.message} You can safely ignore this - the app offers to clear leftover temp files the next time it starts.`;
+          warnDialog.componentInstance.message = `Disc ${i + 1} is recorded as burned, but some of its temporary pieces could not be deleted: ${result.message} The app offers to clear them at its next start.`;
           if (result.notClearedItems?.length) {
             warnDialog.componentInstance.lists = [{ label: `Not removed (${result.notClearedItems.length}):`, items: result.notClearedItems }];
           }

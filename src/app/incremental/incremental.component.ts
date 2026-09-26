@@ -49,12 +49,9 @@ export class IncrementalComponent implements OnInit, OnDestroy {
 
   showHelpDialog(){
     const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '750px'});
-    loadingDialogRef.componentInstance.message =  
-    `This choice: 
-    \n1) Copies to the backup all the files that exist only in the selected source directory and not in the backup.
-    \n2) Rewrites to the backup all the files that have been modified.
-    \nThis option will only add or modify existing files in the backup.
-    \nIt will not delete any files from the backup if they have been deleted from your source directory.`;
+    loadingDialogRef.componentInstance.message =
+      `Copies new and changed files from the source to the backup. Nothing is ever deleted from the backup - not even ` +
+      `files you deleted from the source.`;
     loadingDialogRef.componentInstance.title = "Help"
   }
 

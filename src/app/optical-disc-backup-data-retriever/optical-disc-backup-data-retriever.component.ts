@@ -17,6 +17,7 @@ import { formatMegabytes } from '../shared/utils/format-bytes';
 import { applyOriginalNamesList, backedUpPath, confirmRecoveredPathLengths, isOriginalNamesList } from '../shared/utils/shortened-names';
 import { confirmRecoveryFolderIsEmpty } from '../shared/utils/recovery-folder';
 import { parsePiece } from '../../../app/workers/split-pieces';
+import { discsLabel } from '../shared/utils/split-files';
  
   @Component({
     selector: 'optical-disc-backup-data-retriever',
@@ -46,7 +47,18 @@ import { parsePiece } from '../../../app/workers/split-pieces';
     i.e: The first element is the id of disk_1 an so on.
     */
     opticalDiskIds:Array<number>=[];
-    
+
+    /** The discs with ids `discIds`, by the numbers the user knows them by: "disc 2", "discs 1, 3 and 4". */
+    private discNumbersLabel(discIds: number[]): string {
+      return discsLabel(discIds.map((id) => this.opticalDiskIds.indexOf(id) + 1).sort((a, b) => a - b));
+    }
+
+    /** discNumbersLabel of the discs still needed for the selected files, to ask the user for one of them. */
+    private discsStillNeededLabel(): string {
+      const stillNeeded = this.discIdsNeededForTheRecoveryOfSelectedFiles.filter((id) => !this.discIdsWhoseFilesAreAlreadyRecovered.includes(id));
+      return (stillNeeded.length > 1 ? 'one of ' : '') + this.discNumbersLabel(stillNeeded);
+    }
+
     waitForDialog = () => {
       return new Promise<void>(async(resolve) =>{
         while(!this.dialogClosed){
@@ -234,8 +246,8 @@ import { parsePiece } from '../../../app/workers/split-pieces';
         const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
         infoDialog.disableClose = true;
         infoDialog.componentInstance.title = `Error`;
-        infoDialog.componentInstance.message = `The provided cold storage metadata JSON looks malformed: two or more discs produce
-          the same identifier (for example, the same disc listed twice). Please check the JSON file and try again.`;
+        infoDialog.componentInstance.message = `This metadata JSON is malformed: two discs have the same identifier (for ` +
+          `example, the same disc listed twice).`;
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Ok";
         infoDialog.componentInstance.action1Callback = () => { infoDialog.close(); }
@@ -429,8 +441,7 @@ import { parsePiece } from '../../../app/workers/split-pieces';
 
           const confirmDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
           confirmDialog.disableClose = true;
-          confirmDialog.componentInstance.message = `It looks like you have already inserted this disc. It is disc ${currentDiskIndex + 1}
-          as previously defined. Select 'Ok' to continue.`;
+          confirmDialog.componentInstance.message = `This disc was already read: it is disc ${currentDiskIndex + 1}.`;
           confirmDialog.componentInstance.title = "Error"
           confirmDialog.componentInstance.actionsNum = 1;
           confirmDialog.componentInstance.action1Label = "Ok";
@@ -449,8 +460,8 @@ import { parsePiece } from '../../../app/workers/split-pieces';
         console.log("This disk has duplicates.")
           const confirmDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
           confirmDialog.disableClose = true;
-          confirmDialog.componentInstance.message = `It looks like the disk you inserted has some files in common with disks you inserted
-          previously. The application requires each disk to have unique filenames. Ignoring this disc.`;
+          confirmDialog.componentInstance.message = `This disc has files in common with a disc read before, so it is ` +
+            `skipped - every disc of a backup holds different files.`;
           confirmDialog.componentInstance.title = "Error"
           confirmDialog.componentInstance.actionsNum = 1;
           confirmDialog.componentInstance.action1Label = "Ok";
@@ -476,8 +487,8 @@ import { parsePiece } from '../../../app/workers/split-pieces';
           // Waiting for eject CD...
           const confirmDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
           confirmDialog.disableClose = true;
-          confirmDialog.componentInstance.message = `We will refer to the disc you just inserted as the disc ${this.opticalDiskIds.length}.
-          Please remove the disc ${this.opticalDiskIds.length} from the drive and insert the next disc. Then press 'Ok' to continue the process.`;
+          confirmDialog.componentInstance.message = `This disc is now disc ${this.opticalDiskIds.length}. Insert the next ` +
+            `disc, then click "Ok".`;
           confirmDialog.componentInstance.title = "Accessing disc"
           confirmDialog.componentInstance.actionsNum = 2;
           confirmDialog.componentInstance.action2Label = "Ok"
@@ -500,7 +511,7 @@ import { parsePiece } from '../../../app/workers/split-pieces';
       } catch (error) {
           const confirmDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
           confirmDialog.disableClose = true;
-          confirmDialog.componentInstance.message = `An error occured while trying to read an optical disk. You may retry or cancel the entire operation.`;
+          confirmDialog.componentInstance.message = `The disc could not be read. Retry, or cancel the recovery.`;
           confirmDialog.componentInstance.title = "Error reading disk"
           confirmDialog.componentInstance.actionsNum = 2;
           confirmDialog.componentInstance.action2Label = "Retry"
@@ -585,15 +596,8 @@ import { parsePiece } from '../../../app/workers/split-pieces';
         const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
         infoDialog.disableClose = true;
         infoDialog.componentInstance.title = `Data recovery from optical media backup`;
-        infoDialog.componentInstance.message = 
-        `To recover the files you selected you will now need to insert the following discs, (in any order you like):
-        ${JSON.stringify(
-          this.discIdsNeededForTheRecoveryOfSelectedFiles.map((x)=>{
-            return 'disc ' + (this.opticalDiskIds.indexOf(x) + 1).toString(); 
-          })
-          )
-        } 
-        , as these were defined in the previous steps of the process.`
+        const needed = this.discIdsNeededForTheRecoveryOfSelectedFiles;
+        infoDialog.componentInstance.message = `You will need ${this.discNumbersLabel(needed)}${needed.length > 1 ? ', in any order' : ''}.`;
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Ok";
         infoDialog.componentInstance.action1Callback = () => { 
@@ -653,7 +657,7 @@ import { parsePiece } from '../../../app/workers/split-pieces';
         const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
         infoDialog.disableClose = true;
         infoDialog.componentInstance.title = `Error`;
-        infoDialog.componentInstance.message = `An error occurred, Please try again. ${error}`;
+        infoDialog.componentInstance.message = `An error occurred: ${error}`;
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Retry";
         infoDialog.componentInstance.action1Callback = async () => {
@@ -685,15 +689,7 @@ import { parsePiece } from '../../../app/workers/split-pieces';
         const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
         infoDialog.disableClose = true;
         infoDialog.componentInstance.title = `Error`;
-        infoDialog.componentInstance.message = `This disc does not seem to contain any of the files you requested to recover.
-         Are you sure you have inserted the correct disc?. You must insert one of:  
-        ${JSON.stringify(
-          this.discIdsNeededForTheRecoveryOfSelectedFiles.filter( ( el ) => {
-            return this.discIdsWhoseFilesAreAlreadyRecovered.indexOf( el ) < 0;
-          } ).map((x)=>{
-            return 'disc ' + (this.opticalDiskIds.indexOf(x) + 1).toString(); 
-          })
-          )}  as these were defined previously.`;
+        infoDialog.componentInstance.message = `This disc holds none of the files you selected. Insert ${this.discsStillNeededLabel()}.`;
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Retry";
         infoDialog.componentInstance.action1Callback = () => { 
@@ -712,14 +708,7 @@ import { parsePiece } from '../../../app/workers/split-pieces';
         const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
         infoDialog.disableClose = true;
         infoDialog.componentInstance.title = `Error`;
-        infoDialog.componentInstance.message = `It looks like you have already recovered the files from this disc. Please insert another disc from:  
-        ${JSON.stringify(
-          this.discIdsNeededForTheRecoveryOfSelectedFiles.filter( ( el ) => {
-            return this.discIdsWhoseFilesAreAlreadyRecovered.indexOf( el ) < 0;
-          } ).map((x)=>{
-            return 'disc ' + (this.opticalDiskIds.indexOf(x) + 1).toString(); 
-          })
-          )} as these were defined previously.`;
+        infoDialog.componentInstance.message = `The files of this disc are already recovered. Insert ${this.discsStillNeededLabel()}.`;
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Retry";
         infoDialog.componentInstance.action1Callback = () => {
@@ -816,9 +805,8 @@ import { parsePiece } from '../../../app/workers/split-pieces';
           errorDialog.disableClose = true;
           errorDialog.componentInstance.title = `Error while recovering from this disc`;
           errorDialog.componentInstance.message =
-            `Not all of the selected files could be copied from this disc: ${error}. Files that were already ` +
-            `copied are kept. A dirty or scratched disc is a common cause, and so is a full or unavailable ` +
-            `destination folder. You can try this disc again, or cancel the recovery.`;
+            `Some selected files could not be copied from this disc: ${error}. Files already copied are kept. ` +
+            `Common causes: a dirty or scratched disc, or a full or unavailable destination folder.`;
           errorDialog.componentInstance.actionsNum = 2;
           errorDialog.componentInstance.action1Label = "Cancel recovery";
           errorDialog.componentInstance.action1Callback = () => {
@@ -859,18 +847,18 @@ import { parsePiece } from '../../../app/workers/split-pieces';
       // Never say plain "successful" if any file FAILED integrity verification - same rule offerToMergeAnyPartialFiles's
       // own summary follows (see showMergeSummary), so a real problem can never be masked by an upbeat title.
       infoDialog.componentInstance.title = anyFailed ? `Data recovery finished with integrity FAILURES` : `Data recovery successful`;
-      let message = `The recovery of your data has been completed successfully!`;
+      let message = `All selected files were recovered.`;
       if (integrity) {
         message = anyFailed
-          ? `The recovery finished, but SHA-256 integrity verification found one or more problems - see the full recovered file paths below.`
-          : `The recovery of your data has been completed successfully, and SHA-256 integrity verification confirmed every file with recorded hash data matches.`;
+          ? `Recovery finished, but some files failed the SHA-256 integrity check.`
+          : `All selected files were recovered, and every file with a recorded SHA-256 matches it.`;
         // Full lists, not a truncated "first 15, and N more" string - see ConfirmationDialogComponent's own
         // `lists` field: each renders as a real virtualized scrolling list, so however many files are in a
         // given category, only the ones actually visible are ever real DOM nodes. Only non-empty sections are
         // included (an empty `items` array is never shown, per that field's own contract). Every entry is the
         // file's full absolute path (see verifyRecoveredFileIntegrity), not just its name.
         infoDialog.componentInstance.lists = [
-          integrity.failed.length ? { label: `FAILED integrity check (${integrity.failed.length}) - this can mean real data corruption (a bad drive read, disc handling damage):`, items: integrity.failed } : undefined,
+          integrity.failed.length ? { label: `FAILED integrity check (${integrity.failed.length}) - not the same as when burned:`, items: integrity.failed } : undefined,
           integrity.verified.length ? { label: `Verified (${integrity.verified.length}):`, items: integrity.verified } : undefined,
           integrity.noData.length ? { label: `No integrity data available, not checked (${integrity.noData.length}):`, items: integrity.noData } : undefined,
         ].filter((s): s is { label: string, items: string[] } => !!s);
@@ -881,7 +869,7 @@ import { parsePiece } from '../../../app/workers/split-pieces';
       if (anyFailed) {
         // Offered only when there is something to delete, and defaults unchecked - deleting recovered data is
         // never done unless the user explicitly opts into it right here.
-        infoDialog.componentInstance.checkboxLabel = 'Delete all the recovered files which did not pass the verification test.';
+        infoDialog.componentInstance.checkboxLabel = 'Delete the recovered files that failed the check.';
         infoDialog.componentInstance.checkboxChecked = false;
       }
       infoDialog.componentInstance.action1Callback = async () => {
@@ -896,9 +884,9 @@ import { parsePiece } from '../../../app/workers/split-pieces';
 
     /** Deletes exactly the recovered files that FAILED SHA-256 verification - the same full absolute paths
      *  just shown to the user in the "FAILED integrity check" list above, nothing more. Only ever called when
-     *  the user explicitly ticked the "Delete all the recovered files which did not pass the verification
-     *  test." checkbox; the actual safety checks (only real, on-disk files strictly inside the recovery target
-     *  directory are ever touched - never a directory, a symlink, or anything outside it) live in
+     *  the user explicitly ticked the "Delete the recovered files that failed the check." checkbox; the actual
+     *  safety checks (only real, on-disk files strictly inside the recovery target directory are ever touched -
+     *  never a directory, a symlink, or anything outside it) live in
      *  deleteRecoveredFailedFiles in worker.ts, run on the worker side so they cannot be bypassed by anything
      *  going wrong here in the renderer. */
     private async deleteFailedIntegrityFiles(failedAbsolutePaths: string[]): Promise<void> {
@@ -996,7 +984,7 @@ import { parsePiece } from '../../../app/workers/split-pieces';
           const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
           errorDialog.disableClose = true;
           errorDialog.componentInstance.title = "Integrity verification could not run";
-          errorDialog.componentInstance.message = `Your files were recovered successfully, but the SHA-256 integrity check itself could not complete: ${error}`;
+          errorDialog.componentInstance.message = `Your files were recovered, but the SHA-256 check could not run: ${error}`;
           errorDialog.componentInstance.actionsNum = 1;
           errorDialog.componentInstance.action1Label = "Ok";
           errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); resolve(); };
@@ -1111,10 +1099,9 @@ import { parsePiece } from '../../../app/workers/split-pieces';
         confirmDialog.disableClose = true;
         confirmDialog.componentInstance.title = "Partial files detected";
         confirmDialog.componentInstance.message = groups.length === 1
-          ? `It seems like you selected a set of partial files (.part.001 etc.) of a large file which did not fit ` +
-            `on a single optical disc. Do you want to reassemble the original file from its parts?`
-          : `It seems like you selected sets of partial files (.part.001 etc.) of ${groups.length} large files which ` +
-            `did not fit on a single optical disc. Do you want to reassemble all of them from their parts?`;
+          ? `The files you selected include the pieces of a large file that did not fit on one disc. Put it back together?`
+          : `The files you selected include the pieces of ${groups.length} large files that did not fit on one disc. Put ` +
+            `them back together?`;
         confirmDialog.componentInstance.lists = [{
           label: `To be reassembled (${groups.length}):`,
           items: groups.map(g => `${this.reassembledFilePath(g)}  (${g.partFilePaths.length} parts)`)
@@ -1168,9 +1155,9 @@ import { parsePiece } from '../../../app/workers/split-pieces';
         infoDialog.disableClose = true;
         infoDialog.componentInstance.title = allSucceeded ? "Reassembly successful" : "Reassembly finished with some failures";
         infoDialog.componentInstance.message = allSucceeded
-          ? `Every file was reassembled, and the partial files it was reassembled from have been deleted.`
-          : `Not every file could be reassembled. The partial files of the ones that failed were left untouched; ` +
-            `the partial files of the ones that were reassembled have been deleted. The recovery process will continue.`;
+          ? `Every file was put back together, and its pieces deleted.`
+          : `Not every file could be put back together. The pieces of the failed ones are left as they are; those of the ` +
+            `others are deleted.`;
         infoDialog.componentInstance.lists = [
           failed.length ? { label: `FAILED (${failed.length}):`, items: failed } : undefined,
           reassembled.length ? { label: `Reassembled (${reassembled.length}):`, items: reassembled } : undefined,
@@ -1205,12 +1192,8 @@ import { parsePiece } from '../../../app/workers/split-pieces';
         infoDialog.disableClose = true;
         infoDialog.componentInstance.title = "How to reassemble manually";
         infoDialog.componentInstance.message =
-          `The .part.NNN files were created using 7-Zip's volume-splitting feature (the same ` +
-          `"7z -v500m -mx0 a ..." command used when the backup was originally split). They are 7-Zip archive ` +
-          `volumes, not raw file fragments, so simply concatenating them together will not work - you need ` +
-          `7-Zip itself. To reassemble each file yourself, run its command below (using the 7-Zip executable ` +
-          `configured in appData\\config.json) - 7-Zip finds the other part files (.002, .003, ...) next to the ` +
-          `first one and writes the original file into the same folder.`;
+          `The pieces are 7-Zip volumes, so they cannot simply be joined. To put a file back together, run its ` +
+          `command below: 7-Zip finds the other pieces next to the first one and writes the file into the same folder.`;
         infoDialog.componentInstance.lists = [{ label: `Commands, one per file (${commands.length}):`, items: commands }];
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Ok";

@@ -285,8 +285,8 @@ async function main() {
     // The mat-chip above appears the instant a path is chosen - BEFORE afterJSONpathIsGiven() actually finishes
     // reading+schema-validating it over IPC (see getJSON() in recover-data-from-optical-media.component.ts:
     // externalMetadataJSONpath is set, THEN validation is awaited, not the other way round). Clicking "Next"
-    // before that validation IPC round trip completes would hit step1()'s own "no valid JSON file has been
-    // selected yet" guard instead of proceeding - a small deliberate pause here avoids that race, same reasoning
+    // before that validation IPC round trip completes would hit step1()'s own "Choose a valid metadata JSON
+    // first" guard instead of proceeding - a small deliberate pause here avoids that race, same reasoning
     // as the pause documented in test-recover-single-disc.js's own README.
     await new Promise((r) => setTimeout(r, 1500));
 

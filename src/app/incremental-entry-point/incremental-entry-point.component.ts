@@ -70,8 +70,8 @@ export class IncrementalEntryPointComponent {
       const dialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '650px'});
       dialogRef.componentInstance.title = "Paths selection";
       dialogRef.componentInstance.message = `${driveRoots.map((p) => `"${p}"`).join(' and ')} ` +
-        `${driveRoots.length > 1 ? 'are whole drives' : 'is a whole drive'}. Cumulative backup cannot use the root ` +
-        `of a drive - Windows keeps folders of its own there. Choose a folder on the drive instead.`;
+        `${driveRoots.length > 1 ? 'are whole drives' : 'is a whole drive'}, where Windows keeps folders of its own. ` +
+        `Choose a folder on the drive instead.`;
     }else if (this.backup.sourcePath && this.backup.targetPath) {
       this.router.navigate(['incremental']);
     }else{
