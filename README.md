@@ -4,9 +4,13 @@
 <img src="src/assets/icons/MyBackupApp_icon_512x512.png" width="180" alt="My Backup App logo - a shield containing a folder, an optical disc, and a sync icon">
 </p>
 
-This app is a set of very simple and minimal utilities for creating home backups.
+My Backup App is a Windows desktop app for keeping copies of your personal files safe. It covers three jobs:
 
-I built it during a migration project to back up my own files to optical discs as cold storage and in general to manage my personal backups. It's a simple, fun little hobby project, and it's scoped to what I personally needed at the time (see the disclaimer below).
+- **Keep a backup up to date:** copy what's new or changed from a folder to your backup drive, or make one folder an exact copy of another.
+- **Archive to CDs, DVDs or Blu-rays:** the app spreads your files across as many discs as it takes, splitting files too big for one disc, and burns them with ImgBurn. Every file gets a checksum, and a small JSON file records which disc holds what.
+- **Get your files back:** recover everything, or just the files you pick, from those discs. The app tells you which disc to insert, puts split files back together, and checks every file against its checksum. You can also check your discs without recovering anything, and add new files to an existing set of discs later.
+
+I built it for my own backups, to move my files onto discs as long-term cold storage. So it does what I needed and no more (see the disclaimer below).
 
 <p align="center">
 <img src="docs/screenshots/main-menu.png" width="700" alt="Main menu, showing all 6 features: Cumulative backup, Synchronize directories, Backup to optical media, Recover data from optical media backup, Add missing files to optical media cold storage, Verify integrity of cold storage disc">
@@ -71,25 +75,6 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   in the cold storage metadata JSON (always on, not optional) - protection against a later drive read error or disc
   damage. See "Verify integrity of cold storage disc" below for how these checksums get used.
 
-  **How many files fit on one disc.** Discs are planned by the files' own sizes only, but on a disc every file also
-  takes about 3 KB more - a file record, plus its data rounded up to whole 2 KB sectors - and that comes out of the
-  free share above. So a full disc holds at most about this many files, which means its files must average at least
-  about this size (a disc planned less full has room for more):
-
-  | Disc | Files on one full disc, at most about | Average file size, at least about |
-  |---|---|---|
-  | CD (700 MB) | 16,000 | 40 KB |
-  | DVD (4.7 GB) | 46,000 | 100 KB |
-  | Blu-ray (25 GB) | 81,000 | 300 KB |
-  | Blu-ray (50 GB) | 160,000 | 300 KB |
-  | Blu-ray (100 GB) | 325,000 | 300 KB |
-
-  These are estimates, not measured limits, and the app does not check them. Discs are filled with the largest
-  files first, so the smallest files of a backup all end up together on the last disc(s) - with many small files
-  (source code, e-mail, thumbnails) such a disc can have more files than this, and ImgBurn then reports that it does
-  not fit. A larger disc does not help, since its free share is smaller; pack folders of many small files into an
-  archive (e.g. a .zip) before backing them up instead. The same applies to "Add missing files".
-
 - **Recover data from optical media:** recovers all, or just a selection of files, of a backup stored across your discs. You
   can optionally provide the cold storage metadata JSON file saved earlier (see "Add missing files" below) instead
   of inserting every disc just to see what's on it - the app builds the file list straight from the JSON, then only
@@ -136,40 +121,6 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   automatically, hashes every file on it, and reports Verified/FAILED/no-data for each, with a running tally. If
   the JSON has no checksums recorded at all, it tells you up front instead of asking you to insert anything.
 
-- **Links, in every feature:** a link (a symbolic link or a junction) is never followed and never backed up, so
-  nothing outside the folders you chose is ever read, copied, overwritten or deleted, and nothing in a backup leads
-  outside it. Every backup feature leaves links out, and when it has left any out it says how many in a dialog it
-  shows before copying or burning anything - Cumulative backup's "Confirm" (or under "The backup is up to date"),
-  Synchronize dirs' "Confirmation" (or "already synced"), and the "discs needed" / "metadata prepared" dialogs of the
-  two disc features. Each link left out, with where it points, is listed in `logs.txt`, in the app's `appData`
-  folder - not in the "Some items were left out" warning, which would otherwise show Windows' own hidden links on
-  every run: e.g. "My Music", "My Pictures" and "My Videos" inside Documents, which lead to your Music, Pictures and
-  Videos folders and are backed up through those (so backing up Documents always counts at least those three). What a link points to is not backed up
-  through it: back up that folder itself if you need it. Synchronize dirs deletes the links it finds in the target -
-  the link itself, never what it points to - since the master's links are not copied; Cumulative backup never
-  deletes anything, so a link already in the backup stays there. (A Windows shortcut you already have is an ordinary
-  small file, and every feature copies it as one.)
-
-- **The folders you choose, in Cumulative backup, Synchronize dirs and recovery:** a folder that is a link, or is
-  inside one, is refused - the app would otherwise work in wherever it leads, not in the folder you see - and the
-  message names the folder it leads to; choose that one instead. (Recovery says so when it starts copying from the
-  first disc.) Cumulative backup and Synchronize dirs also refuse two folders where one is inside the other.
-
-- **Tested only on Windows 11, with drives formatted as NTFS.** Other versions of Windows and other file systems
-  have not been tested. The app might not work on Linux (or macOS): parts of it assume Windows - its paths, and
-  ImgBurn, which only runs on Windows.
-
-- **Not supported: the FAT file system** (FAT, FAT32). Don't use the app with folders on a drive formatted as FAT -
-  e.g. many USB sticks and memory cards; format such a drive as NTFS first.
-
-- On startup, the app runs a couple of housekeeping checks:
-  - It checks whether its internal temp folder has leftover partial (`.part.NNN`) files from an interrupted
-    large-file split, and offers to clear them out.
-  - It checks whether `config.json` (see "Other stuff" below) is missing the paths to 7-Zip and/or ImgBurn, or
-    whether a configured path no longer points to a real program (e.g. it was moved or reinstalled). If so, it
-    walks you through picking the right `.exe` file(s) with a file picker - each path is required, so it keeps
-    asking until you provide a valid one. You can still edit `config.json` by hand instead, if you prefer.
-
 ---
 Screenshots (click any of them to view at full resolution - GitHub's inline rendering below is shrunk to fit
 the page width, which can make the in-app dialog text hard to read at a glance):
@@ -198,6 +149,65 @@ the page width, which can make the in-app dialog text hard to read at a glance):
 <a href="docs/screenshots/verify-integrity/01-tally.png"><img src="docs/screenshots/verify-integrity/01-tally.png" width="800"></a><br>
 <sub><b>Verify integrity of cold storage disc</b> - a running per-disc tally as a real scrolling list, so it stays readable no matter how many discs a session checks.</sub>
 </p>
+
+---
+## Good to know
+
+These apply to more than one feature, or to the app as a whole.
+
+- **Links, in every feature:** a link (a symbolic link or a junction) is never followed and never backed up, so
+  nothing outside the folders you chose is ever read, copied, overwritten or deleted, and nothing in a backup leads
+  outside it. Every backup feature leaves links out, and when it has left any out it says how many in a dialog it
+  shows before copying or burning anything - Cumulative backup's "Confirm" (or under "The backup is up to date"),
+  Synchronize dirs' "Confirmation" (or "already synced"), and the "discs needed" / "metadata prepared" dialogs of the
+  two disc features. Each link left out, with where it points, is listed in `logs.txt`, in the app's `appData`
+  folder - not in the "Some items were left out" warning, which would otherwise show Windows' own hidden links on
+  every run: e.g. "My Music", "My Pictures" and "My Videos" inside Documents, which lead to your Music, Pictures and
+  Videos folders and are backed up through those (so backing up Documents always counts at least those three). What
+  a link points to is not backed up through it: back up that folder itself if you need it. Synchronize dirs deletes
+  the links it finds in the target - the link itself, never what it points to - since the master's links are not
+  copied; Cumulative backup never deletes anything, so a link already in the backup stays there. (A Windows shortcut
+  you already have is an ordinary small file, and every feature copies it as one.)
+
+- **The folders you choose, in Cumulative backup, Synchronize dirs and recovery:** a folder that is a link, or is
+  inside one, is refused - the app would otherwise work in wherever it leads, not in the folder you see - and the
+  message names the folder it leads to; choose that one instead. (Recovery says so when it starts copying from the
+  first disc.) Cumulative backup and Synchronize dirs also refuse two folders where one is inside the other.
+
+- **How many files fit on one disc** ("Backup to optical media" and "Add missing files"): discs are planned by the
+  files' own sizes only, but on a disc every file also takes about 3 KB more - a file record, plus its data rounded
+  up to whole 2 KB sectors - and that comes out of the share of each disc kept free (7% of a CD, 3% of a DVD, 1% of a
+  Blu-ray). So a full disc holds at most about this many files, which means its files must average at least about
+  this size (a disc planned less full has room for more):
+
+  | Disc | Files on one full disc, at most about | Average file size, at least about |
+  |---|---|---|
+  | CD (700 MB) | 16,000 | 40 KB |
+  | DVD (4.7 GB) | 46,000 | 100 KB |
+  | Blu-ray (25 GB) | 81,000 | 300 KB |
+  | Blu-ray (50 GB) | 160,000 | 300 KB |
+  | Blu-ray (100 GB) | 325,000 | 300 KB |
+
+  These are estimates, not measured limits, and the app does not check them. Discs are filled with the largest
+  files first, so the smallest files of a backup all end up together on the last disc(s) - with many small files
+  (source code, e-mail, thumbnails) such a disc can have more files than this, and ImgBurn then reports that it does
+  not fit. A larger disc does not help, since its free share is smaller; pack folders of many small files into an
+  archive (e.g. a .zip) before backing them up instead.
+
+- **Tested only on Windows 11, with drives formatted as NTFS.** Other versions of Windows and other file systems
+  have not been tested. The app might not work on Linux (or macOS): parts of it assume Windows - its paths, and
+  ImgBurn, which only runs on Windows.
+
+- **Not supported: the FAT file system** (FAT, FAT32). Don't use the app with folders on a drive formatted as FAT -
+  e.g. many USB sticks and memory cards; format such a drive as NTFS first.
+
+- On startup, the app runs a couple of housekeeping checks:
+  - It checks whether its internal temp folder has leftover partial (`.part.NNN`) files from an interrupted
+    large-file split, and offers to clear them out.
+  - It checks whether `config.json` (see "Other stuff" below) is missing the paths to 7-Zip and/or ImgBurn, or
+    whether a configured path no longer points to a real program (e.g. it was moved or reinstalled). If so, it
+    walks you through picking the right `.exe` file(s) with a file picker - each path is required, so it keeps
+    asking until you provide a valid one. You can still edit `config.json` by hand instead, if you prefer.
 
 ---
 ## Build this project

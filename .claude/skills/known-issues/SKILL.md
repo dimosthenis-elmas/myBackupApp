@@ -101,8 +101,8 @@ from this file (and test it if it needs one - see "Working on these" below), and
   the app - deselecting files - leaves them out of the backup silently (on no disc, not in the JSON).
 - **Code:** `partitionBackupToOpticalMedia` in `app/workers/worker.ts` (both packing loops add `stats.size` only);
   `OPTICAL_MEDIA` in `src/app/shared/utils/optical-media.ts`.
-- **Documented:** the README ("Backup to optical media") lists these per-disc file counts as a limit - update or
-  remove that table with the fix.
+- **Documented:** the README ("Good to know" - "How many files fit on one disc") lists these per-disc file counts as
+  a limit - update or remove that table with the fix.
 - **Fix:** plan each file as its size rounded up to 2 KB plus a per-file allowance (about 3 KB; a folder, one or two
   blocks), and keep the ratio only for the rest.
 - **Test idea:** confirm the per-file cost first with one real ImgBurn build (not the stub) of a folder with many
@@ -272,8 +272,8 @@ from this file (and test it if it needs one - see "Working on these" below), and
   (`withLinksLeftOutNote` in `src/app/shared/utils/links-note.ts`) - the "Some items were left out" warning would
   otherwise name Windows' own links ("My Music" in Documents, ...) on every run. A link the user made (a folder moved
   elsewhere, with a junction left in its place) is therefore only a number in that dialog and a line in logs.txt -
-  what it points to is not in the backup. What a link points to is not backed up through it, and no link is ever put into a backup, so nothing in one
-  leads outside it. Sync deletes the target's links (the link itself - `diff`'s `listLinks` on its delete list);
+  what it points to is not in the backup. No link is ever put into a backup, so nothing in one leads outside it.
+  Sync deletes the target's links (the link itself - `diff`'s `listLinks` on its delete list);
   Cumulative backup never deletes, so a link already in a backup stays. A folder holding only links counts as empty.
   Tested in `worker-ipc/test-scan-edge-cases.js` (discs) and `worker-ipc/test-sync-and-cumulative-rules.js` section 3.
 - **Cumulative backup, Sync and recovery refuse a chosen folder that is a link, or inside one**
