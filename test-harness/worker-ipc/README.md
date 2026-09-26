@@ -291,6 +291,19 @@ missing path and at stub `.bat` files: a missing executable shows exactly one "I
 the `.ibb` path reaches ImgBurn as **one** quoted argument even with spaces in it, and ImgBurn exiting with an error
 code after it started shows nothing.
 
+### `test-locate-executables.js` — the app finds 7-Zip and ImgBurn itself
+```
+node test-harness/worker-ipc/test-locate-executables.js
+```
+At every start the app makes sure `config.json` points to 7-Zip and ImgBurn (`locate-executables`): a path that is
+not set, or whose file is no longer there, is looked for - the program's folder under Program Files, the folder its
+installer recorded in the registry, the folders on the PATH - and saved when found; only a program not found is
+asked for. With both paths pointed at files that do not exist, this script checks that both are found on this
+computer and saved (existing `7z.exe` / `ImgBurn.exe`), none is reported as not found, and `cacheDataDirectoryPath`
+is kept; then that a path pointing to an existing file somewhere unusual is kept as it is. The paths are changed
+after the app has started, so its own startup check does not get there first; `config.json` is restored byte for
+byte. Needs 7-Zip and ImgBurn installed, as the app does.
+
 ### `test-sync-and-cumulative-rules.js` — both folder features against their rules, links, folders inside each other
 ```
 node test-harness/worker-ipc/test-sync-and-cumulative-rules.js

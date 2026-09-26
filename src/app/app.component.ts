@@ -62,7 +62,7 @@ export class AppComponent implements OnInit {
       // Config is checked first: the temp directory checks below depend on config.json too, so
       // fixing/acknowledging config problems before touching the temp directory avoids the checks stepping on
       // each other.
-      await this.checkAndFixMissingConfigPaths();
+      await this.locateExecutables();
 
       const tempDirectoryIsUsable = await this.checkTempDataDirectoryOwnership();
       if (!tempDirectoryIsUsable) {
@@ -74,129 +74,78 @@ export class AppComponent implements OnInit {
     }
   }
 
-  /** On startup, checks whether config.json is missing the required executable paths (7-Zip, ImgBurn - see
-   *  validateConfigPaths in worker.ts). This covers config.json being missing entirely, being empty, or
-   *  simply not having been filled in yet (the README currently asks the user to edit this file by hand) -
-   *  as well as a path that no longer points to an existing file (e.g. the program was moved or uninstalled).
-   *  For each missing one, the user is walked through a native file picker to locate it - there is no way to
-   *  skip a field, so this blocks until a real path has been provided for every one. Anything they provide is
-   *  saved back to config.json (merged in - nothing else in the file is touched).
-   *
-   *  Gating: showing this dialog is NOT based on whether the configured paths currently exist on disk.
-   *  config.json ships with hardcoded default paths (the developer's own install locations) - on some machines
-   *  those coincidentally already exist (e.g. 7-Zip/ImgBurn installed at their usual default location) without
-   *  the user ever having actually confirmed them for this install. So a `setupAcknowledged` flag is persisted
-   *  to config.json once the user has been through this flow (asking about EVERY required field, not just
-   *  currently-invalid ones - see requiredFields vs missingFields below), and the dialog is never shown
-   *  automatically again afterwards, even if a path stops existing later (e.g. uninstalled). */
-  private async checkAndFixMissingConfigPaths(): Promise<void> {
-    let validation: {
-      config: { [key: string]: any },
-      missingFields: Array<{ key: string, label: string }>,
-      requiredFields: Array<{ key: string, label: string }>
-    };
+  /** On startup: config.json must point to the programs the optical-media features need - 7-Zip and ImgBurn. The
+   *  worker looks for any that is not set, or no longer there, where it is usually installed, and saves what it
+   *  finds (locateExecutables in worker.ts) - with no dialog. Only for a program it cannot find is the user asked
+   *  (askWhereExecutableIs). Anything chosen is saved to config.json, merged in - nothing else in the file changes. */
+  private async locateExecutables(): Promise<void> {
+    let notFound: Array<{ key: string, program: string, fileName: string, purpose: string, usualFolder: string, website: string }>;
     try {
-      validation = (await ipc.validateConfigPaths()).res;
+      notFound = (await ipc.locateExecutables()).res;
     } catch (error) {
-      console.error('Failed to validate the app configuration', error);
+      console.error('Could not look for 7-Zip and ImgBurn', error);
       return;
     }
 
-    if (validation.config && validation.config['setupAcknowledged']) {
-      // Already been through this flow once (or since the last time config.json was deleted/reset) - never
-      // nag automatically again.
-      return;
-    }
-
-    await new Promise<void>((resolve) => {
-      const introDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
-      introDialog.disableClose = true;
-      introDialog.componentInstance.title = "Setup required";
-      introDialog.componentInstance.message =
-        `Please confirm the following paths, required for the optical media backup features (splitting, ` +
-        `reassembling, and burning large files) to work: ` +
-        `${validation.requiredFields.map(f => f.label).join(', ')}. You'll now be asked to locate each one.`;
-      introDialog.componentInstance.actionsNum = 1;
-      introDialog.componentInstance.action1Label = "Ok";
-      introDialog.componentInstance.action1Callback = () => {
-        introDialog.close();
-        resolve();
+    for (const executable of notFound) {
+      const chosenPath = await this.askWhereExecutableIs(executable);
+      if (!chosenPath) { continue; }
+      let saved: { success: boolean; message: string };
+      try {
+        saved = (await ipc.updateConfig({ [executable.key]: chosenPath })).res;
+      } catch (error) {
+        saved = { success: false, message: String(error) };
       }
-    });
-
-    const updates: { [key: string]: any } = {};
-    const missingKeys = new Set((validation.missingFields || []).map(f => f.key));
-    // Ask about every required field, not just validation.missingFields - a shipped default path that happens
-    // to already exist on this machine still hasn't actually been confirmed by this user (see the gating
-    // comment above).
-    for (const field of validation.requiredFields) {
-      // If this field's current config.json value already points at a real file (i.e. it's not in
-      // missingFields), pre-select it in the picker so confirming it is a single click rather than having to
-      // browse to it again from scratch.
-      const currentValue = validation.config ? validation.config[field.key] : undefined;
-      const currentValidPath = (!missingKeys.has(field.key) && typeof currentValue === 'string' && currentValue.trim() !== '')
-        ? currentValue
-        : undefined;
-      updates[field.key] = await this.chooseExecutablePathWithRetry(field.label, currentValidPath);
-    }
-
-    // Mark setup as acknowledged now that every required field has a confirmed path - the dialog is never
-    // shown automatically again on a subsequent startup.
-    updates['setupAcknowledged'] = true;
-
-    try {
-      const response = await ipc.updateConfig(updates);
-      const result: { success: boolean; message: string } = response.res;
-
-      const resultDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
-      resultDialog.componentInstance.title = result.success ? "Configuration saved" : "Could not save configuration";
-      resultDialog.componentInstance.message = result.message;
-      resultDialog.componentInstance.actionsNum = 1;
-      resultDialog.componentInstance.action1Label = "Ok";
-      resultDialog.componentInstance.action1Callback = () => { resultDialog.close(); }
-    } catch (error) {
-      console.error('Failed to save the app configuration', error);
+      if (!saved.success) {
+        await new Promise<void>((resolve) => {
+          const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
+          errorDialog.disableClose = true;
+          errorDialog.componentInstance.title = "Could not save configuration";
+          errorDialog.componentInstance.message = saved.message;
+          errorDialog.componentInstance.actionsNum = 1;
+          errorDialog.componentInstance.action1Label = "Ok";
+          errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); resolve(); };
+        });
+      }
     }
   }
 
-  /** Asks the user to locate one required executable via a native file picker. If they cancel, they are told
-   *  to retry - there is no way to skip a required field, so this keeps looping until the user actually
-   *  selects a path. Resolves to the chosen path. Does not touch config.json itself - the caller collects all
-   *  chosen paths and saves them together.
-   *
-   *  If currentValidPath is given (the field's current config.json value, already confirmed to point at an
-   *  existing file), the picker opens with that file pre-selected - the native dialog opens directly in its
-   *  folder with the filename pre-filled, so the user only has to press the select button to confirm it
-   *  rather than hunt the file down again. Left undefined, the picker just opens with nothing pre-selected. */
-  private async chooseExecutablePathWithRetry(label: string, currentValidPath?: string): Promise<string> {
-    const dialogConfig: { [key: string]: any } = {
-      title: `Select the ${label}`,
-      buttonLabel: 'Select',
-      properties: ['openFile'],
-      filters: [{ name: 'Executable', extensions: ['exe'] }]
-    };
-    if (currentValidPath) {
-      dialogConfig['defaultPath'] = currentValidPath;
-    }
-    const res = await window.electronAPI.openDialog('showOpenDialog', dialogConfig);
-    const chosenPath: string | undefined = (res.filePaths && res.filePaths.length > 0) ? res.filePaths[0] : undefined;
+  /** Tells the user that `executable` was not found and what the app needs it for, and offers to show the app where
+   *  it is: "Choose <file>" opens a file chooser - cancelling it comes back to this dialog - and "Not now" leaves it
+   *  unset, to be asked again at the next start (Cumulative backup and Synchronize directories work without it).
+   *  Resolves to the chosen path, or undefined for "Not now". */
+  private async askWhereExecutableIs(executable: { program: string, fileName: string, purpose: string, usualFolder: string, website: string }): Promise<string | undefined> {
+    for (;;) {
+      const choose = await new Promise<boolean>((resolve) => {
+        const dialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        dialog.disableClose = true;
+        dialog.componentInstance.title = `${executable.program} not found`;
+        dialog.componentInstance.message =
+          `The app needs ${executable.program} ${executable.purpose}. It looked where ${executable.program} is usually ` +
+          `installed, and did not find it.\n\n` +
+          `If ${executable.program} is installed, click "Choose ${executable.fileName}" and select the file ` +
+          `${executable.fileName} in its folder (usually ${executable.usualFolder}). If it is not, install it from ` +
+          `${executable.website}, then start this app again.\n\n` +
+          `With "Not now", Cumulative backup and Synchronize directories still work; the app asks again the next time ` +
+          `it starts.`;
+        // The second button is the focused one (Enter) - what the dialog recommends.
+        dialog.componentInstance.actionsNum = 2;
+        dialog.componentInstance.action1Label = "Not now";
+        dialog.componentInstance.action1Callback = () => { dialog.close(); resolve(false); };
+        dialog.componentInstance.action2Label = `Choose ${executable.fileName}`;
+        dialog.componentInstance.action2Callback = () => { dialog.close(); resolve(true); };
+      });
+      if (!choose) { return undefined; }
 
-    if (chosenPath) {
-      return chosenPath;
+      const res = await window.electronAPI.openDialog('showOpenDialog', {
+        title: `Choose ${executable.fileName}`,
+        buttonLabel: 'Choose',
+        properties: ['openFile'],
+        filters: [{ name: executable.fileName, extensions: ['exe'] }]
+      });
+      const chosenPath: string | undefined = (res.filePaths && res.filePaths.length > 0) ? res.filePaths[0] : undefined;
+      if (chosenPath) { return chosenPath; }
     }
-
-    return new Promise<string>((resolve) => {
-      const infoDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
-      infoDialog.disableClose = true;
-      infoDialog.componentInstance.title = "Nothing selected";
-      infoDialog.componentInstance.message = `You did not select a path for the ${label}. This is required before the app can continue.`;
-      infoDialog.componentInstance.actionsNum = 1;
-      infoDialog.componentInstance.action1Label = "Retry";
-      infoDialog.componentInstance.action1Callback = async () => {
-        infoDialog.close();
-        resolve(await this.chooseExecutablePathWithRetry(label, currentValidPath));
-      }
-    });
   }
 
   /** On startup, verifies the configured temp/cache directory (cacheDataDirectoryPath in config.json) both

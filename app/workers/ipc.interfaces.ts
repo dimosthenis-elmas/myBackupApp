@@ -4,7 +4,7 @@ export type WorkerChannel =
 "create-IBB-file" | "wait-for-optical-disk-to-be-mounted" | "get-file-paths" |
 "delete-files-and-dirs-for-dir-sync" | 'get-temp-data-directory-path' | 'get-file-paths-with-stats' |
 "read-json-from-disk" | "write-json-to-disk" | "merge-file-parts" | "clear-temp-data-directory" |
-"validate-config-paths" | "update-config" | "ensure-temp-directory-ownership" |
+"locate-executables" | "update-config" | "ensure-temp-directory-ownership" |
 "create-optical-media-disc-partials" | "delete-partials-for-disc" |
 "get-effective-optical-medium-capacity" | "check-temp-data-directory-for-leftovers" |
 "open-existing-ibb-file" |

@@ -54,6 +54,7 @@ call :run "worker-ipc: test-split-piece-capacity-guard" "test-harness\worker-ipc
 call :run "worker-ipc: test-split-file-resume" "test-harness\worker-ipc\test-split-file-resume.js"
 call :run "worker-ipc: test-scan-edge-cases" "test-harness\worker-ipc\test-scan-edge-cases.js"
 call :run "worker-ipc: test-temp-dir-and-imgburn" "test-harness\worker-ipc\test-temp-dir-and-imgburn.js"
+call :run "worker-ipc: test-locate-executables" "test-harness\worker-ipc\test-locate-executables.js"
 call :run "worker-ipc: test-sync-and-cumulative-rules" "test-harness\worker-ipc\test-sync-and-cumulative-rules.js"
 call :run "worker-ipc: test-long-names-on-disc" "test-harness\worker-ipc\test-long-names-on-disc.js"
 

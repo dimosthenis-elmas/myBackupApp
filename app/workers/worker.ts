@@ -626,23 +626,55 @@ const ensureTempDataDirectoryIsAppOwned = async function (): Promise<{ ok: boole
   return { ok: true, path: tempDataDirectoryPath, message: 'The temp/cache directory is already owned by this app.' };
 }
 
-/** The config.json fields that must point to an existing executable on disk for the optical-media features
- *  (splitting, reassembling large files, and burning) to work. Keyed by the config.json field name. */
-const REQUIRED_CONFIG_EXECUTABLE_PATHS: { [key: string]: string } = {
-  '_7zipExecutablePath': '7-Zip executable (7z.exe)',
-  'imgBurnExecutablePath': 'ImgBurn executable (ImgBurn.exe)'
+/** A program the optical-media features need, set in config.json - see locateExecutables. */
+interface RequiredExecutable {
+  program: string;
+  fileName: string;
+  /** What the app uses it for, for the dialog that asks where it is. */
+  purpose: string;
+  /** Where it is usually installed, and where to get it - for the same dialog. */
+  usualFolder: string;
+  website: string;
+  /** Its folder's name under Program Files, and the registry values its installer leaves its folder in. */
+  folderName: string;
+  registryFolders: Array<{ key: string, value: string }>;
+}
+
+/** The programs config.json must point to for the optical-media features to work, keyed by their config.json field. */
+const REQUIRED_EXECUTABLES: { [key: string]: RequiredExecutable } = {
+  '_7zipExecutablePath': {
+    program: '7-Zip', fileName: '7z.exe', folderName: '7-Zip',
+    purpose: 'to split files that are too large for one disc, and to put them back together when you recover them',
+    usualFolder: 'C:\\Program Files\\7-Zip', website: 'https://www.7-zip.org',
+    registryFolders: [
+      { key: 'HKLM\\SOFTWARE\\7-Zip', value: 'Path64' }, { key: 'HKLM\\SOFTWARE\\7-Zip', value: 'Path' },
+      { key: 'HKCU\\SOFTWARE\\7-Zip', value: 'Path64' }, { key: 'HKCU\\SOFTWARE\\7-Zip', value: 'Path' },
+    ],
+  },
+  'imgBurnExecutablePath': {
+    program: 'ImgBurn', fileName: 'ImgBurn.exe', folderName: 'ImgBurn',
+    purpose: 'to burn your backups to CDs, DVDs and Blu-rays',
+    usualFolder: 'C:\\Program Files (x86)\\ImgBurn', website: 'https://www.imgburn.com',
+    registryFolders: [{ key: 'HKCU\\SOFTWARE\\ImgBurn', value: 'InstallDirectory' }],
+  },
 };
+
+/** The registry keys under which installers record where they installed a program ("InstallLocation"), in its
+ *  own subkey - "7-Zip" and "ImgBurn" for these two. */
+const UNINSTALL_REGISTRY_KEYS = [
+  'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+];
 
 /** The highest share of a disc's rated capacity any disc is ever planned to fill - see
  *  getEffectiveOpticalMediumCapacityInBytes. */
 const MAX_OPTICAL_MEDIUM_REPLETION_RATIO = 0.99;
 
 /** Baseline values for the non-executable config.json fields the rest of the app assumes are present. Used by
- *  updateConfig below to backfill anything not already in the file, so that writing just the two executable
- *  paths (e.g. from the setup dialog) never leaves the rest of the file incomplete - notably when config.json
- *  did not exist at all before that write.
- *  Deliberately excludes the two REQUIRED_CONFIG_EXECUTABLE_PATHS fields - defaulting those to a guessed
- *  install path would silently defeat the setup dialog's entire point of getting the user to confirm them. */
+ *  updateConfig below to backfill anything not already in the file, so that writing just the executable paths
+ *  never leaves the rest of the file incomplete - notably when config.json did not exist at all before that write.
+ *  Excludes the REQUIRED_EXECUTABLES fields: those are looked for, or asked for (see locateExecutables). */
 const DEFAULT_CONFIG_FIELDS: { [key: string]: any } = {
   cacheDataDirectoryPath: DEFAULT_CACHE_DATA_DIRECTORY_NAME
 };
@@ -676,32 +708,76 @@ const getEffectiveOpticalMediumCapacityInBytes = async function (rawCapacityInBy
   return rawCapacityInBytes * maxRepletionRatio;
 }
 
-/** Checks the required executable paths in config.json (see REQUIRED_CONFIG_EXECUTABLE_PATHS) and reports
- *  which ones are missing, blank, or point to a file that no longer exists on disk (e.g. the user
- *  uninstalled or moved 7-Zip/ImgBurn since it was last configured) - as well as the full list of required
- *  fields regardless of current validity. The latter exists because a shipped default path can coincidentally
- *  already exist on a given machine (e.g. 7-Zip/ImgBurn installed at their usual default location) without the
- *  user ever having actually confirmed it - the caller uses this to still walk the user through every
- *  required field on first run, not just the ones currently failing. */
-const validateConfigPaths = async function (): Promise<{
-  config: { [key: string]: any },
-  missingFields: Array<{ key: string, label: string }>,
-  requiredFields: Array<{ key: string, label: string }>
-}> {
-  const config = await readConfig();
-  const missingFields: Array<{ key: string, label: string }> = [];
-  const requiredFields: Array<{ key: string, label: string }> = [];
+/** True if `filePath` is an existing file. */
+const isExistingFile = function (filePath: unknown): filePath is string {
+  try {
+    return typeof filePath === 'string' && filePath.trim() !== '' && fs.statSync(filePath).isFile();
+  } catch (error) {
+    return false;
+  }
+}
 
-  for (const key of Object.keys(REQUIRED_CONFIG_EXECUTABLE_PATHS)) {
-    const field = { key: key, label: REQUIRED_CONFIG_EXECUTABLE_PATHS[key] };
-    requiredFields.push(field);
-    const value = config[key];
-    if (!value || typeof value !== 'string' || value.trim() === '' || !fs.existsSync(value)) {
-      missingFields.push(field);
+/** A folder recorded in the registry - `value` of `key`, read with reg.exe - or null if it is not there. */
+const readRegistryFolder = async function (key: string, value: string): Promise<string | null> {
+  const util = require('util');
+  const execFile = util.promisify(require('child_process').execFile);
+  try {
+    const { stdout } = await execFile('reg', ['query', key, '/v', value], { windowsHide: true });
+    const match = new RegExp(`^\\s*${value}\\s+REG_(?:EXPAND_)?SZ\\s+(.+?)\\s*$`, 'im').exec(stdout);
+    return match ? match[1].replace(/%([^%]+)%/g, (whole: string, name: string) => process.env[name] ?? whole) : null;
+  } catch (error) {
+    return null; // the key or value is not there
+  }
+}
+
+/** Where `executable` is installed on this computer, or null: its usual folders under Program Files first, then the
+ *  folders its installer recorded in the registry, then the folders on the PATH. */
+const findExecutable = async function (executable: RequiredExecutable): Promise<string | null> {
+  const programFolders = [process.env.ProgramW6432, process.env.ProgramFiles, process.env['ProgramFiles(x86)'],
+    process.env.LOCALAPPDATA && node_path_module.join(process.env.LOCALAPPDATA, 'Programs')];
+  for (const folder of programFolders) {
+    const candidate = folder && node_path_module.join(folder, executable.folderName, executable.fileName);
+    if (isExistingFile(candidate)) { return candidate; }
+  }
+  const registryFolders = executable.registryFolders.concat(
+    UNINSTALL_REGISTRY_KEYS.map((key) => ({ key: `${key}\\${executable.folderName}`, value: 'InstallLocation' })));
+  for (const { key, value } of registryFolders) {
+    const folder = await readRegistryFolder(key, value);
+    const candidate = folder && node_path_module.join(folder, executable.fileName);
+    if (isExistingFile(candidate)) { return candidate; }
+  }
+  for (const folder of (process.env.PATH || '').split(node_path_module.delimiter)) {
+    const candidate = folder.trim() && node_path_module.join(folder.trim().replace(/^"|"$/g, ''), executable.fileName);
+    if (isExistingFile(candidate)) { return candidate; }
+  }
+  return null;
+}
+
+/** Makes sure config.json points to each of REQUIRED_EXECUTABLES: one that is not set, or whose file is no longer
+ *  there (moved, reinstalled, a new computer), is looked for (findExecutable), and saved to config.json when found.
+ *  Returns the ones still not found - for the app to ask the user where they are. */
+const locateExecutables = async function (): Promise<Array<{ key: string } & RequiredExecutable>> {
+  const config = await readConfig();
+  const found: { [key: string]: string } = {};
+  const notFound: Array<{ key: string } & RequiredExecutable> = [];
+  for (const [key, executable] of Object.entries(REQUIRED_EXECUTABLES)) {
+    if (isExistingFile(config[key])) { continue; }
+    const configured = typeof config[key] === 'string' && config[key].trim() !== ''
+      ? `is not at "${config[key]}", where config.json says` : 'is not set in config.json';
+    const location = await findExecutable(executable);
+    if (location) {
+      console.log(`${executable.program} ${configured} - found it at "${location}", and saved that.`);
+      found[key] = location;
+    } else {
+      console.log(`${executable.program} ${configured}, and was not found where it is usually installed either.`);
+      notFound.push({ key, ...executable });
     }
   }
-
-  return { config: config, missingFields: missingFields, requiredFields: requiredFields };
+  if (Object.keys(found).length > 0) {
+    const saved = await updateConfig(found);
+    if (!saved.success) { throw new Error(saved.message); }
+  }
+  return notFound;
 }
 
 /** Merges the given updates into the existing config.json (creating it if missing) and writes it back.
@@ -3711,12 +3787,12 @@ const init = function() : void
           ipc.sendResponseToMain({ key: 'check-temp-data-directory-for-leftovers', res: err, status: "error" });
         });
         break;
-      case 'validate-config-paths':
-        console.log("(worker) in validate-config-paths")
-        validateConfigPaths().then((d)=>{
-          ipc.sendResponseToMain({ key: 'validate-config-paths', res: d, status: "completed" });
+      case 'locate-executables':
+        console.log("(worker) in locate-executables")
+        locateExecutables().then((d)=>{
+          ipc.sendResponseToMain({ key: 'locate-executables', res: d, status: "completed" });
         }).catch((err)=>{
-          ipc.sendResponseToMain({ key: 'validate-config-paths', res: err, status: "error" });
+          ipc.sendResponseToMain({ key: 'locate-executables', res: err, status: "error" });
         });
         break;
       case 'update-config':

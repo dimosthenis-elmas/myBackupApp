@@ -233,10 +233,13 @@ These apply to more than one feature, or to the app as a whole.
 - On startup, the app runs a couple of housekeeping checks:
   - It checks whether its internal temp folder has leftover split pieces (`.part.NNN` files) from an interrupted
     job, and offers to clear them out.
-  - It checks whether `config.json` (see "Other stuff" below) is missing the paths to 7-Zip and/or ImgBurn, or
-    whether a configured path no longer points to a real program (e.g. it was moved or reinstalled). If so, it
-    walks you through picking the right `.exe` file(s) with a file picker - each path is required, so it keeps
-    asking until you provide a valid one. You can still edit `config.json` by hand instead, if you prefer.
+  - It checks that `config.json` (see "Other stuff" below) points to 7-Zip and ImgBurn. For one that is not set, or
+    no longer there (e.g. it was moved or reinstalled, or the app was copied to another computer), it looks where
+    the program is usually installed - its folder under Program Files, the folder its installer recorded in the
+    registry, the folders on the PATH - and saves what it finds, without asking anything. Only if it cannot find one
+    does it ask you: a dialog says which program is missing and what for, and "Choose 7z.exe" (or "Choose
+    ImgBurn.exe") opens a file chooser to select it. With "Not now", Cumulative backup and Synchronize directories
+    still work, and the app asks again the next time it starts. You can also edit `config.json` by hand.
 
 ---
 ## Build this project
@@ -299,10 +302,9 @@ setup itself.
 
 1) Build the app first: `npm run electron:build` (see above - this produces `release/win-unpacked/`).
 2) Double-click `installer/install.bat` (or run `installer/install.ps1` directly via PowerShell).
-3) Follow the prompts: pick (or create) the folder to install into, optionally point it at your `7z.exe` and
-   `ImgBurn.exe` (or skip this here and set them the next time you start the app, which will walk you through it
-   and require a real path before you can continue), and optionally create a shortcut (defaults to your Desktop,
-   but you can pick anywhere).
+3) Follow the prompts: pick (or create) the folder to install into, and optionally create a shortcut (defaults to
+   your Desktop, but you can pick anywhere). 7-Zip and ImgBurn are not asked for here - the app finds them itself
+   when it starts, and asks you where they are only if it cannot.
 
 That's it - everything the app needs lives inside the one folder you chose, including its own temp/cache
 directory. To uninstall, just delete that folder (and the shortcut, if you made one) - nothing else on your
@@ -316,9 +318,8 @@ computer is ever touched. See [installer/README.md](installer/README.md) for mor
 Install [ImgBurn](https://www.imgburn.com/) (we used version 2.5.8.0) - this app generates the `.ibb` project
 files that ImgBurn then actually burns to disc.
 
-Point the app at your `ImgBurn.exe`: it asks you for this itself on startup if the path is missing or no longer
-valid, via a normal file picker. You can also set it by hand, by editing `config.json` (in `appData/`) and setting
-`imgBurnExecutablePath`. This applies both in dev and in a packaged build - `npm run electron:build` copies
+The app finds `ImgBurn.exe` itself on startup, and asks you where it is only if it cannot (see the startup checks
+above). You can also set it by hand, by editing `config.json` (in `appData/`) and setting `imgBurnExecutablePath`. This applies both in dev and in a packaged build - `npm run electron:build` copies
 `appData/` into `release/win-unpacked/resources/appData/` automatically, so an already-configured `config.json`
 carries over.
 
@@ -337,8 +338,8 @@ than 255 characters in path", under Advanced > Restrictions.
 Install [7-Zip](https://www.7-zip.org/) (we used version 22.01) - the app calls it via the command line to split
 large files, and to reassemble them again during recovery.
 
-Same as ImgBurn: the app asks for `7z.exe`'s path on startup if it's missing or no longer valid, or you can set it
-by hand in `config.json` under `_7zipExecutablePath`.
+Same as ImgBurn: the app finds `7z.exe` itself on startup and asks only if it cannot, or you can set it by hand in
+`config.json` under `_7zipExecutablePath`.
 
 The app only ever calls ImgBurn and 7-Zip through their official command-line interfaces - it doesn't interfere
 with either program in any other way.

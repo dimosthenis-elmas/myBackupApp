@@ -4,11 +4,13 @@
   A simple, portable installer for this app - no admin rights, no registry entries, no Program Files.
 
 .DESCRIPTION
-  Copies the already-built release\win-unpacked folder into a directory YOU choose, optionally records the paths
-  to your 7z.exe and ImgBurn.exe into the copied appData\config.json, and (optionally) creates a Desktop-or-
-  wherever-you-choose shortcut to the installed .exe. Nothing is written outside the folder you pick - no
+  Copies the already-built release\win-unpacked folder into a directory YOU choose, and (optionally) creates a
+  Desktop-or-wherever-you-choose shortcut to the installed .exe. Nothing is written outside the folder you pick - no
   registry keys, no Start Menu entries, no per-machine install. Uninstalling is just deleting that folder (and
   the shortcut, if you made one).
+
+  7-Zip and ImgBurn are not asked for here: the app finds them itself when it starts (locateExecutables in
+  app/workers/worker.ts), and asks where they are only if it cannot.
 
   This script does NOT build the app - run `npm run electron:build` first (or `npm run build:prod` if
   release\win-unpacked already exists from a previous build you trust). This just packages up what that already
@@ -101,57 +103,7 @@ if (Test-Path $copiedTempDir) {
 Write-Host '  done.'
 
 # --------------------------------------------------------------------------------------------------------------
-# 3. Ask for 7z.exe / ImgBurn.exe - both optional (Cancel leaves that one unset; the app itself will ask again
-#    the first time it's actually needed, the same way it already does today for a missing/invalid path).
-# --------------------------------------------------------------------------------------------------------------
-function Select-ExecutableFile {
-    param([string]$Title)
-    $dlg = New-Object System.Windows.Forms.OpenFileDialog
-    $dlg.Title = $Title
-    $dlg.Filter = 'Executable files (*.exe)|*.exe|All files (*.*)|*.*'
-    $dlg.CheckFileExists = $true
-    if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        return $dlg.FileName
-    }
-    return $null
-}
-
-Write-Host "`nSelect your 7z.exe (Cancel to skip and set this later, inside the app)..."
-$sevenZipPath = Select-ExecutableFile -Title 'Select 7z.exe (Cancel to skip for now)'
-
-Write-Host 'Select your ImgBurn.exe (Cancel to skip and set this later, inside the app)...'
-$imgBurnPath = Select-ExecutableFile -Title 'Select ImgBurn.exe (Cancel to skip for now)'
-
-# --------------------------------------------------------------------------------------------------------------
-# 4. Write the chosen paths into the COPIED config.json - never the project's own appData/config.json, only the
-#    installed copy. cacheDataDirectoryPath is deliberately left untouched (its default is already a relative
-#    path, resolved against the app's own appData folder - already portable, see this script's own header).
-# --------------------------------------------------------------------------------------------------------------
-$configPath = Join-Path $installDir 'resources\appData\config.json'
-if (Test-Path $configPath) {
-    Write-Host "`nUpdating $configPath ..."
-    $config = Get-Content -Path $configPath -Raw | ConvertFrom-Json
-    if ($sevenZipPath) { $config._7zipExecutablePath = $sevenZipPath }
-    if ($imgBurnPath) { $config.imgBurnExecutablePath = $imgBurnPath }
-    # The app's own first-run flow (checked on every startup) treats this as "the user already went through
-    # setup" - since this installer just did the equivalent of that, set it the same way a normal first run
-    # would once the user clicks through it.
-    $config | Add-Member -NotePropertyName 'setupAcknowledged' -NotePropertyValue $true -Force
-    # NOT `Set-Content -Encoding UTF8` - PowerShell 5.1's "UTF8" encoding writes a UTF-8 BOM, and the app's own
-    # readConfig() (worker.ts) reads config.json with fs.readFileSync (no encoding specified) then passes the
-    # result straight to JSON.parse, which does NOT tolerate a leading BOM: it throws, and readConfig()'s catch
-    # block silently swallows that into an empty {} config, so every value written here would be invisible to
-    # the app on its first read. [System.IO.File]::WriteAllText with an explicit UTF8Encoding($false) writes
-    # UTF-8 with NO BOM, which JSON.parse reads correctly.
-    $jsonText = $config | ConvertTo-Json -Depth 10
-    [System.IO.File]::WriteAllText($configPath, $jsonText, (New-Object System.Text.UTF8Encoding($false)))
-    Write-Host '  done.'
-} else {
-    Write-Host "`nWARNING: $configPath was not found in the copied files - could not save the 7z/ImgBurn paths. The app will ask for them itself on first run."
-}
-
-# --------------------------------------------------------------------------------------------------------------
-# 5. Offer a shortcut - defaults to the Desktop, but the folder picker lets the user put it anywhere (or cancel
+# 3. Offer a shortcut - defaults to the Desktop, but the folder picker lets the user put it anywhere (or cancel
 #    to skip entirely).
 # --------------------------------------------------------------------------------------------------------------
 $makeShortcut = [System.Windows.Forms.MessageBox]::Show('Create a shortcut to the app?', 'Shortcut', 'YesNo', 'Question')
@@ -178,11 +130,10 @@ if ($makeShortcut -eq [System.Windows.Forms.DialogResult]::Yes) {
 }
 
 # --------------------------------------------------------------------------------------------------------------
-# 6. Done.
+# 4. Done.
 # --------------------------------------------------------------------------------------------------------------
 $summary = "Installed to:`n$installDir`n`n" +
-    "7z.exe:     $(if ($sevenZipPath) { $sevenZipPath } else { '(not set - the app will ask on first use)' })`n" +
-    "ImgBurn.exe: $(if ($imgBurnPath) { $imgBurnPath } else { '(not set - the app will ask on first use)' })`n`n" +
+    "7-Zip and ImgBurn: the app finds them itself when it starts, and asks you where they are only if it cannot.`n`n" +
     "To uninstall later: just delete the folder above (and the shortcut, if you made one). Nothing else was changed on this computer - no registry entries, no Program Files."
 [System.Windows.Forms.MessageBox]::Show($summary, 'Installation complete', 'OK', 'Information') | Out-Null
 Write-Host "`nDone."

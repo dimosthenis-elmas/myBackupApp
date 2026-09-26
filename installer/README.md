@@ -23,18 +23,16 @@ format, not something you can opt out of), so it can't be made portable in this 
    `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1`).
 3. Follow the prompts:
    - Pick (or create) the folder you want the app installed into.
-   - Pick your `7z.exe` (or Cancel to skip - the app will ask again itself the first time it actually needs it,
-     same as it already does today for a missing/invalid path).
-   - Pick your `ImgBurn.exe` (same - Cancel to skip).
    - Choose whether to create a shortcut, and where (defaults to your Desktop).
+
+7-Zip and ImgBurn are not asked for: the app finds them itself when it starts (in their folders under Program
+Files, where their installers recorded them in the registry, or on the PATH), and asks you where they are only if
+it cannot - see the README's startup checks.
 
 ## What it actually does
 
 - Copies `release\win-unpacked\*` into the folder you chose (`Copy-Item -Recurse`).
-- Writes the 7z/ImgBurn paths you picked into the *copied* `resources\appData\config.json` (never touches the
-  project's own `appData\config.json`), and sets `setupAcknowledged: true` - the same field the app's own
-  first-run flow sets once you click through its own prompts, so it won't ask again unnecessarily.
-- Leaves `cacheDataDirectoryPath` on its default value. That default is a *relative* path, resolved against the
+- Leaves the copied `resources\appData\config.json` as it is, and `cacheDataDirectoryPath` on its default value. That default is a *relative* path, resolved against the
   app's own `appData` folder wherever it ends up - already portable by design (verified directly: copying
   `win-unpacked` anywhere and re-reading the config confirms it stays relative), so there's nothing to change
   here for the temp/cache files to end up inside the install folder.
@@ -53,10 +51,10 @@ blank window without it.
 
 ## Known limitations / not yet verified
 
-- The interactive GUI dialogs (folder/file pickers, message boxes) and the final "does the installed app actually
+- The interactive GUI dialogs (folder pickers, message boxes) and the final "does the installed app actually
   show its UI and work correctly" check have not been run end-to-end by an actual person yet - only the
-  underlying mechanics (the file copy, the config.json edit, real shortcut creation and readback) have been
-  verified directly, using the real project path. Please try a real install and let it be known how it goes.
+  underlying mechanics (the file copy, real shortcut creation and readback) have been verified directly, using the
+  real project path. Please try a real install and let it be known how it goes.
 - No uninstaller script is provided - per the whole point of this being portable, "uninstall" is just deleting
   the folder you installed into (and the shortcut, if you made one). Nothing else was ever written anywhere else.
 - This only targets Windows (`WScript.Shell` for the shortcut, `.bat`/`.ps1` for the installer itself) - matching

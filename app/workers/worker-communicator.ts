@@ -461,8 +461,11 @@ export class WorkerCommunicator {
         return this.sendAndAwaitResponse('delete-recovered-failed-files', { failedAbsolutePaths: failedAbsolutePaths, targetDirectory: targetDirectory });
     }
 
-    static validateConfigPaths(): Promise<WorkerResponse> {
-        return this.sendAndAwaitResponse('validate-config-paths', {});
+    /** Looks for 7-Zip and ImgBurn where config.json does not point to them, and saves what it finds - see
+     *  locateExecutables in worker.ts. Resolves with `res`: the ones not found, each with what the app needs it for,
+     *  where it is usually installed and where to get it - for asking the user. */
+    static locateExecutables(): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('locate-executables', {});
     }
 
     static updateConfig(updates: { [key: string]: any }): Promise<WorkerResponse> {
