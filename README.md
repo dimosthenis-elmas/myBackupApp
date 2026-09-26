@@ -52,7 +52,8 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   the backup its previous copy: the new version is copied next to it first, under a temporary name
   (`~my-backup-copy-....tmp`), and only takes the old one's place once complete - so a copy that fails part way (the
   backup drive is full, the source can't be read, the drive is unplugged) leaves the old copy as it was. Until then
-  that file needs room on the drive twice.
+  that file needs room on the drive twice. Like Synchronize dirs, it does not work on a whole drive (e.g. `E:\`), as
+  the source or as the backup location: choose a folder on the drive instead (e.g. `E:\Backup`).
 
 - **Synchronize dirs:** makes a "target" directory an exact copy of a "master" directory, adding and deleting files
   as needed - including where a name is a file on one side and a folder on the other, and where a file or folder

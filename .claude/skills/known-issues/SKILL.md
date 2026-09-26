@@ -145,16 +145,14 @@ from this file (and test it if it needs one - see "Working on these" below), and
 - **Test idea:** a Cumulative run onto an exFAT stick or VHD (needs admin to create), then a second run: it must copy
   nothing.
 
-### 9. Cumulative backup to the root of an NTFS drive warns that the backup drive's own folders are not backed up
+### 9. An unreadable folder in Cumulative backup's backup folder is reported as "NOT backed up"
 
 - **What happens:** `diff` collects the entries it cannot read from BOTH scans into one `skipped` list and reports it
-  as "Some items were left out ... they are NOT backed up". A drive root always holds "System Volume Information",
-  which can be stat'ed but not listed (EPERM - confirmed). So a Cumulative backup to the root of an external NTFS drive
-  - a common setup - shows that warning on every run, naming a folder on the backup drive, not in the source. An
-  unreadable folder anywhere in the backup folder is reported the same misleading way.
-- **Also:** a drive root as the SOURCE (Cumulative backup and Backup to optical media allow it) backs up
-  `$Recycle.Bin` - the user's own deleted files - since that folder is readable. Whether to leave it out is a product
-  decision.
+  as "Some items were left out ... they are NOT backed up" - so a folder in the backup folder that cannot be listed is
+  named as if it were a source folder left out. (A drive root, whose "System Volume Information" always does this, is
+  refused by Cumulative backup - see Limitations.)
+- **Also:** a drive root as the SOURCE of Backup to optical media is allowed, and backs up `$Recycle.Bin` - the user's
+  own deleted files - since that folder is readable. Whether to refuse it there too is a product decision.
 - **Code:** `diff` in `app/workers/worker.ts` (the same `skipped` passed to `getAllFiles` and `getAllFilesSet`),
   `reportSkippedScanEntries`.
 - **Fix:** report only the source's skipped entries as "not backed up"; leave the target's out of that warning (or
@@ -234,10 +232,12 @@ from this file (and test it if it needs one - see "Working on these" below), and
   cost: that file needs room on the target drive twice until the copy is complete; and if the app is killed mid-copy,
   the temporary file stays behind (Sync deletes it on its next run, Cumulative backup never deletes anything). Recovery
   from discs copies through the same function.
-- **Synchronize directories refuses the root of a drive** (`D:\`, source or target) - `checkPathsSelectionIsOk` in
-  `src/app/sync-dirs/sync-dirs.component.ts`. A drive root holds Windows' own folders ("System Volume Information",
-  other users' `$Recycle.Bin`) that cannot be listed, and Sync deliberately does not skip unreadable entries. A volume
-  mounted into a folder is not recognized as a drive root.
+- **Synchronize directories and Cumulative backup refuse the root of a drive** (`D:\`, source or target) -
+  `checkPathsSelectionIsOk` in `src/app/sync-dirs/sync-dirs.component.ts`, `UpdateBackupProceed` in
+  `src/app/incremental-entry-point/incremental-entry-point.component.ts`. A drive root holds Windows' own folders
+  ("System Volume Information", other users' `$Recycle.Bin`) that cannot be listed: Sync deliberately does not skip
+  unreadable entries, and Cumulative backup would warn on every run that "System Volume Information" is not backed up
+  (and back up the recycle bin, as a source). A volume mounted into a folder is not recognized as a drive root.
 - **FAT file systems (FAT, FAT32) are not supported** - stated in the README. Sync still allows 2 seconds of
   difference in modified times (`MIRROR_MTIME_TOLERANCE_MS`).
 - **A large file is split when its disc is sent, not when the discs are planned** - possibly hours later in the same

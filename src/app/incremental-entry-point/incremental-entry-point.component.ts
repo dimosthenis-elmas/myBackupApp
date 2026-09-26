@@ -6,6 +6,7 @@ import { LoadingDialogComponent } from '../shared/components';
 import { ConfirmationDialogComponent } from '../shared/components';
 import { WorkerCommunicator as ipc } from '../../../app/workers/worker-communicator'
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
+import { isDriveRoot } from '../shared/utils/drive-root';
 
 
 @Component({
@@ -62,7 +63,16 @@ export class IncrementalEntryPointComponent {
     // main-menu tile (main-menu.component.ts's goToSyncDirsPage()) that routes straight to 'sync-dirs',
     // bypassing this component entirely. There used to be a second, unreachable "sync" mode selected via a
     // BackupService.mode value nothing on this screen could actually set - removed along with that dead code.
-    if (this.backup.sourcePath && this.backup.targetPath) {
+    const driveRoots = [this.backup.sourcePath, this.backup.targetPath].filter((p) => p && isDriveRoot(p));
+    if (this.backup.sourcePath && this.backup.targetPath && driveRoots.length > 0) {
+      // The root of a drive holds folders of Windows' own ("System Volume Information", "$Recycle.Bin") - the same
+      // rule as Synchronize directories (see checkPathsSelectionIsOk in sync-dirs.component.ts).
+      const dialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '650px'});
+      dialogRef.componentInstance.title = "Paths selection";
+      dialogRef.componentInstance.message = `${driveRoots.map((p) => `"${p}"`).join(' and ')} ` +
+        `${driveRoots.length > 1 ? 'are whole drives' : 'is a whole drive'}. Cumulative backup cannot use the root ` +
+        `of a drive - Windows keeps folders of its own there. Choose a folder on the drive instead.`;
+    }else if (this.backup.sourcePath && this.backup.targetPath) {
       this.router.navigate(['incremental']);
     }else{
       const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
