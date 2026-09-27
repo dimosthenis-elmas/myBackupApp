@@ -1,9 +1,8 @@
 /** A tiny FIFO queue of async tasks that run strictly one at a time, in enqueue order.
  *
  *  Used to serialize a read-modify-write cycle against a single shared resource (here: a cold storage metadata
- *  JSON file on disk) across multiple call sites that may fire close together - e.g. a non-linear stepper where
- *  every disc's "Send to ImgBurn" button is always enabled, so nothing stops the user from triggering it for a
- *  second disc before the first one's write has finished. Without this, a later read landing before an earlier
+ *  JSON file on disk) across multiple call sites that may fire close together - e.g. one disc's "Try again" of its
+ *  record still writing when the next disc is confirmed. Without this, a later read landing before an earlier
  *  write finishes silently loses that earlier write (overwritten by the later write, which was based on a now
  *  stale read).
  *

@@ -55,9 +55,9 @@
  *   - disc 1 (piece.001) with 651,000,000 - 524,288,000 =  126,712,000 bytes of spare room.
  *   - disc 2 (piece.002) with 651,000,000 - 175,712,000 =  475,288,000 bytes of spare room.
  * Whichever disc is sent first is the one whose send triggers the (stubbed) real split, which always produces a
- * real piece.001 and piece.002 matching the estimate exactly, PLUS the surplus piece.003 - so this script's
- * pass-or-fail does not depend on send order (both phases below just send disc 1 then disc 2, the natural
- * order), only on the surplus SIZE relative to the two spare-room figures above:
+ * real piece.001 and piece.002 matching the estimate exactly, PLUS the surplus piece.003. Discs are burned in order
+ * (disc 1 is sent and confirmed, then disc 2), so this script's pass-or-fail depends only on the surplus SIZE
+ * relative to the two spare-room figures above:
  *   - ABSORBABLE_SURPLUS_BYTES (200,000,000): bigger than disc 1's spare room (rejected there, whichever disc
  *     triggers it) but smaller than disc 2's (absorbed there) - so no matter which of the two discs happens to
  *     trigger the split, the OTHER one always has enough room left to pick it up. Expected result: still
@@ -231,9 +231,17 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
     originalConfigContent = backupAndRedirectConfigField('_7zipExecutablePath', stub7zPath); // restored in the finally block below
     backupAndRedirectConfigField('imgBurnExecutablePath', stubImgBurnPath);
 
-    // --- send disc 1, then disc 2 (the natural order - see header comment for why order doesn't matter here) ---
+    // --- discs are burned in order: each disc is sent, then confirmed, before the next. A disc is recorded in the
+    // metadata JSON only once it is confirmed burned, with no dialog - though every disc of this job holds only some
+    // pieces of the one large file: each piece's name says how many pieces the file has, so if the app were closed
+    // partway, "Add missing files" would burn the ones still missing. ---
+    const readSavedMetadata = () => JSON.parse(fs.readFileSync(metadataJsonPath, 'utf8'));
+    const recordedDiscNumbers = () => readSavedMetadata().map((entries, d) => (Array.isArray(entries) && entries.length > 0 ? d + 1 : 0)).filter(Boolean);
+    const firstDiscNumbers = (count) => Array.from({ length: count }, (_, d) => d + 1);
+    results.noDiscRecordedBeforeItIsConfirmed = true;
+    results.eachDiscRecordedAsItIsConfirmed = true;
 
-    for (let i = 0; i < 2; i++) {
+    const sendDisc = async (i) => {
       await step(`open the "Optical disk ${i + 1}" step`, () => win.getByRole('tab', { name: `Optical disk ${i + 1}`, exact: false }).click({ timeout: 30_000 }));
       await step(`click "Send to ImgBurn" for disc ${i + 1}`, () => win.getByRole('button', { name: 'Send to ImgBurn' }).click({ timeout: 30_000 }));
       await step(`click "Ok" on the "Disc label" confirmation for disc ${i + 1}`, () => win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 30_000 }));
@@ -251,7 +259,29 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
       await waitForFile(ibbPath, 30_000);
       console.log('done');
       createdIbbPaths.push(ibbPath);
-    }
+    };
+
+    const confirmDisc = async (i) => {
+      const recordedBefore = recordedDiscNumbers();
+      const notRecordedYet = JSON.stringify(recordedBefore) === JSON.stringify(firstDiscNumbers(i));
+      results.noDiscRecordedBeforeItIsConfirmed = results.noDiscRecordedBeforeItIsConfirmed && notRecordedYet;
+      console.log(`  discs recorded before confirming disc ${i + 1}: [${recordedBefore.join(', ')}] (expected [${firstDiscNumbers(i).join(', ')}]) - ${notRecordedYet ? 'OK' : 'WRONG'}`);
+
+      await step(`open the "Optical disk ${i + 1}" step (for confirm)`, () => win.getByRole('tab', { name: `Optical disk ${i + 1}`, exact: false }).click({ timeout: 30_000 }));
+      await step(`click "Confirm disc burned" for disc ${i + 1}`, () => win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 30_000 }));
+      await step(`wait for disc ${i + 1} to show as confirmed, with no dialog`, () => waitForDiscConfirmed(win, 30_000));
+      const expectedRecorded = firstDiscNumbers(i + 1);
+      const recordDeadline = Date.now() + 30_000;
+      while (recordedDiscNumbers().length < expectedRecorded.length && Date.now() < recordDeadline) { await new Promise((r) => setTimeout(r, 500)); }
+      const recordedNow = recordedDiscNumbers();
+      const recordedOk = JSON.stringify(recordedNow) === JSON.stringify(expectedRecorded);
+      results.eachDiscRecordedAsItIsConfirmed = results.eachDiscRecordedAsItIsConfirmed && recordedOk;
+      console.log(`  discs recorded after confirming disc ${i + 1}: [${recordedNow.join(', ')}] (expected [${expectedRecorded.join(', ')}]) - ${recordedOk ? 'OK' : 'WRONG'}`);
+    };
+
+    await sendDisc(0);
+    await confirmDisc(0);
+    await sendDisc(1);
 
     let finalDiscCount = 2;
     if (expectOverflow) {
@@ -266,14 +296,9 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
       results.discCountIsThreeAfterOverflow = discCountAfterOverflow === 3;
       console.log(`  -> ${discCountAfterOverflow} disc step(s) now rendered (expected 3) - ${results.discCountIsThreeAfterOverflow ? 'OK' : 'WRONG'}`);
 
-      await step('open the "Optical disk 3" step', () => win.getByRole('tab', { name: 'Optical disk 3', exact: false }).click({ timeout: 30_000 }));
-      await step('click "Send to ImgBurn" for disc 3', () => win.getByRole('button', { name: 'Send to ImgBurn' }).click({ timeout: 30_000 }));
-      await step('click "Ok" on the "Disc label" confirmation for disc 3', () => win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 30_000 }));
-      const ibbPath3 = path.join(sessionDir, 'Disk_3.ibb');
-      process.stdout.write('  [ ] wait for the real .ibb file for disc 3 to appear ... ');
-      await waitForFile(ibbPath3, 30_000);
-      console.log('done');
-      createdIbbPaths.push(ibbPath3);
+      await confirmDisc(1);
+      await sendDisc(2);
+      await confirmDisc(2);
       finalDiscCount = 3;
     } else {
       // Give any (incorrect) late dialog/extra disc a moment to show up before asserting it never does - a
@@ -285,15 +310,11 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
       const discCountAfterSends = await win.getByRole('tab').count();
       results.discCountStillTwo = discCountAfterSends === 2;
       console.log(`  -> ${discCountAfterSends} disc step(s) rendered (expected still 2 - no new disc) - ${results.discCountStillTwo ? 'OK' : 'WRONG'}`);
+
+      await confirmDisc(1);
     }
 
-    printTree(sessionDir, 'App temp session dir (after) - real .ibb files and stub-generated split pieces');
-
-    // --- a disc is recorded in the metadata JSON only once it is confirmed burned: nothing yet ---
-    const readSavedMetadata = () => JSON.parse(fs.readFileSync(metadataJsonPath, 'utf8'));
-    const recordedDiscNumbers = () => readSavedMetadata().map((entries, d) => (Array.isArray(entries) && entries.length > 0 ? d + 1 : 0)).filter(Boolean);
-    results.nothingRecordedBeforeConfirming = recordedDiscNumbers().length === 0;
-    console.log(`\n  discs recorded in the metadata JSON before any is confirmed: [${recordedDiscNumbers().join(', ')}] (expected none) - ${results.nothingRecordedBeforeConfirming ? 'OK' : 'WRONG'}`);
+    printTree(sessionDir, 'App temp session dir (after) - real .ibb files, split pieces deleted on confirm');
 
     // --- verify the real .ibb files' own file-entry counts (the discs' contents, independent of the JSON) ---
     console.log('\nChecking the real .ibb file(s)\' own file-entry counts...');
@@ -303,25 +324,7 @@ async function runPhase({ phaseName, surplusBytes, expectOverflow }) {
     console.log(`  .ibb file-entry counts per disc: [${ibbFileCounts.join(', ')}] (expected [${expectedFileCounts.join(', ')}]) - ${results.ibbFileCountsMatchExpected ? 'OK' : 'WRONG'}`);
     for (const ibbPath of createdIbbPaths) { if (fs.existsSync(ibbPath)) { fs.rmSync(ibbPath, { force: true }); } }
 
-    // --- confirm every disc was burned, in order. Each disc is recorded in the JSON as it is confirmed, with no
-    // dialog - though every disc of this job holds only some pieces of the one large file: each piece's name says how
-    // many pieces the file has, so if the app were closed now, "Add missing files" would burn the ones still missing.
-    // Then verify the temp dir ends up with no leftover split-piece files at all. ---
-    console.log('\nConfirming every disc was burned...');
-    const finalTabCount = await win.getByRole('tab').count();
-    results.eachDiscRecordedAsItIsConfirmed = true;
-    for (let i = 0; i < finalTabCount; i++) {
-      await step(`open the "Optical disk ${i + 1}" step (for confirm)`, () => win.getByRole('tab', { name: `Optical disk ${i + 1}`, exact: false }).click({ timeout: 30_000 }));
-      await step(`click "Confirm disc burned" for disc ${i + 1}`, () => win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 30_000 }));
-      await step(`wait for disc ${i + 1} to show as confirmed, with no dialog`, () => waitForDiscConfirmed(win, 30_000));
-      const expectedRecorded = Array.from({ length: i + 1 }, (_, d) => d + 1);
-      const recordDeadline = Date.now() + 30_000;
-      while (recordedDiscNumbers().length < expectedRecorded.length && Date.now() < recordDeadline) { await new Promise((r) => setTimeout(r, 500)); }
-      const recordedNow = recordedDiscNumbers();
-      const recordedOk = JSON.stringify(recordedNow) === JSON.stringify(expectedRecorded);
-      results.eachDiscRecordedAsItIsConfirmed = results.eachDiscRecordedAsItIsConfirmed && recordedOk;
-      console.log(`  discs recorded after confirming disc ${i + 1}: [${recordedNow.join(', ')}] (expected [${expectedRecorded.join(', ')}]) - ${recordedOk ? 'OK' : 'WRONG'}`);
-    }
+    // --- every disc is confirmed: the temp dir must hold no leftover split-piece files at all ---
     await new Promise((r) => setTimeout(r, 1000)); // let the last confirm's real delete finish
     const largeFilesTempDir = path.join(sessionDir, 'large-files');
     const leftoverPieces = fs.existsSync(largeFilesTempDir) ? fs.readdirSync(largeFilesTempDir).filter((f) => /\.part\.\d+$/i.test(f)) : [];

@@ -51,7 +51,9 @@
  *     zero-byte file, a unicode/space filename, an empty directory) plus a real 700MB file - big enough on its
  *     own to force the split-confirmation chain above.
  *  2. Clicks through step 1, the "too large" confirmation chain, the resulting "N discs needed" confirmation, the
- *     JSON save-path dialog, and then - per disc - "Send to ImgBurn" and its "Disc label" confirmation.
+ *     JSON save-path dialog, and then - per disc, in order - "Send to ImgBurn", its "Disc label" confirmation and
+ *     "Confirm disc burned". Discs are burned in order: disc 2's "Send to ImgBurn" before disc 1 is confirmed must
+ *     be refused ("Burn discs in order"), naming disc 1.
  *  3. After each disc's real .ibb file appears on disk, reads it (utf16le - see saveIBB_toDisk) and parses every
  *     F|/D| line's own fullSourcePath field. NORMAL files/dirs resolve under the source tree, and are compared
  *     directly against a plain recursive filesystem walk. Split-piece entries resolve under the app's own real
@@ -302,8 +304,28 @@ async function main() {
     console.log('\nRedirecting the real ImgBurn path to a harmless no-op stub for the "Send to ImgBurn" clicks below...');
     originalConfigContent = backupAndRedirectImgBurnPath(stubImgBurnPath);
 
-    // --- Phase E: per disc - open its step, "Send to ImgBurn", confirm the disc label, wait for the real .ibb ---
+    // --- Discs are burned in order: disc 2's "Send to ImgBurn" before disc 1 is confirmed burned is refused, naming
+    // disc 1 - and nothing is sent. ---
+    let outOfOrderRefused = false;
+    await step('open the "Optical disk 2" step', () => openDisc(1));
+    await step('click "Send to ImgBurn" for disc 2 before disc 1 is burned', () =>
+      win.getByRole('button', { name: 'Send to ImgBurn' }).click({ timeout: 15_000 }));
+    await step('wait for the "Burn discs in order" dialog and click "Ok"', async () => {
+      await win.getByText('Burn discs in order', { exact: true }).waitFor({ timeout: 15_000 });
+      outOfOrderRefused = /\bdisc 1\b/.test(await win.getByRole('dialog').innerText());
+      await win.getByRole('dialog').getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 });
+    });
+    console.log(`  disc 2 refused before disc 1 is burned, naming disc 1: ${outOfOrderRefused}`);
 
+    // --- Phase E: per disc, in order - open its step, "Send to ImgBurn", confirm the disc label, wait for the real
+    // .ibb, read it, then "Confirm disc burned" and check ITS OWN real split pieces (if any) get deleted - the whole
+    // point of the "confirm disc burned" feature (lazy per-disc materialization instead of splitting every large file
+    // up front for the entire job). The .ibb and the sizes of its pieces are read before the confirm, which deletes
+    // the pieces; the next disc can only be sent once this one is confirmed. ---
+
+    const allEntries = [];
+    const splitPieceSizes = new Map();
+    const confirmDeletionResults = [];
     let pieceKeptOnceItsOtherDiscIsSent = false;
     for (let i = 0; i < actualDiscCount; i++) {
       await step(`open the "Optical disk ${i + 1}" step`, () =>
@@ -346,17 +368,16 @@ async function main() {
       // in the DOM at once (collapsed, not removed, for whichever isn't currently expanded) - so the plain CSS
       // locator matches all discCount buttons, not just this one. Rather than pick out this specific disc's own
       // button (which would need a scoping locator resilient to the same aria-hidden issue - not worth it here),
-      // this checks the property that actually matters: exactly one of them is disabled at a time (never zero,
-      // which would mean the guard isn't disabling anything; never more than one, which would mean a previous
-      // disc's button never got re-enabled).
-      await step(`verify exactly one "Send to ImgBurn" button is disabled while disc ${i + 1}'s send is in flight`, async () => {
+      // this counts the disabled ones: the i discs already confirmed (a confirmed disc's button stays disabled)
+      // plus this one - one fewer would mean the guard isn't disabling anything.
+      await step(`verify ${i + 1} "Send to ImgBurn" button(s) are disabled while disc ${i + 1}'s send is in flight`, async () => {
         const buttons = win.locator('button', { hasText: 'Send to ImgBurn' });
         const total = await buttons.count();
         let disabledCount = 0;
         for (let b = 0; b < total; b++) {
           if (await buttons.nth(b).isDisabled()) { disabledCount++; }
         }
-        if (disabledCount !== 1) { throw new Error(`Expected exactly 1 of the ${total} "Send to ImgBurn" button(s) to be disabled while disc ${i + 1}'s send is in flight, found ${disabledCount}.`); }
+        if (disabledCount !== i + 1) { throw new Error(`Expected ${i + 1} of the ${total} "Send to ImgBurn" button(s) to be disabled while disc ${i + 1}'s send is in flight (${i} confirmed, plus this one), found ${disabledCount}.`); }
       });
 
       await step(`click "Ok" on the "Disc label" confirmation for disc ${i + 1}`, () =>
@@ -375,42 +396,50 @@ async function main() {
       await waitForFile(ibbPath, 30_000);
       console.log('done');
       createdIbbPaths.push(ibbPath);
+
+      const entries = parseIbbBackupList(ibbPath);
+      const discFileEntries = entries.filter((e) => e.type === 'F');
+      console.log(`  ${path.basename(ibbPath)}: ${discFileEntries.length} file entries, ${entries.filter((e) => e.type === 'D').length} directory entries.`);
+      allEntries.push(...entries);
+      const discSplitPiecePaths = discFileEntries.filter((e) => e.fullSourcePath.startsWith(realTempDir)).map((e) => e.fullSourcePath);
+      for (const p of discSplitPiecePaths) { splitPieceSizes.set(p, fs.statSync(p).size); }
+
+      await step(`click "Confirm disc burned" for disc ${i + 1}`, () =>
+        win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 15_000 }));
+
+      // Recorded in the metadata JSON at once, with no dialog - also a disc holding only some pieces of the split file.
+      await step(`wait for disc ${i + 1} to show as confirmed, with no dialog`, () =>
+        waitForDiscConfirmed(win));
+
+      if (discSplitPiecePaths.length > 0) {
+        // confirmDiscBurned awaits the real delete IPC call before its own button text updates, so by the time
+        // the wait above resolves this should already be done - a short grace period only guards against any
+        // last bit of filesystem latency, to avoid a flaky false failure.
+        await new Promise((r) => setTimeout(r, 1000));
+        const stillPresent = discSplitPiecePaths.filter((p) => fs.existsSync(p));
+        const deleted = stillPresent.length === 0;
+        confirmDeletionResults.push(deleted);
+        console.log(`  disc ${i + 1}: ${discSplitPiecePaths.length} real split piece(s), all deleted after confirm: ${deleted}`);
+        if (!deleted) { console.log(`    STILL PRESENT: ${stillPresent.join(', ')}`); }
+      } else {
+        console.log(`  disc ${i + 1}: no split pieces to clean up (normal-files disc).`);
+      }
     }
+    const confirmCheckPassed = confirmDeletionResults.every(Boolean);
 
     console.log('\nWizard completed.');
-    printTree(realTempDir, 'App temp dir (after) - real .ibb files and any split pieces');
+    printTree(realTempDir, 'App temp dir (after) - real .ibb files, split pieces all deleted on confirm');
 
-    // --- Phase F (verification, still with the app open - see below for why) ---
+    // --- Phase F (verification) ---
     //
     // 2. Verify: every real NORMAL file must appear in EXACTLY ONE disc's .ibb; the large file must never appear
     //    whole anywhere; every real directory (the large file's own directory included) must appear in AT LEAST
     //    ONE disc's .ibb (directories legitimately CAN repeat across discs - see this script's own header comment
-    //    for why that's correct, not a bug).
-    //
-    // This now runs BEFORE the app closes (it used to run after, purely against files left on disk) because
-    // Phase G below needs to click "Confirm disc burned" for real, which needs a live app - and confirming a
-    // disc deletes its real split-piece files, which this verification still needs to read the sizes of first.
-    // So the order has to be: verify (files still exist) -> confirm (deletes them) -> assert they're gone.
-    console.log('\nParsing the real .ibb file(s) and comparing against the source tree...');
-    const allEntries = [];
+    //    for why that's correct, not a bug). Every .ibb was read in Phase E, right after its disc was sent.
+    console.log('\nComparing the real .ibb file(s) against the source tree...');
     const splitPieceFilesToCleanUp = [];
-    // Per-disc breakdown (parallel to createdIbbPaths) - Phase G needs to know exactly which real split-piece
-    // files belong to WHICH disc, since a large file's pieces can be spread across more than one disc and
-    // confirming disc i must only ever delete disc i's own pieces.
-    const perDiscFileEntries = [];
-    try {
-      for (const ibbPath of createdIbbPaths) {
-        const entries = parseIbbBackupList(ibbPath);
-        const discFileCount = entries.filter((e) => e.type === 'F').length;
-        const discDirCount = entries.filter((e) => e.type === 'D').length;
-        console.log(`  ${path.basename(ibbPath)}: ${discFileCount} file entries, ${discDirCount} directory entries.`);
-        allEntries.push(...entries);
-        perDiscFileEntries.push(entries.filter((e) => e.type === 'F'));
-      }
-    } finally {
-      for (const ibbPath of createdIbbPaths) {
-        if (fs.existsSync(ibbPath)) { fs.rmSync(ibbPath, { force: true }); }
-      }
+    for (const ibbPath of createdIbbPaths) {
+      if (fs.existsSync(ibbPath)) { fs.rmSync(ibbPath, { force: true }); }
     }
 
   const fileEntries = allEntries.filter((e) => e.type === 'F');
@@ -466,7 +495,7 @@ async function main() {
     .sort((a, b) => a.name.localeCompare(b.name));
   const originalLargeFileLeakedWhole = normalFileAbsPaths.includes(largeFileAbsPath)
     || splitPieceEntries.some((e) => e.fullSourcePath === largeFileAbsPath);
-  const partSizes = partEntries.map((e) => fs.statSync(e.fullSourcePath).size);
+  const partSizes = partEntries.map((e) => splitPieceSizes.get(e.fullSourcePath));
   const partCountCorrect = partEntries.length === EXPECTED_PART_COUNT;
   const firstPieceSizeCorrect = partSizes.length > 0 && partSizes[0] === EXPECTED_FIRST_PIECE_BYTES;
   const totalPartBytes = partSizes.reduce((a, b) => a + b, 0);
@@ -474,56 +503,11 @@ async function main() {
   // worker-ipc/test-large-file-split.js already established for the identical 700MB/500MiB combination.
   const totalSizeCorrect = totalPartBytes >= LARGE_FILE_BYTES && totalPartBytes <= LARGE_FILE_BYTES + 4096;
   console.log(`  Real split pieces found: ${partEntries.length} (expected ${EXPECTED_PART_COUNT}) - ${partCountCorrect ? 'OK' : 'WRONG'}`);
-  for (const e of partEntries) { console.log(`    ${e.name} - ${fs.statSync(e.fullSourcePath).size.toLocaleString()} bytes (${e.fullSourcePath})`); }
+  for (const e of partEntries) { console.log(`    ${e.name} - ${splitPieceSizes.get(e.fullSourcePath).toLocaleString()} bytes (${e.fullSourcePath})`); }
   console.log(`  First piece exactly ${EXPECTED_FIRST_PIECE_BYTES.toLocaleString()} bytes: ${firstPieceSizeCorrect ? 'OK' : 'WRONG'}`);
   console.log(`  Total size ${totalPartBytes.toLocaleString()} bytes vs original ${LARGE_FILE_BYTES.toLocaleString()} bytes (+ up to 4096 bytes real 7z overhead allowed): ${totalSizeCorrect ? 'OK' : 'WRONG'}`);
   console.log(`  Original whole (unsplit) large file leaked into any .ibb: ${originalLargeFileLeakedWhole ? 'WRONG - regression!' : 'OK, not present'}`);
   const splitCheckPassed = partCountCorrect && firstPieceSizeCorrect && totalSizeCorrect && !originalLargeFileLeakedWhole;
-
-    // --- Phase G: confirm each disc was burned, and verify ITS OWN real split pieces (if any) actually get
-    // deleted - the whole point of the "confirm disc burned" feature (lazy per-disc materialization instead of
-    // splitting every large file up front for the entire job). Uses perDiscFileEntries (captured above) rather
-    // than the flattened, all-discs splitPieceEntries, since confirming disc i must only ever delete disc i's
-    // own pieces - never a different, not-yet-confirmed disc's, even if they share the same source file.
-    //
-    // Confirmed in REVERSE order (last disc first) rather than sequentially - any-order confirmation is a real,
-    // explicit part of this feature's design (both wizard steppers are non-linear, and nothing about
-    // confirmDiscBurned assumes an earlier disc was confirmed first), so this deliberately exercises that rather
-    // than only ever confirming in the same order discs were sent, which would leave "confirm out of order"
-    // completely unverified.
-    console.log('\nConfirming each disc was burned (in reverse order), and verifying its real split pieces get cleaned up...');
-    const confirmDeletionResults = [];
-    const confirmOrder = [...Array(actualDiscCount).keys()].reverse();
-    for (const i of confirmOrder) {
-      const discSplitPiecePaths = perDiscFileEntries[i]
-        .filter((e) => e.fullSourcePath.startsWith(realTempDir))
-        .map((e) => e.fullSourcePath);
-
-      await step(`open the "Optical disk ${i + 1}" step (for confirm)`, () =>
-        win.getByRole('tab', { name: `Optical disk ${i + 1}`, exact: false }).click({ timeout: 15_000 }));
-
-      await step(`click "Confirm disc burned" for disc ${i + 1}`, () =>
-        win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 15_000 }));
-
-      // Recorded in the metadata JSON at once, with no dialog - also a disc holding only some pieces of the split file.
-      await step(`wait for disc ${i + 1} to show as confirmed, with no dialog`, () =>
-        waitForDiscConfirmed(win));
-
-      if (discSplitPiecePaths.length > 0) {
-        // confirmDiscBurned awaits the real delete IPC call before its own button text updates, so by the time
-        // the wait above resolves this should already be done - a short grace period only guards against any
-        // last bit of filesystem latency, to avoid a flaky false failure.
-        await new Promise((r) => setTimeout(r, 1000));
-        const stillPresent = discSplitPiecePaths.filter((p) => fs.existsSync(p));
-        const deleted = stillPresent.length === 0;
-        confirmDeletionResults.push(deleted);
-        console.log(`  disc ${i + 1}: ${discSplitPiecePaths.length} real split piece(s), all deleted after confirm: ${deleted}`);
-        if (!deleted) { console.log(`    STILL PRESENT: ${stillPresent.join(', ')}`); }
-      } else {
-        console.log(`  disc ${i + 1}: no split pieces to clean up (normal-files disc).`);
-      }
-    }
-    const confirmCheckPassed = confirmDeletionResults.every(Boolean);
 
     // Every disc is confirmed now, so every disc is recorded in the metadata JSON - the two discs holding the large
     // file's pieces together, once the second of them was confirmed.
@@ -553,7 +537,7 @@ async function main() {
 
     console.log(`\nA split file's pieces go together across discs: ${piecesGoTogether ? 'OK' : 'WRONG'}; ` +
       `changing them once one of their discs is sent is refused: ${pieceKeptOnceItsOtherDiscIsSent ? 'OK' : 'WRONG'}`);
-    const verifyPassed = normalCheckPassed && splitCheckPassed && confirmCheckPassed && allDiscsRecorded
+    const verifyPassed = outOfOrderRefused && normalCheckPassed && splitCheckPassed && confirmCheckPassed && allDiscsRecorded
       && piecesGoTogether && pieceKeptOnceItsOtherDiscIsSent;
 
     if (verifyPassed) {
@@ -562,7 +546,7 @@ async function main() {
       console.log(`\nLeaving scratch files in place for inspection: ${scratchRoot}`);
     }
 
-    console.log(`\n${verifyPassed ? 'PASS' : 'FAIL'} - backup-to-optical-media ${verifyPassed ? 'correctly handled the "too large" confirmation chain, represented every normal source file/directory (exactly once/at least once) across the real .ibb file(s), produced correct real split pieces for the large file, and cleaned each disc\'s pieces up on confirm.' : 'did not produce a correct result, see the counts above.'}`);
+    console.log(`\n${verifyPassed ? 'PASS' : 'FAIL'} - backup-to-optical-media ${verifyPassed ? 'refused a disc out of order, correctly handled the "too large" confirmation chain, represented every normal source file/directory (exactly once/at least once) across the real .ibb file(s), produced correct real split pieces for the large file, and cleaned each disc\'s pieces up on confirm.' : 'did not produce a correct result, see the counts above.'}`);
     process.exitCode = verifyPassed ? 0 : 1;
   } finally {
     if (app) { await app.close().catch(() => {}); }

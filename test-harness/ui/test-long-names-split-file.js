@@ -144,7 +144,11 @@ async function main() {
     const discCount = await win.getByRole('tab').count();
     report('twoDiscsOnePieceEach', discCount === 2, `${discCount} discs`);
 
+    // Discs are burned in order: each disc is sent, its image built with the real ImgBurn - before "Confirm disc
+    // burned", which deletes its pieces from the temp folder, as a real burn comes first - then confirmed, before the
+    // next disc can be sent.
     let sessionDir;
+    const builds = [];
     for (let d = 1; d <= discCount; d++) {
       await step(`disc ${d}: "Send to ImgBurn", "Ok" on the disc label (the first send splits the file for real)`, async () => {
         await win.getByRole('tab', { name: `Optical disk ${d}`, exact: false }).click({ timeout: 15_000 });
@@ -159,22 +163,17 @@ async function main() {
         }
       }
       await waitForFile(path.join(sessionDir, `Disk_${d}.ibb`), 60_000);
-    }
 
-    // Built before "Confirm disc burned", which deletes the pieces from the temp folder - as a real burn comes first.
-    console.log('\nBuilding both disc images with the real ImgBurn...');
-    const builds = isoPaths.map((iso, i) => buildIsoWithImgBurn(imgBurnExe, path.join(sessionDir, `Disk_${i + 1}.ibb`), iso, path.join(scratchRoot, `imgburn ${i + 1}.log`)));
-    report('imgBurnBuildsBothDiscsWithoutChangingAName', builds.every((b) => b.built && b.problems.length === 0),
-      builds.flatMap((b) => b.problems).join(' / '));
+      console.log(`\nBuilding disc ${d}'s image with the real ImgBurn...`);
+      builds.push(buildIsoWithImgBurn(imgBurnExe, path.join(sessionDir, `Disk_${d}.ibb`), isoPaths[d - 1], path.join(scratchRoot, `imgburn ${d}.log`)));
 
-    for (let d = 1; d <= discCount; d++) {
       await step(`disc ${d}: "Confirm disc burned"`, async () => {
-        await win.getByRole('tab', { name: `Optical disk ${d}`, exact: false }).click({ timeout: 15_000 });
-        await pause(700); // the step's expand animation - both panels are on screen until it ends
         await win.getByRole('button', { name: 'Confirm disc burned' }).click({ timeout: 15_000 });
         await waitForDiscConfirmed(win);
       });
     }
+    report('imgBurnBuildsBothDiscsWithoutChangingAName', builds.length === isoPaths.length && builds.every((b) => b.built && b.problems.length === 0),
+      builds.flatMap((b) => b.problems).join(' / '));
     const recordedDiscs = () => { try { return JSON.parse(fs.readFileSync(metadataJsonPath, 'utf8')).filter((disc) => disc.length > 0).length; } catch { return 0; } };
     for (let i = 0; i < 60 && recordedDiscs() < 2; i++) { await pause(500); }
     await close();

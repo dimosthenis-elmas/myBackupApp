@@ -15,7 +15,7 @@ import { SerialQueue } from '../shared/utils/serial-queue';
 import { PIECE_ENDING, withoutPieceTotal } from '../../../app/workers/split-pieces';
 import { withLinksLeftOutNote } from '../shared/utils/links-note';
 import { discsLabel, splitFileOf } from '../shared/utils/split-files';
-import { OPTICAL_MEDIA, OpticalMedium, discContentBytes } from '../shared/utils/optical-media';
+import { OPTICAL_MEDIA, OpticalMedium, discContentBytes, mayBurnDisc } from '../shared/utils/optical-media';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
 import { confirmDiscNameAndPathLimits, metadataEntriesForDisc } from '../shared/utils/shortened-names';
@@ -119,8 +119,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    * JSON is written/updated for this session. See chooseSaveFile(). */
   private coldStorageMetadataJSONPath!: string;
   /** Serializes recordConfirmedDisc's read-modify-write of the shared cold storage metadata JSON - see SerialQueue's
-   *  own doc comment for why this is needed (the stepper is non-linear, so discs can be confirmed in quick
-   *  succession, in any order). */
+   *  own doc comment for why this is needed (one disc's "Try again" can still be writing when the next disc is
+   *  confirmed). */
   private metadataUpdateQueue = new SerialQueue();
   /** Disc i's entry for the cold storage metadata JSON - its files with their real sizes and hashes - made when it is
    *  sent to ImgBurn, and written to the JSON once it is confirmed burned (see recordConfirmedDisc). */
@@ -713,11 +713,12 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    *  on the same or a later disc) is completely silent. */
   async sendToImgBurn(i: number){
     // Guards against a double-click on "Send to ImgBurn" for this SAME disc (see sendingDiscs's own doc
-    // comment) - not against sending a different disc at the same time, which is independent and fine. The
+    // comment). Another disc can't be sent meanwhile anyway: discs are burned in order (mayBurnDisc). The
     // whole method body is wrapped so the guard covers the once-fired-and-forgotten createIBB_file chain too
     // (now awaited below) - resetting the flag before that had actually finished would reopen the exact
     // narrow window (no .ibb written yet) this guard exists to close.
     if (this.sendingDiscs[i]) { return; }
+    if (!mayBurnDisc(this.dialog, i, this.confirmedDiscs, (d) => d + 1)) { return; }
     this.sendingDiscs[i] = true;
     try {
       // If this disc was already sent once during this job, its .ibb project file already exists under this
@@ -1011,8 +1012,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
 
   /** Marks disc i as confirmed-burned: deletes its real created split partials (if any) from the temp
    *  directory, marks it confirmed (the template grays out and disables its controls once confirmedDiscs[i]
-   *  is true - see the template), then records it in the cold storage metadata JSON (see recordConfirmedDisc). Discs can be sent/confirmed in any order, independent of each other - there is
-   *  no sequencing requirement, matching the already non-linear stepper "Send to ImgBurn" itself allows. */
+   *  is true - see the template), then records it in the cold storage metadata JSON (see recordConfirmedDisc). Discs
+   *  are confirmed in order, as they can only be sent in order (mayBurnDisc). */
   async confirmDiscBurned(i: number): Promise<void> {
     // A second click while this one still waits for the worker must not confirm (and record) the disc twice.
     if (!this.sentDiscs[i] || this.confirmedDiscs[i] || this.discsBeingConfirmed.has(i)) { return; }
@@ -1055,7 +1056,8 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       await this.metadataUpdateQueue.enqueue(async () => {
         const metadataJSON: Array<Array<{ path: string; stats: any; }>> = (await ipc.readJSONfromDisk(this.coldStorageMetadataJSONPath)).res;
         metadataJSON[i] = this.discMetadataEntries[i] || [];
-        // A disc appended for a sliver can be recorded before the one in front of it: no gaps (null) in the array.
+        // A disc appended for a sliver lies past the entries written when the discs were planned: no gaps (null) in
+        // the array.
         for (let d = 0; d < metadataJSON.length; d++) { if (!Array.isArray(metadataJSON[d])) { metadataJSON[d] = []; } }
         await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPath, JSON.stringify(metadataJSON, null, 2));
       });

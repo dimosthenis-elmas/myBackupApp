@@ -123,14 +123,16 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   once files are added), so the JSONs of different collections can sit in one folder. Keep this file safe - it's what lets you use "Recover data from optical
   media" and "Add missing files" again without physically inserting every disc.
 
-  A disc is recorded in that JSON when you click "Confirm disc burned", not when you send it to ImgBurn - also a disc
-  that holds only some pieces of a large file. So you can close the app at any time: run "Add missing files" later
-  with that JSON, and it burns whatever is not on your discs yet, the missing pieces of a split file included. A disc
-  that was never confirmed stays an empty entry in the JSON. "Add missing files" drops the empty entries at the end,
-  so its new discs take their numbers: with discs 1 and 2 of 5 confirmed, the next new disc is disc 3. If you burned
-  such a disc without confirming it, set it aside - a new disc gets its number. An empty entry before a confirmed
-  disc stays, so that disc keeps its number. Recovery, "Verify integrity" and "Add missing files" all accept a JSON
-  with empty entries.
+  Discs are burned in order, in both wizards: disc 2 can be sent to ImgBurn only once disc 1 is confirmed burned, and
+  so on - clicking a later disc's "Send to ImgBurn" tells you which disc to burn first. A disc is recorded in that
+  JSON when you click "Confirm disc burned", not when you send it to ImgBurn - also a disc that holds only some pieces
+  of a large file. So you can close the app at any time: the discs burned are the first ones, with no gap. Run "Add
+  missing files" later with that JSON, and it burns whatever is not on your discs yet, the missing pieces of a split
+  file included. A disc not burned yet is an empty entry at the end of the JSON; "Add missing files" drops those, so
+  its new discs take their numbers: with discs 1 and 2 of 5 confirmed, the next new disc is disc 3. If you burned such
+  a disc without confirming it, set it aside - a new disc gets its number. A JSON from an older version of the app may
+  have an empty entry before a confirmed disc (discs could be burned in any order then): it stays, so that disc keeps
+  its number. Recovery, "Verify integrity" and "Add missing files" all accept a JSON with empty entries.
 
 - **Verify integrity of cold storage disc:** a read-only wizard that checks a disc's SHA-256 checksums without
   recovering or copying anything - useful for periodically spot-checking discs you already have. Point it at the

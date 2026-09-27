@@ -1,4 +1,25 @@
+import { MatDialog } from '@angular/material/dialog';
+import { ConfirmationDialogComponent } from '../components/confirmation-dialog/confirmation-dialog.component';
 import { originalNamesFileBytes } from '../../../../app/workers/disc-names';
+
+/** Discs are burned in order, in both wizards: disc `i` may be sent to ImgBurn only once every disc before it is
+ *  confirmed burned (`confirmedDiscs`). So when the app is closed partway, the discs burned are the first ones, with
+ *  no gap - the metadata JSON's empty entries (discs not burned yet) are all at its end, and "Add missing files" numbers
+ *  its new discs right after the last disc burned. Returns true if disc `i` may be sent; otherwise tells the user which
+ *  disc to burn first - by `discNumber`, the number the wizard shows for a disc - and returns false. */
+export function mayBurnDisc(dialog: MatDialog, i: number, confirmedDiscs: boolean[], discNumber: (index: number) => number): boolean {
+  const firstNotConfirmed = confirmedDiscs.findIndex((confirmed) => !confirmed);
+  if (firstNotConfirmed === -1 || firstNotConfirmed >= i) { return true; }
+  const ref = dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
+  ref.componentInstance.title = 'Burn discs in order';
+  ref.componentInstance.message = `Burn disc ${discNumber(firstNotConfirmed)} first, and click "Confirm disc burned". ` +
+    `In order, your discs' numbers have no gaps even if you stop partway: "Add missing files" then continues right ` +
+    `after your last disc.`;
+  ref.componentInstance.actionsNum = 1;
+  ref.componentInstance.action1Label = 'Ok';
+  ref.componentInstance.action1Callback = () => { ref.close(); };
+  return false;
+}
 
 /** What `files` (a disc's, by their paths on the disc) take up on it: their sizes, plus the list of original names the
  *  disc gets when a name on it is too long for a disc (see originalNamesFileBytes). Never more than a disc's capacity

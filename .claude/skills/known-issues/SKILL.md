@@ -164,9 +164,11 @@ None open.
   be closed at any time: Add missing files lists a file with pieces missing from the JSON, plans only those pieces,
   and before burning them checks that the new split gives back the pieces already on discs (their SHA-256), refusing
   the disc if the file changed. Needs the JSON - read from the discs, the pieces have no SHA-256, so it refuses. A
-  never-confirmed disc stays an empty entry, which recovery, Verify and Add missing files accept. Add missing files
-  drops the empty entries at the end (`step1`), so new discs take their numbers (`getNextDiscNumber`) - a disc burned
-  but never confirmed then shares its number with a new one; one before a confirmed disc stays. Discs burned before
+  never-confirmed disc stays an empty entry, which recovery, Verify and Add missing files accept. Discs are sent (and
+  so confirmed) in order (`mayBurnDisc` in `shared/utils/optical-media.ts`), so the empty entries are all at the end;
+  Add missing files drops them (`step1`), so new discs take their numbers (`getNextDiscNumber`) - a disc burned but
+  never confirmed then shares its number with a new one. An empty entry before a confirmed disc (a JSON from before
+  discs were burned in order) stays, so that disc keeps its number. Discs burned before
   the total was added (`<file>.part.NNN`) are taken as complete. Tested in `worker-ipc/test-split-file-resume.js` (a
   sliver included, burned or not) and `ui/test-add-missing-files-split-resume.js`; how a new sliver finds a disc, in
   `ui/test-backup-to-optical-media-overflow-disc.js`.
