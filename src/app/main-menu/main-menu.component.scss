@@ -1,16 +1,23 @@
 .center-screen {
     display: flex;
-    justify-content: center;
+    // "safe": a menu wider than the window starts at its left edge and scrolls, instead of being cut off on the left.
+    justify-content: safe center;
     align-items: center;
     text-align: center;
     min-height: 100vh;
 }
 
 
+// Two columns, one when the window is too narrow for two; a column is never narrower than its button.
 .grid-container {
 display: grid;
-grid-template-columns: 1fr 1fr;
+grid-template-columns: repeat(2, minmax(min-content, 1fr));
 grid-gap: 20px;
+}
+@media (max-width: 680px) {
+    .grid-container {
+        grid-template-columns: minmax(min-content, 1fr);
+    }
 }
 
 // Explicit, uniform sizing rather than relying on each source image's own raw pixel dimensions - keeps every

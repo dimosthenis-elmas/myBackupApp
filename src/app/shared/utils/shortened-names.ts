@@ -39,7 +39,7 @@ export async function confirmDiscNameAndPathLimits(dialog: MatDialog, relativePa
   const oneName = namesTooLong.length === 1;
   if (namesTooLong.length > 0 && !(await askToContinue(dialog, 'Names too long for a disc',
     `A disc allows names of up to ${MAX_DISC_NAME_LENGTH} characters. ${oneName ? 'This name is' : `These ${namesTooLong.length} names are`} ` +
-    `longer (a split file's name counts its pieces' ending, such as ".outOf.23.part.001").\n\n` +
+    `longer.\n\n` +
     `Recommended: cancel, shorten ${oneName ? 'it' : 'them'} in your folder, then ${howToRetry}.\n\n` +
     `Or continue: ${oneName ? 'it gets' : 'they get'} a shorter name on the disc only, such as "…and_Conditio~1f0c9a2e.pdf". ` +
     `Your files are not changed, and recovering with this app restores the original names.`,

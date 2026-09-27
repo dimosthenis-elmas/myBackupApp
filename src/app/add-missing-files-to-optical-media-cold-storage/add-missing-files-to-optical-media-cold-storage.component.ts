@@ -454,7 +454,12 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       loadingDialogRef.componentInstance.message = `You have not filled all of the required fields.`;
     }else{
       if(this.json_coldStorageFilesMetadata){
-        this.entireColdStorageMetadata = this.json_coldStorageFilesMetadata;
+        // Empty entries at the end are discs planned but never confirmed burned (the app was closed first): dropped, so
+        // new discs take their numbers. One before a burned disc stays - it keeps that disc's number.
+        const metadata = this.json_coldStorageFilesMetadata;
+        let discCount = metadata.length;
+        while (discCount > 0 && metadata[discCount - 1].length === 0) { discCount--; }
+        this.entireColdStorageMetadata = metadata.slice(0, discCount);
         this.diff(this.entireColdStorageMetadata.flat(), await this.scanMasterDirectoryWithProgress());
       }else{
         this.step='step_2';
@@ -746,31 +751,11 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     }
   }
 
-  /** Unlike backup-to-optical-media.component.ts (a brand new cold storage, always starting at disc 1), discs
-   * added here go onto the END of an already-existing collection - "Disc N" has to account for however many
-   * discs already exist, not just disk_id within this session. That existing count is always
-   * entireColdStorageMetadata.length: with a JSON, that's trustworthy since json_coldStorageFilesMetadata is
-   * schema-validated up front (see seedFromExternalMetadata/step1); without one, entireColdStorageMetadata IS
-   * the disc-by-disc reconstruction the user just built by physically inserting every disc
-   * (readAllDiscsToReconstructTheCompleteBackupFilePaths) - there's no separate "confirm the real total"
-   * number to reconcile against, since the user inserting every disc is what makes that reconstruction
-   * trustworthy in the first place (there used to be a second, manually-typed total for this - dropped since
-   * it duplicated exactly what entireColdStorageMetadata.length already answers correctly here, and had no way
-   * to actually stay in sync with it if the two ever disagreed).
-   *
-   * This is also exactly the same count partition()'s own metadata-JSON scaffold is built from
-   * (JSON.parse(JSON.stringify(this.entireColdStorageMetadata)).concat(...)), so a disc's label here and its
-   * actual position in the saved JSON can never disagree with each other - both come from the same value.
-   *
-   * Computed ONCE here (rather than separately in both sendToImgBurn's on-screen label message and
-   * createIBB_file's actual burned volume label, as it used to be) so the two can never drift apart again -
-   * found for real (2026-08-27) via ui/test-add-missing-files.js: sendToImgBurn's "please label this disc as
-   * disc N" message was using the bare local disk_id (always starting back at 1), while createIBB_file's real
-   * burned volume label correctly continued the numbering - so a user adding to an existing 1-disc collection
-   * would have been told to label their new disc "1" when its actual embedded label said "Disc 2", risking a
-   * real mislabeled disc (this app's own recovery flow depends on discs being labeled to match their JSON order
-   * - see the root README). Every disc number this wizard shows - its "Send disk N to ImgBurn" buttons and its
-   * messages - is this one too, so the screen and the labels on the discs always agree. */
+  /** The number of new disc `disk_id` in the collection: new discs go after the existing ones
+   *  (entireColdStorageMetadata - its empty entries at the end already dropped, see step1). Burned into the disc's
+   *  volume label, and the one every button and message of this wizard shows, so the screen and the labels on the
+   *  discs always agree. It is also the disc's place in the JSON (partition()'s scaffold, recordConfirmedDisc) plus
+   *  one - recovery asks for discs by this number. */
   getNextDiscNumber(disk_id: number): number {
     return this.entireColdStorageMetadata.length + disk_id + 1;
   }
@@ -1183,8 +1168,8 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   This creates an ImgBurn project. This will be used to send the files to ImbBurn.
   As for 'paths: Array<string>': An array of the paths to be written to the specific disk. Note that the paths are note full system paths,
   (for example C:\**\*\my_backup_dir\**\*\some_file). Rather they are of the form: my_backup_dir\**\*\some_file.
-  This C:\**\*\ part of the path is given in sourcePath. nextDiscNumber is computed once by the caller (see
-  getNextDiscNumber's own doc comment for why it's no longer recomputed here separately).
+  This C:\**\*\ part of the path is given in sourcePath. nextDiscNumber is the caller's getNextDiscNumber, the
+  same number the wizard shows for this disc.
   */
   async createIBB_file (disk_id:number, paths: Array<string>, sourcePath: string, nextDiscNumber: number): Promise<CreatedIbbProject>{
     const collectionName = this.coldStorageCollectionName.trim();

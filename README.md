@@ -126,10 +126,11 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   A disc is recorded in that JSON when you click "Confirm disc burned", not when you send it to ImgBurn - also a disc
   that holds only some pieces of a large file. So you can close the app at any time: run "Add missing files" later
   with that JSON, and it burns whatever is not on your discs yet, the missing pieces of a split file included. A disc
-  that was never confirmed stays an empty entry in the JSON, and its number is not used again - you may have burned it
-  without confirming it - so "Add missing files" numbers its new discs after it: with discs 1 and 2 of 5 confirmed,
-  the next new disc is disc 6. Recovery, "Verify integrity" and "Add missing files" all accept a JSON with such
-  entries.
+  that was never confirmed stays an empty entry in the JSON. "Add missing files" drops the empty entries at the end,
+  so its new discs take their numbers: with discs 1 and 2 of 5 confirmed, the next new disc is disc 3. If you burned
+  such a disc without confirming it, set it aside - a new disc gets its number. An empty entry before a confirmed
+  disc stays, so that disc keeps its number. Recovery, "Verify integrity" and "Add missing files" all accept a JSON
+  with empty entries.
 
 - **Verify integrity of cold storage disc:** a read-only wizard that checks a disc's SHA-256 checksums without
   recovering or copying anything - useful for periodically spot-checking discs you already have. Point it at the
@@ -218,9 +219,8 @@ These apply to more than one feature, or to the app as a whole.
   archive (e.g. a .zip) before backing them up instead.
 
 - **Long names and long paths** ("Backup to optical media", "Add missing files" and recovery): a disc holds file and
-  folder names of at most 127 characters. Before planning the discs, the app lists every name that is longer - for a
-  large file split into pieces, counting the ending such as ".outOf.23.part.001" its pieces add - and recommends that you cancel and shorten
-  them in your folder. If you continue instead, each one is burned under a shorter name, on the disc only: its first
+  folder names of at most 127 characters. Before planning the discs, the app lists every name that is longer and
+  recommends that you cancel and shorten them in your folder. If you continue instead, each one is burned under a shorter name, on the disc only: its first
   part, then "~" and a code of 8 characters, then its extension. Your own files are never renamed or changed. The
   metadata JSON records each original name, and so does a file on each such disc, `my-backup original names.json`
   (counted when the discs are planned), so recovering - from the JSON or from the discs alone - puts the original

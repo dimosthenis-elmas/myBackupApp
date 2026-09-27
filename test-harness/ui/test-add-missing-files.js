@@ -256,8 +256,10 @@ async function main() {
     const burnedEmptyDirEntry = existingMetadata[0].find((e) => e.path.endsWith(`\\${burnedEmptyDirRel}\\`));
     if (!burnedEmptyDirEntry) { throw new Error(`The existing disc's listing has no entry for the empty folder "${burnedEmptyDirRel}".`); }
     burnedEmptyDirEntry.stats.mtime = '2020-01-01T00:00:00.000Z';
-    fs.writeFileSync(existingMetadataJsonPath, JSON.stringify(existingMetadata, null, 2));
-    console.log(`Wrote existing cold storage metadata JSON (1 disc, ${existingMetadata[0].length} entries) to:\n  ${existingMetadataJsonPath}`);
+    // Two empty entries after it: discs planned but never confirmed burned (the app was closed first). The wizard
+    // drops them, so the new discs still continue right after disc 1 (Disc 2, 3, 4) and the updated JSON has no gap.
+    fs.writeFileSync(existingMetadataJsonPath, JSON.stringify([...existingMetadata, [], []], null, 2));
+    console.log(`Wrote existing cold storage metadata JSON (1 disc, ${existingMetadata[0].length} entries, then 2 empty entries) to:\n  ${existingMetadataJsonPath}`);
     printTree(existingDisc1Dir, 'Existing cold storage disc 1 contents (fed in via JSON)');
 
     // The save-dialog queue deliberately has existingMetadataJsonPath queued TWICE in a row: the first

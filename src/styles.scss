@@ -56,3 +56,22 @@ html, body {
 
 html, body { height: 100%; }
 body { margin: 0; font-family: Roboto, "Helvetica Neue", sans-serif; }
+
+// A button's text wraps when the window is narrow: the button grows taller to hold it, instead of keeping Angular
+// Material's fixed height with the wrapped lines spilling out of it. Buttons holding an image (the main menu's) keep
+// their own size.
+.mat-mdc-button-base.mdc-button:not(:has(img)) {
+  height: auto;
+  min-height: 36px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+// Steps' titles wrap too, instead of being cut off with "...".
+.mat-vertical-stepper-header {
+  height: auto;
+  min-height: 24px;
+}
+.mat-step-label {
+  white-space: normal;
+}
