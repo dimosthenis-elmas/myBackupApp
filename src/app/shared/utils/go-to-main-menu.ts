@@ -1,4 +1,5 @@
 import { Router } from '@angular/router';
+import { WorkerCommunicator as ipc } from '../../../../app/workers/worker-communicator';
 
 /** The one, single way anywhere in this app should ever send the user back to the main menu - always via a
  *  full page reload (window.location.reload(), after the navigation itself settles), never a bare
@@ -14,8 +15,12 @@ import { Router } from '@angular/router';
  *
  *  Every "send the user back to the main menu" call site in the app - the toolbar's own Home icon, every
  *  wizard's cancel/error paths, everywhere - should go through this, not call router.navigate(['main-menu'])
- *  directly. */
+ *  directly.
+ *
+ *  Stops whatever the worker is doing first (a copy, a comparison, waiting for a disc): the reload leaves nothing
+ *  that could wait for it, and it would otherwise go on in the background. */
 export function goToMainMenuAndReload(router: Router): void {
+  ipc.stop();
   router.navigate(['main-menu']).then(() => {
     window.location.reload();
   });

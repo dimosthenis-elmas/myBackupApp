@@ -44,7 +44,9 @@
  * metadata JSON via the app's own real get-file-paths-with-stats IPC (see lib/cold-storage-metadata.js) -
  * simulating a cold storage that was already backed up. The second half - plus the one built-in empty-directory
  * edge case AND the real 700MB file - is deliberately left OUT of that JSON, so the wizard's own diff has to
- * discover all of it as missing on its own. The wizard is then driven through: master folder -> medium -> JSON
+ * discover all of it as missing on its own. One more empty folder IS on that disc, recorded with an older modified
+ * time than the master's: the wizard must take it as backed up, not refuse the job as "changed". The wizard is then
+ * driven through: master folder -> medium -> JSON
  * checkbox -> select JSON -> Next (diff) -> select all (already pre-selected) -> collection name -> Next
  * (partition - asks where to save the updated JSON; this run deliberately picks the ORIGINAL JSON's own path
  * first, to exercise the "Overwrite original metadata JSON?" warning - see promptForUpdatedMetadataSavePath in
@@ -201,6 +203,13 @@ async function main() {
   const hasEmptyDir = fs.existsSync(path.join(masterDir, emptyDirRel));
   // Deliberately NOT copied into existingDisc1Dir - stays missing, same as the second half of normalFiles.
 
+  // An empty folder that IS already on the disc, recorded with an older modified time than it has in the master now
+  // (something was put in it and taken out again since): it is backed up, so the wizard must neither list it nor
+  // refuse the job as "files already on your discs have changed".
+  const burnedEmptyDirRel = 'burned-empty-folder';
+  fs.mkdirSync(path.join(masterDir, burnedEmptyDirRel));
+  fs.mkdirSync(path.join(existingDisc1Dir, burnedEmptyDirRel), { recursive: true });
+
   // generate-random-tree.js's own ownership marker (see MARKER_FILE_NAME in lib/safety.js) is a REAL file sitting
   // directly in masterDir, but it's deliberately NOT part of manifest.files (other tests exclude it from their
   // own manifest-hash-based comparisons for the same reason). It was never copied into existingDisc1Dir either
@@ -244,6 +253,9 @@ async function main() {
     console.log('\nAsking the app for the existing disc\'s real file listing (get-file-paths-with-stats)...');
     const existingListing = (await withHeartbeat(callWorker(win, 'get-file-paths-with-stats', { dirPath: existingDisc1Dir }), 'get-file-paths-with-stats (existing disc 1)')).res;
     existingMetadata = [normalizeForMetadata(existingListing, existingDisc1Dir)];
+    const burnedEmptyDirEntry = existingMetadata[0].find((e) => e.path.endsWith(`\\${burnedEmptyDirRel}\\`));
+    if (!burnedEmptyDirEntry) { throw new Error(`The existing disc's listing has no entry for the empty folder "${burnedEmptyDirRel}".`); }
+    burnedEmptyDirEntry.stats.mtime = '2020-01-01T00:00:00.000Z';
     fs.writeFileSync(existingMetadataJsonPath, JSON.stringify(existingMetadata, null, 2));
     console.log(`Wrote existing cold storage metadata JSON (1 disc, ${existingMetadata[0].length} entries) to:\n  ${existingMetadataJsonPath}`);
     printTree(existingDisc1Dir, 'Existing cold storage disc 1 contents (fed in via JSON)');

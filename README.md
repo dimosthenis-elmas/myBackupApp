@@ -118,7 +118,8 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   cold storage is out of sync with that file, as with any other file that changed.
 
   Both "Backup to optical media" and "Add missing files" ask you where to save the resulting cold storage metadata
-  JSON file, via a normal save dialog. Keep this file safe - it's what lets you use "Recover data from optical
+  JSON file, via a normal save dialog - named after the collection ("My Backup.json", and "My Backup - updated.json"
+  once files are added), so the JSONs of different collections can sit in one folder. Keep this file safe - it's what lets you use "Recover data from optical
   media" and "Add missing files" again without physically inserting every disc.
 
   A disc is recorded in that JSON when you click "Confirm disc burned", not when you send it to ImgBurn - also a disc
@@ -239,7 +240,12 @@ These apply to more than one feature, or to the app as a whole.
     registry, the folders on the PATH - and saves what it finds, without asking anything. Only if it cannot find one
     does it ask you: a dialog says which program is missing and what for, and "Choose 7z.exe" (or "Choose
     ImgBurn.exe") opens a file chooser to select it. With "Not now", Cumulative backup and Synchronize directories
-    still work, and the app asks again the next time it starts. You can also edit `config.json` by hand.
+    still work, and the app asks again the next time it starts; splitting or rejoining a large file then says that
+    7-Zip was not found. You can also edit `config.json` by hand.
+
+- The Home button (top left, in every feature) goes back to the main menu and stops whatever the app was doing - a
+  copy, a comparison, waiting for a disc. A Cumulative backup stopped this way is simply completed by its next run; a
+  Synchronize directories stopped this way may not have deleted everything yet - run it again.
 
 ---
 ## Build this project

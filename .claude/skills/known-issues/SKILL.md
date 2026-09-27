@@ -72,22 +72,55 @@ None open.
 - **Simplest fix:** make that failure an error, so the wizard's existing message shows. No test needed.
 - **Code:** `createIBB_file` in `app/workers/worker.ts`.
 
-#### 6. Cumulative backup to an exFAT drive may copy everything again on every run (unverified)
+#### 6. A wrongly chosen 7-Zip or ImgBurn is kept for good
+- **What happens:** the "not found" dialog saves whatever .exe is picked (7zFM.exe, a portable launcher, the ImgBurn
+  setup file): as that file exists, it is never asked again - every split then fails with "plan the discs again",
+  and "Send to ImgBurn" starts the wrong program. Only editing config.json gets out of it.
+- **How likely:** only where the program is not installed in the usual place (portable copies), but then it sticks.
+- **Simplest fix:** the chooser accepts only a file named 7z.exe or ImgBurn.exe, and says so otherwise.
+- **Code:** `askWhereExecutableIs` in `app.component.ts`; `locateExecutables` in `app/workers/worker.ts`.
+
+#### 7. Cumulative backup to an exFAT drive may copy everything again on every run (unverified)
 - **What happens:** exFAT keeps modified times to 10 ms; Cumulative copies when the source is newer by even 1 ms.
   The result is still correct - just slow.
 - **How likely:** exFAT is common on large USB drives, so worth one check: two runs onto an exFAT stick; the second
   must copy nothing.
 - **Simplest fix, if confirmed:** allow 2 seconds of difference, as Sync already does (`MIRROR_MTIME_TOLERANCE_MS`).
 
-#### 7. An unreadable folder inside Cumulative backup's backup folder is reported as "NOT backed up"
+#### 8. An unreadable folder inside Cumulative backup's backup folder is reported as "NOT backed up"
 - **What happens:** the "Some items were left out" warning also lists folders in the backup folder that can't be read,
   as if they were source folders left out.
 - **How likely:** rare (a drive root, which always did this, is now refused).
 - **Simplest fix:** list only the source's unreadable entries in that warning.
-- **Also:** Backup to optical media still allows a drive root as its source, which also backs up the recycle bin.
-  Simplest: refuse it there too, like Cumulative backup and Sync.
+- **Also:** Backup to optical media (its source) and Add missing files (its master) still allow a drive root, which
+  also backs up the recycle bin and warns about "System Volume Information" every time. Simplest: refuse it there too,
+  like Cumulative backup and Sync.
 
-#### 8. Small ones
+#### 9. The startup checks run again after every Home
+- **What happens:** Home reloads the whole app, so what runs at start runs again: the "leftover items in the temp
+  folder" offer comes back, and a 7-Zip or ImgBurn "not found" dialog answered "Not now" is asked again - "Not now"
+  lasts only until the next Home.
+- **How likely:** certain for anyone without 7-Zip or ImgBurn who only uses Cumulative backup and Sync.
+- **Simplest fix:** run the startup checks once per launch - a flag in `sessionStorage` survives the reload.
+- **Code:** `ngOnInit` in `app.component.ts`; `goToMainMenuAndReload` in `src/app/shared/utils/go-to-main-menu.ts`.
+
+#### 10. Add missing files is slow on a large collection
+- **What happens:** each file of the master is looked for by a search through the whole cold storage list - about 6
+  minutes at 100,000 files and an hour at 300,000 (measured). Planning looks up each ticked file in the master the
+  same way, without pausing, so the window freezes while many missing files are planned.
+- **How likely:** only for large collections.
+- **Simplest fix:** look them up in a Map keyed by path.
+- **Code:** `diff` and `partition` in `add-missing-files-to-optical-media-cold-storage.component.ts`.
+
+#### 11. Discs read without a JSON are numbered in the order they are inserted
+- **What happens:** read one by one ("This disc is now disc 3"), discs get the number of their turn, not the one on
+  their label. The JSON Add missing files then writes keeps that order, so a later recovery with it asks for discs by
+  numbers that don't match their labels.
+- **How likely:** whenever the discs are not inserted in label order.
+- **Simplest fix:** ask for them in order ("Insert disc 1") in the reading step.
+- **Code:** `readAllDiscsToReconstructTheCompleteBackupFilePaths` in `optical-disc-backup-data-retriever.component.ts`.
+
+#### 12. Small ones
 - **A failed Cumulative copy shows two error dialogs** - one `.then(...).catch(...)` chain instead of two handlers in
   `incremental-copying.component.ts`.
 - **Cancel during the first count of "Planning discs" is ignored** - the scan resets the stop flag; reset it once, in
@@ -95,13 +128,28 @@ None open.
 - **Sync: Cancel during the first comparison doesn't stop the second** - check `userCancelledOperation` before the
   second `diff` in `sync-dirs.component.ts`. Nothing is changed on disk.
 - **Sync's second comparison shows no progress** - the progress listener is removed when the first request finishes.
+- **Some Cancel buttons only hide their dialog** - "Comparing directories" and "Planning discs" in Add missing files,
+  and "Preparing ImgBurn project" in both disc wizards: the work goes on. Hide the button there (`showCancelButton =
+  false`), as the other steps do.
 - **A path containing `%NAME%`** (an environment variable) breaks 7-Zip and the ImgBurn launch, which go through
   `cmd.exe` - use `execFile` instead of `exec`.
 - **Backing up an empty folder to discs** ends in "this should never happen" - say "nothing to back up" at planning.
+- **Add missing files with nothing ticked** goes on to an empty list of discs and writes an "updated" JSON - say
+  "Tick at least one file" in `partition`.
+- **A JSON the user dropped is still used** - Add missing files uses a loaded JSON even after "Provide ... JSON" is
+  unticked; Recover data, after a good JSON and then a failed pick, still uses the good one. Check the tick box in
+  `step1`, and forget the loaded JSON when a pick fails.
+- **"No SHA-256 is known ... rather than reading the discs"** (resuming a split file) also shows when the JSON given
+  was itself written by an Add missing files run that read the discs, which has no SHA-256 - so the advice can't be
+  followed. Reword it: leave this file out (`splitLargeFileIntoPieces` in `app/workers/worker.ts`).
 - **A read-only save location for the metadata JSON** leaves a loading dialog open with no message - catch the error.
 - **Files that grew since planning** are burned without a fit check; ImgBurn then refuses the disc - plan again.
 - **Split pieces get discs of their own** - they never fill the last ordinary disc's free space (e.g. 3 DVDs where 2
   would do). Wasteful, not wrong.
+- **Recovered files are all read-only** - files on a disc are, and the copy keeps the mark. Clear it after
+  recovering (recovery only).
+- **The label burned on a disc is cut to 32 characters** - "<collection name> Disc N" loses "Disc N" when the name is
+  long. Shorten the name part so " Disc N" always fits; recovery doesn't need the label.
 - **A read-only file hard-linked into the backup from outside** loses its read-only mark outside too when it is
   replaced. Only if something else made such hard links.
 
@@ -135,12 +183,18 @@ None open.
   the disc if the file changed. Needs the JSON - read from the discs, the pieces have no SHA-256, so it refuses. A
   never-confirmed disc stays an empty entry, which recovery, Verify and Add missing files accept; its number is not
   reused (it may have been burned unconfirmed), so new discs are numbered after it (`getNextDiscNumber`). Discs burned before
-  the total was added (`<file>.part.NNN`) are taken as complete. Tested in `worker-ipc/test-split-file-resume.js` and
-  `ui/test-add-missing-files-split-resume.js`.
+  the total was added (`<file>.part.NNN`) are taken as complete. Tested in `worker-ipc/test-split-file-resume.js` (a
+  sliver included, burned or not) and `ui/test-add-missing-files-split-resume.js`; how a new sliver finds a disc, in
+  `ui/test-backup-to-optical-media-overflow-disc.js`.
 - **A split file's pieces are ticked together** on every disc, and chosen together in recovery.
 - **Add missing files doesn't notice a large (split) file that changed after all its pieces were burned** - accepted
   as a compromise of cold storage. Ordinary files that changed are still caught ("cold storage out of sync"), and so
   is a split file with pieces still missing (by the SHA-256 check above).
+- **An empty folder already on a disc counts as backed up** in Add missing files, whatever its modified time now - only
+  files are compared by date and size. Tested in `ui/test-add-missing-files.js`.
+- **Home stops whatever runs** (a copy, a comparison, waiting for a disc - `goToMainMenuAndReload` sends a stop) and
+  reloads the app; a Sync stopped this way may not have deleted everything yet - run it again. A message from before
+  the reload is only logged (`sendAndAwaitResponse`). Tested in `ui/test-home-during-copy.js`.
 - **Recovery stops with an error** where a name is a file on one disc but a folder on another - only possible when
   two discs of one backup disagree.
 - **No Linux build:** paths are joined with `\\`, and ImgBurn is Windows-only.
@@ -152,3 +206,7 @@ None open.
 - A new test script goes in `test-harness/run-all-tests.bat` (keep its CRLF line endings) and in `docs/TESTING.md`.
 - `node test-harness/cleanup.js` clears test scratch data. The disc tests refuse to run while an optical drive has a
   disc in it; the long-names tests need ImgBurn installed.
+- `WorkerCommunicator.onDestroy()` removes no listener: Node's `removeAllListeners` clears everything only when called
+  with no argument, and the preload bridge always passes one. Harmless - every finished request clears the worker's
+  channel, and Home reloads the app. Don't make it a no-argument call: that would also remove the `'app-error'`
+  listener that shows the worker's error dialogs.

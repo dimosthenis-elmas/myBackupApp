@@ -19,6 +19,7 @@ import { OPTICAL_MEDIA, OpticalMedium } from '../shared/utils/optical-media';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
 import { confirmDiscNameAndPathLimits, metadataEntriesForDisc } from '../shared/utils/shortened-names';
+import { metadataJsonFileName } from '../shared/utils/metadata-file-name';
 
 import {FormBuilder, Validators, FormsModule, ReactiveFormsModule} from '@angular/forms';
 import {MatButtonModule} from '@angular/material/button';
@@ -465,7 +466,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
    * pulled out of WriteToOpticalMediaProceed's "Next" callback so that, if the user cancels the save dialog,
    * we can just re-prompt without redoing the (potentially slow) partitioning work. */
   private async proceedToStep2AfterChoosingSavePath(): Promise<void> {
-    const chosenPath = await this.chooseSaveFile('coldStorageMetadata.json');
+    const chosenPath = await this.chooseSaveFile(metadataJsonFileName(this.coldStorageCollectionName));
     if (!chosenPath) {
       const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
       infoDialog.disableClose = true;

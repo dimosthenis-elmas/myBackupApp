@@ -123,9 +123,9 @@ export class WorkerCommunicator {
      *     message, which only makes sense for the plain, already-unwrapped 'response.res' shape). Unifying
      *     this silently during a refactor would have been an easy way to introduce a regression that no
      *     compiler would catch, so it is preserved explicitly per call instead.
-     *   - Any other key while this one is in flight (or a stray 'stop' acknowledgement) is handled the same
-     *     way for every method: 'stop' is ignored, anything else is treated as "the previous command on this
-     *     shared channel hasn't finished yet" and rejects with a descriptive string.
+     *   - A message for any other key while this one is in flight is not this request's: requests are sent one at
+     *     a time (see Queueing below), so it can only be left over from a request made before the app reloaded.
+     *     It is logged and ignored.
      *
      *  Queueing: this worker only supports one in-flight command at a time (see worker.ts's own comments to
      *  that effect) - previously that was only a convention every caller happened to follow (always await
@@ -191,14 +191,10 @@ export class WorkerCommunicator {
                             rejectCaller(rejectPayload === 'response.res' ? response.res : withReadableToString(response));
                             resolveTurn();
                         }
-                    } else if (response.key === 'stop') {
-                        // do nothing, ignore this one.
-                    } else {
-                        const err = `It is possible that the previous command has not finished and you sent ${key} to the worker. `
-                            + `This worker only supports one command at a time. Use await or .then() before sending the next command`;
-                        console.error(err);
-                        rejectCaller(err);
-                        resolveTurn();
+                    } else if (response.key !== 'stop') {
+                        // Requests are sent one at a time (see queueTail), so this is from one made before the app
+                        // reloaded (see goToMainMenuAndReload) - its last messages can still arrive. Not this request's.
+                        console.warn(`Ignored a "${response.key}" message from the worker while waiting for "${key}" - left over from before the app reloaded.`);
                     }
                 };
                 window.electronAPI.ipcRenderer_on('message-from-worker', listener);

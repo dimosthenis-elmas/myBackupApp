@@ -252,8 +252,13 @@ script plays that through the worker, with a 1.1 GB file (3 pieces) and real 7-Z
    session 1 and pieces 2 and 3 from session 2, the file is rejoined byte for byte.
 4. Session 3: the file is rewritten with other content, same size - splitting it for its missing pieces is refused
    ("can no longer be split into the pieces already on your discs"), and no piece of it is left behind.
+5. A sliver: a file 50 bytes short of two full pieces, planned as 2, which 7-Zip splits into 3. Sending piece 1 gives
+   piece 1 and the sliver, and all three are named `sliver.bin.outOf.3.part.NNN`. With pieces 1 and 3 burned, a later
+   session plans only piece 2, and its split gives back the burned sliver (same SHA-256 - its end holds 7-Zip's own
+   record of the archive) and no new one; with only piece 1 burned, pieces 2 and 3 are planned. Both times the three
+   rejoin into the file byte for byte.
 
-The file is sparse, with 32 bytes of its own every 100 MB, so every piece has content of its own and a change shows
+The files are sparse, with 32 bytes of its own every 100 MB, so every piece has content of its own and a change shows
 in piece 1.
 
 ### `test-scan-edge-cases.js` — links, unreadable entries, too-large files, and a whole drive as the folder

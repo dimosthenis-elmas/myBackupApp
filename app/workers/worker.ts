@@ -657,6 +657,10 @@ const REQUIRED_EXECUTABLES: { [key: string]: RequiredExecutable } = {
   },
 };
 
+/** What splitting a file or putting one back together says when config.json does not point to 7-Zip - the app starts
+ *  without it ("Not now" - see locateExecutables), and finds it by itself at the next start once it is installed. */
+const SEVEN_ZIP_NOT_FOUND = '7-Zip was not found. Install it from https://www.7-zip.org, then restart the app - it finds 7-Zip by itself.';
+
 /** The registry keys under which installers record where they installed a program ("InstallLocation"), in its
  *  own subkey - "7-Zip" and "ImgBurn" for these two. */
 const UNINSTALL_REGISTRY_KEYS = [
@@ -1168,6 +1172,9 @@ const mergeFileParts = async function(partFilePaths: Array<string>, originalFile
   } catch (error) {
     return { merged: false, message: 'Could not read the 7-Zip executable path from the app configuration.' };
   }
+  if (!isExistingFile(_7zipExecutablePath)) {
+    return { merged: false, message: SEVEN_ZIP_NOT_FOUND };
+  }
 
   // 7-Zip locates the sibling volumes on its own once given the first one (.001, .002, ...).
   const sortedParts = partFilePaths.slice().sort();
@@ -1539,6 +1546,7 @@ const piecesInFolder = function (folder: string, fileName: string): Array<Piece 
  *  Returns the name of the one piece more than planned (a "sliver" - see estimateLargeFileSplitPartials), or null.
  *  Throws, leaving no piece of the file behind, when the file cannot be split as planned. */
 const splitLargeFileIntoPieces = async function (originalAbsolutePath: string, fileName: string, partialDir: string, planned: PlannedSplit, _7zipExecutablePath: string): Promise<string | null> {
+  if (!isExistingFile(_7zipExecutablePath)) { throw new Error(SEVEN_ZIP_NOT_FOUND); }
   const pieceCountNow = estimateLargeFileSplitPartials(fs.statSync(originalAbsolutePath).size).length;
   if (pieceCountNow !== planned.estimatedPieceCount) {
     throw new Error(`"${originalAbsolutePath}" has changed since the discs were planned: it now needs ${pieceCountNow} ` +

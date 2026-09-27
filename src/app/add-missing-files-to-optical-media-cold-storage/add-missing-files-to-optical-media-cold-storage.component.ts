@@ -41,6 +41,7 @@ import { PIECE_ENDING, parsePiece, missingPieceNumbers, withoutPieceTotal, Piece
 import { OPTICAL_MEDIA } from '../shared/utils/optical-media';
 import { OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { backedUpPath, confirmDiscNameAndPathLimits, isOriginalNamesList, metadataEntriesForDisc } from '../shared/utils/shortened-names';
+import { metadataJsonFileName } from '../shared/utils/metadata-file-name';
 const mySchema =require('../schemas/filesMetadata.schema.json');
 
 @Component({
@@ -246,14 +247,14 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   /** Default filename (and, when available, directory) to seed the "save updated metadata" dialog with -
    * deliberately DIFFERENT from the original externalMetadataJSONpath (the file loaded via getJSON()), so that
    * just accepting the dialog's default doesn't silently overwrite it. Reusing the same name would be an easy
-   * trap: 'coldStorageMetadata.json' is also the exact default name backup-to-optical-media.component.ts uses
-   * when first creating this JSON, and Electron's save dialog re-opens in the last folder used by a dialog in
-   * this app - which, right after getJSON() ran, is the very folder the original file lives in. So without this,
-   * the dialog would often pre-fill to the exact original path, and a user who just clicks "Save" would
-   * unknowingly overwrite the file they loaded from - even though they were technically asked. */
+   * trap: Electron's save dialog re-opens in the last folder used by a dialog in this app - which, right after
+   * getJSON() ran, is the very folder the original file lives in. So without this, the dialog would often pre-fill
+   * to the exact original path, and a user who just clicks "Save" would unknowingly overwrite the file they loaded
+   * from - even though they were technically asked. Without a loaded JSON (the discs were read), the collection's
+   * name gives the file name, as for a new backup (see metadataJsonFileName). */
   private suggestedUpdatedMetadataSavePath(): string {
     if (!this.externalMetadataJSONpath) {
-      return 'coldStorageMetadata.json';
+      return metadataJsonFileName(this.coldStorageCollectionName, ' - updated');
     }
     const lastSep = Math.max(this.externalMetadataJSONpath.lastIndexOf('\\'), this.externalMetadataJSONpath.lastIndexOf('/'));
     const dir = lastSep >= 0 ? this.externalMetadataJSONpath.slice(0, lastSep + 1) : '';
@@ -534,7 +535,10 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       const b = coldStoragePathsWithoutPartials.find((o)=> o.path==file.path.replace(this.backup.targetPath, this.opticalDiscVolumeLetter));
       if (b == undefined) {
         missingFiles.push(file); // missing
-      } else if ((new Date(file.stats.mtime).getTime() > new Date(b.stats.mtime).getTime()) || (file.stats.size != b.stats.size)) {
+      } else if (!file.stats.isDirectory && ((new Date(file.stats.mtime).getTime() > new Date(b.stats.mtime).getTime()) || (file.stats.size != b.stats.size))) {
+        // Only files are compared: an empty folder is backed up once it is on a disc. Its modified time changes
+        // whenever something is put in it and taken out again, with nothing of it changed - as diff in worker.ts
+        // treats an empty folder too.
         // Wrapped both sides in `new Date(...).getTime()`: file.stats.mtime (from a live ipc.getFilePathsWithStats
         // scan of the master directory) is always a real Date, but b.stats.mtime is only a Date when the cold
         // storage side came from physically re-inserting each disc - when it came from a loaded metadata JSON

@@ -420,7 +420,9 @@ NORMAL files into a separate folder and turning it into a metadata JSON via the 
 `get-file-paths-with-stats` IPC (same technique as `test-recover-from-json-metadata.js`, shared via
 `lib/cold-storage-metadata.js`); the other half - plus the one built-in empty-directory edge case AND a real
 700MB file - is deliberately left out of that JSON, so the wizard's own diff has to discover all of it as missing
-on its own.
+on its own. One more empty folder IS on that disc, recorded with an older modified time than the master's (as after
+something was put in it and taken out again): the wizard takes it as backed up, rather than refusing the whole job as
+"files already on your discs have changed".
 
 **It also covers a real large-file split**, genuinely different here than everywhere else it's tested: unlike
 `backup-to-optical-media.component.ts`'s `WriteToOpticalMediaProceed` (which tries WITHOUT splitting first, only
@@ -581,6 +583,18 @@ copy stops and the deletions never start - this used to end in "Directory synchr
 "Stopping the synchronization" dialog stuck open). In the last two the wizard must show "Directory synchronization
 has stopped", close its "Stopping" dialog, show no error, no longer show its Cancel button (nor once a sync
 completes - checked by test-sync-dirs.js), and leave every leftover file in place.
+
+## `test-home-during-copy.js`
+
+```
+node test-harness/ui/test-home-during-copy.js
+```
+
+The toolbar's Home button while Cumulative backup is copying 6000 small files into an empty backup folder. Home goes
+back to the main menu - the app reloads - and stops the copy on its way: a few seconds later nothing more arrives in
+the backup folder, only part of the files are there, and no temporary copy (`~my-backup-copy-<hex>.tmp`) is left.
+No dialog shows after Home - in particular not "the previous command has not finished", which a copy still running in
+the background would cause - and the reloaded app compares the same folders again without an error dialog.
 
 ## `test-wizard-error-dialogs.js`
 

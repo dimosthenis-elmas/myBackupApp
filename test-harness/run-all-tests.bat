@@ -73,6 +73,7 @@ call :run "ui: test-recover-integrity-detects-corruption" "test-harness\ui\test-
 call :run "ui: test-verify-cold-storage-integrity" "test-harness\ui\test-verify-cold-storage-integrity.js"
 call :run "ui: test-startup-temp-snackbar" "test-harness\ui\test-startup-temp-snackbar.js"
 call :run "ui: test-sync-dirs-cancel" "test-harness\ui\test-sync-dirs-cancel.js"
+call :run "ui: test-home-during-copy" "test-harness\ui\test-home-during-copy.js"
 call :run "ui: test-wizard-error-dialogs" "test-harness\ui\test-wizard-error-dialogs.js"
 call :run "ui: test-recover-copy-failure" "test-harness\ui\test-recover-copy-failure.js"
 call :run "ui: test-install-path-special-characters" "test-harness\ui\test-install-path-special-characters.js"
