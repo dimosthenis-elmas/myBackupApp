@@ -888,6 +888,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       });
 
       const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+      loadingDialogRef.componentInstance.showCancelButton = false;
       loadingDialogRef.componentInstance.message = "Preparing ImgBurn project";
 
       // What this disc needed created in the temp folder - split partials - deleted again once the disc is confirmed

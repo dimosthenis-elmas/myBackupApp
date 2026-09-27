@@ -49,10 +49,14 @@ async function main() {
     throw new Error(`_7zipExecutablePath in appData/config.json ("${sevenZipPath}") does not exist - 7-Zip must be installed and configured for this test (same requirement the app itself has for merging).`);
   }
 
-  // 1. Build a small source file with known, verifiable content.
+  // 1. Build a small source file with known, verifiable content. Its name holds "%USERNAME%": 7-Zip must get it as
+  //    it is - through cmd.exe it would get the user's name instead, and find no such pieces.
+  if (!process.env.USERNAME) {
+    throw new Error('USERNAME is not set - the file name below would then test nothing.');
+  }
   const scratchRoot = path.join(FIXTURES_ROOT, `merge-test-${Date.now()}`);
   fs.mkdirSync(scratchRoot, { recursive: true });
-  const originalFileName = 'merge-test-source.bin';
+  const originalFileName = 'merge %USERNAME% source.bin';
   const originalPath = path.join(scratchRoot, originalFileName);
   const originalBytes = crypto.randomBytes(50_000); // 50 KB - small and fast
   fs.writeFileSync(originalPath, originalBytes);

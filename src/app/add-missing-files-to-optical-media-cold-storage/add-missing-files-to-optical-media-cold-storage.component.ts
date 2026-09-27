@@ -415,8 +415,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       (piecesByFile.get(piece.file) ?? piecesByFile.set(piece.file, []).get(piece.file)!).push({ entry: itm, piece });
     }
     this.incompleteSplitFiles = [];
+    const masterByPath = new Map(masterPaths.map((o) => [o.path.replace(targetPathWithoutTrailingBackslash, ""), o]));
     for (const [file, pieces] of piecesByFile) {
-      const largeFile = masterPaths.find((o)=> o.path.replace(targetPathWithoutTrailingBackslash, "")==file);
+      const largeFile = masterByPath.get(file);
       if (largeFile === undefined) {
         r.push(...pieces.map((p) => p.entry));
         continue;
@@ -503,6 +504,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   async diff(coldStoragePathsWithStats: filesMetadata[], masterPathsWithStats: filesMetadata[]){
     this.step='step_3';
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+    loadingDialogRef.componentInstance.showCancelButton = false;
     loadingDialogRef.componentInstance.message = 'Comparing directories';
     this.masterPathsWithStats = masterPathsWithStats;
     await this.holdOn(500);
@@ -530,9 +532,13 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     // blocking the UI solid for the whole comparison.
     const totalFilesToCompare = masterPathsWithStats_.length;
     let missingFiles: filesMetadata[] = [];
+    // By path, so each file is found at once however large the collection (paths are unique - see
+    // replacePartialFileSplits).
+    const coldStorageByPath = new Map(coldStoragePathsWithoutPartials.map((o) => [o.path, o]));
+    let lastYield = performance.now();
     for (let index = 0; index < totalFilesToCompare; index++) {
       const file = masterPathsWithStats_[index];
-      const b = coldStoragePathsWithoutPartials.find((o)=> o.path==file.path.replace(this.backup.targetPath, this.opticalDiscVolumeLetter));
+      const b = coldStorageByPath.get(file.path.replace(this.backup.targetPath, this.opticalDiscVolumeLetter));
       if (b == undefined) {
         missingFiles.push(file); // missing
       } else if (!file.stats.isDirectory && ((new Date(file.stats.mtime).getTime() > new Date(b.stats.mtime).getTime()) || (file.stats.size != b.stats.size))) {
@@ -565,13 +571,13 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         break;
       } // else: backed up - not included
 
-      // Reported every 50 items rather than every single one (same reasoning as SCAN_PROGRESS_REPORT_INTERVAL in
-      // worker.ts) - and always on the very last item, so the bar visibly reaches 100% right as this finishes
-      // instead of stopping short whenever totalFilesToCompare isn't an exact multiple of the interval.
+      // Progress shown, and the window let redraw, about every 50 ms - and on the very last item, so the bar reaches
+      // 100%. Not every few items: each pause takes about 6 ms, longer than comparing thousands of files.
       const isLastItem = index === totalFilesToCompare - 1;
-      if ((index + 1) % 50 === 0 || isLastItem) {
+      if (performance.now() - lastYield >= 50 || isLastItem) {
         loadingDialogRef.componentInstance.percent = Math.round(((index + 1) / totalFilesToCompare) * 100);
         await new Promise<void>(resolve => setTimeout(resolve, 0));
+        lastYield = performance.now();
       }
     }
 
@@ -649,6 +655,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       this.coldStorageMetadataJSONPathToSave = chosenPath;
 
       let loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+      loadingDialogRef.componentInstance.showCancelButton = false;
       loadingDialogRef.componentInstance.message = 'Planning discs';
       // Real 0-100% across partitionBackupToOpticalMedia's bin-packing loop ("Packing items (i of N)", one disc
       // at a time - see worker.ts). Its scan phase never runs here at all - selectedPathsWithMetadata below is
@@ -669,19 +676,11 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
           }
         });
       });
-      let selectedPaths = this.filesTree.getSelectedData().map((m)=>{return this.backup.targetPath.concat(m)});
-
-      let selectedPathsWithMetadata: filesMetadata[] = [];
-      for (let index = 0; index < selectedPaths.length; index++) {
-        let itm = this.masterPathsWithStats.find((o)=> o.path==selectedPaths[index]);
-        if(itm!==undefined){
-          selectedPathsWithMetadata.push(itm);
-        }
-      }
-
-      //console.log(selectedPaths);
-
-      //console.log(this.masterPathsWithStats);
+      // By path, so each ticked file is found at once however large the master.
+      const masterByPath = new Map(this.masterPathsWithStats.map((o) => [o.path, o]));
+      let selectedPathsWithMetadata: filesMetadata[] = this.filesTree.getSelectedData()
+        .map((m) => masterByPath.get(this.backup.targetPath.concat(m)))
+        .filter((itm): itm is filesMetadata => itm !== undefined);
       console.log(selectedPathsWithMetadata);
 
       // Generated once per job (partition() is only ever called once per job - unlike backup-to-optical-
@@ -1008,6 +1007,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       });
 
       const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+      loadingDialogRef.componentInstance.showCancelButton = false;
       loadingDialogRef.componentInstance.message = "Preparing ImgBurn project";
 
       // What this disc needed created in the temp folder - split partials - deleted again once the disc is confirmed

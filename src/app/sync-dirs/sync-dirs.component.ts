@@ -348,9 +348,10 @@ export class SyncDirsComponent {
     // (see countAllFilesQuick/parseScanItemsProgress) rather than an open-ended running count, and the second
     // half (50-100%) is its comparison phase, reporting its own real "(i of N)" (see parseProgressFromLine) -
     // both known totals, so both halves are genuine percentages, not an estimate. Shown by LoadingDialogComponent
-    // as just its filling circle (`percent`) - no text or counter. Wraps BOTH ipc.diff() calls below (files-to-copy, then files-to-delete) - each restarts its own 0-100% arc,
-    // since they're two separate comparisons over different totals, not one continuous operation.
-    const diffProgressListener = ipc.onResponseFromWorker((event, response) => {
+    // as just its filling circle (`percent`) - no text or counter. Covers BOTH ipc.diff() calls below (files-to-copy, then files-to-delete) - each restarts its own 0-100% arc,
+    // since they're two separate comparisons over different totals, not one continuous operation. Registered for
+    // each: a finished request removes every listener on the worker's channel (see sendAndAwaitResponse).
+    const listenForDiffProgress = () => ipc.onResponseFromWorker((event, response) => {
       this.ngZone.run(() => {
         if (response.key === 'diff' && response.status === 'running') {
           const lines = response.res as string[];
@@ -366,11 +367,13 @@ export class SyncDirsComponent {
         }
       });
     });
+    let diffProgressListener = listenForDiffProgress();
 
     // try/catch: without it, a rejected ipc.diff() (e.g. sourcePath/targetPath became inaccessible) threw
     // unhandled here, leaving the disableClose loading dialog open forever with no error shown.
     try {
       this.pathsOfFilesToBeCopied = await this.getPathsOfFilesToBeCopied();
+      diffProgressListener = listenForDiffProgress();
       this.pathsOfFilesToBeDeleted = await this.getPathsOfFilesToBeDeleted();
       this.letterCaseRenames = (await ipc.matchLetterCase(this.backup.sourcePath, this.backup.targetPath, false)).res;
     } catch (error) {

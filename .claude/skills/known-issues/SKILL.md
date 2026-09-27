@@ -70,14 +70,7 @@ None open.
 - **Simplest fix:** the chooser accepts only a file named 7z.exe or ImgBurn.exe, and says so otherwise.
 - **Code:** `askWhereExecutableIs` in `app.component.ts`; `locateExecutables` in `app/workers/worker.ts`.
 
-#### 6. Cumulative backup to an exFAT drive may copy everything again on every run (unverified)
-- **What happens:** exFAT keeps modified times to 10 ms; Cumulative copies when the source is newer by even 1 ms.
-  The result is still correct - just slow.
-- **How likely:** exFAT is common on large USB drives, so worth one check: two runs onto an exFAT stick; the second
-  must copy nothing.
-- **Simplest fix, if confirmed:** allow 2 seconds of difference, as Sync already does (`MIRROR_MTIME_TOLERANCE_MS`).
-
-#### 7. An unreadable folder inside Cumulative backup's backup folder is reported as "NOT backed up"
+#### 6. An unreadable folder inside Cumulative backup's backup folder is reported as "NOT backed up"
 - **What happens:** the "Some items were left out" warning also lists folders in the backup folder that can't be read,
   as if they were source folders left out.
 - **How likely:** rare (a drive root, which always did this, is now refused).
@@ -86,7 +79,7 @@ None open.
   also backs up the recycle bin and warns about "System Volume Information" every time. Simplest: refuse it there too,
   like Cumulative backup and Sync.
 
-#### 8. The startup checks run again after every Home
+#### 7. The startup checks run again after every Home
 - **What happens:** Home reloads the whole app, so what runs at start runs again: the "leftover items in the temp
   folder" offer comes back, and a 7-Zip or ImgBurn "not found" dialog answered "Not now" is asked again - "Not now"
   lasts only until the next Home.
@@ -94,15 +87,7 @@ None open.
 - **Simplest fix:** run the startup checks once per launch - a flag in `sessionStorage` survives the reload.
 - **Code:** `ngOnInit` in `app.component.ts`; `goToMainMenuAndReload` in `src/app/shared/utils/go-to-main-menu.ts`.
 
-#### 9. Add missing files is slow on a large collection
-- **What happens:** each file of the master is looked for by a search through the whole cold storage list - about 6
-  minutes at 100,000 files and an hour at 300,000 (measured). Planning looks up each ticked file in the master the
-  same way, without pausing, so the window freezes while many missing files are planned.
-- **How likely:** only for large collections.
-- **Simplest fix:** look them up in a Map keyed by path.
-- **Code:** `diff` and `partition` in `add-missing-files-to-optical-media-cold-storage.component.ts`.
-
-#### 10. Discs read without a JSON are numbered in the order they are inserted
+#### 8. Discs read without a JSON are numbered in the order they are inserted
 - **What happens:** read one by one ("This disc is now disc 3"), discs get the number of their turn, not the one on
   their label. The JSON Add missing files then writes keeps that order, so a later recovery with it asks for discs by
   numbers that don't match their labels.
@@ -110,19 +95,13 @@ None open.
 - **Simplest fix:** ask for them in order ("Insert disc 1") in the reading step.
 - **Code:** `readAllDiscsToReconstructTheCompleteBackupFilePaths` in `optical-disc-backup-data-retriever.component.ts`.
 
-#### 11. Small ones
+#### 9. Small ones
 - **A failed Cumulative copy shows two error dialogs** - one `.then(...).catch(...)` chain instead of two handlers in
   `incremental-copying.component.ts`.
 - **Cancel during the first count of "Planning discs" is ignored** - the scan resets the stop flag; reset it once, in
   the request handler.
 - **Sync: Cancel during the first comparison doesn't stop the second** - check `userCancelledOperation` before the
   second `diff` in `sync-dirs.component.ts`. Nothing is changed on disk.
-- **Sync's second comparison shows no progress** - the progress listener is removed when the first request finishes.
-- **Some Cancel buttons only hide their dialog** - "Comparing directories" and "Planning discs" in Add missing files,
-  and "Preparing ImgBurn project" in both disc wizards: the work goes on. Hide the button there (`showCancelButton =
-  false`), as the other steps do.
-- **A path containing `%NAME%`** (an environment variable) breaks 7-Zip and the ImgBurn launch, which go through
-  `cmd.exe` - use `execFile` instead of `exec`.
 - **Backing up an empty folder to discs** ends in "this should never happen" - say "nothing to back up" at planning.
 - **Add missing files with nothing ticked** goes on to an empty list of discs and writes an "updated" JSON - say
   "Tick at least one file" in `partition`.
@@ -167,7 +146,7 @@ None open.
 - **Recovered files are writable:** on a disc every file is read-only (measured on a real ImgBurn disc), and a copy
   keeps that mark, so recovery clears it (`clearReadOnly` in `createTree`, recovery only). A file that was read-only
   in the folder backed up comes back writable too - the disc cannot tell. Tested in `ui/test-recover-single-disc.js`.
-- **FAT / FAT32 are not supported** (stated in the README).
+- **Only NTFS is supported** - not FAT, FAT32 or exFAT (stated in the README).
 - **Links are never backed up**, by any feature: left out, logged in logs.txt, and counted in a dialog the wizard
   already shows. Sync deletes links in its target (the link itself); Cumulative backup never deletes. A chosen folder
   that is a link, or inside one, is refused (Cumulative, Sync, recovery).
@@ -214,3 +193,12 @@ None open.
   with no argument, and the preload bridge always passes one. Harmless - every finished request clears the worker's
   channel, and Home reloads the app. Don't make it a no-argument call: that would also remove the `'app-error'`
   listener that shows the worker's error dialogs.
+- So a progress listener (`ipc.onResponseFromWorker`) lasts only until the next request finishes: register it again
+  for each request it should follow, as Sync's two comparisons do.
+- A pause that lets the window redraw (`setTimeout(0)`) takes about 6 ms here: in a long loop, pause about every 50 ms
+  (`yieldIfDue` in `files-tree.component.ts`, `diff` in Add missing files), never every few items - pausing every 25
+  files made a 100,000-file tree take 21 s instead of 0.3 s.
+- 7-Zip and ImgBurn are started through `cmd.exe` with their paths in environment variables (`execWithPaths` in
+  `app/workers/worker.ts`): `cmd.exe` expands only once, so a `%NAME%` in a path stays as it is (tested by
+  `worker-ipc/test-merge.js`). Not `execFile`: the tests stand the programs in with `.bat` files, which `execFile`
+  cannot start from a folder with spaces (the repository's own) - and Node 20.12.2 and later refuse outright.

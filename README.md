@@ -237,8 +237,8 @@ These apply to more than one feature, or to the app as a whole.
   have not been tested. The app might not work on Linux (or macOS): parts of it assume Windows - its paths, and
   ImgBurn, which only runs on Windows.
 
-- **Not supported: the FAT file system** (FAT, FAT32). Don't use the app with folders on a drive formatted as FAT -
-  e.g. many USB sticks and memory cards; format such a drive as NTFS first.
+- **Not supported: the FAT file systems** (FAT, FAT32, exFAT). Don't use the app with folders on a drive formatted as
+  FAT or exFAT - e.g. many USB sticks, memory cards and large external drives; format such a drive as NTFS first.
 
 - On startup, the app runs a couple of housekeeping checks:
   - It checks whether its internal temp folder has leftover split pieces (`.part.NNN` files) from an interrupted

@@ -215,7 +215,8 @@ async function main() {
       threwAsExpected = true;
       errorMessage = (err && err.message) || String(err);
     }
-    results.throwsOnGenuineMismatch = threwAsExpected;
+    // For the wrong count - not just any error (the stub not running at all would also be one).
+    results.throwsOnGenuineMismatch = threwAsExpected && /produced 5 pieces but the disc plan expected 2/.test(errorMessage);
     console.log(`  materialize call rejected as expected: ${threwAsExpected}`);
     if (threwAsExpected) { console.log(`    error: ${errorMessage}`); }
 

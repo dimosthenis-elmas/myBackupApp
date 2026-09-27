@@ -1141,6 +1141,23 @@ const getAllFilePathsWithStats = async function (
   return arrayOfFiles
 }
 
+/** Runs `command` through cmd.exe (as exec does), each path in `paths` handed over in an environment variable of that
+ *  name and written into `command` as "%NAME%". cmd.exe expands variables only once, so a path reaches the program as
+ *  it is - written into the command itself, a "%NAME%" in the path would be expanded. An error's message names the
+ *  paths themselves again. */
+const execWithPaths = async function (command: string, paths: Record<string, string>): Promise<{ stdout: string, stderr: string }> {
+  const util = require('util');
+  const exec = util.promisify(require('child_process').exec);
+  try {
+    return await exec(command, { env: { ...process.env, ...paths } });
+  } catch (error) {
+    if (error && typeof (error as any).message === 'string') {
+      (error as any).message = (error as any).message.replace(/%(\w+)%/g, (whole: string, name: string) => paths[name] ?? whole);
+    }
+    throw error;
+  }
+}
+
 /** Reassembles a large file that was split into 7-Zip volumes (see partitionBackupToOpticalMedia / the
  *  "-v${LARGE_FILE_SPLIT_VOLUME_SIZE_MIB}m -mx0 a" call below) back into a single file, using 7-Zip itself,
  *  then - and only then - deletes the partial (.part.NNN) files.
@@ -1160,9 +1177,6 @@ const getAllFilePathsWithStats = async function (
  * @param originalFileName the name 7-Zip is expected to restore the file under (the part before the piece ending).
  */
 const mergeFileParts = async function(partFilePaths: Array<string>, originalFileName: string): Promise<{ merged: boolean, message: string }> {
-  const util = require('util');
-  const exec = util.promisify(require('child_process').exec);
-
   const pieces = partFilePaths.map((p) => parsePiece(node_path_module.basename(p))).filter((piece): piece is Piece => piece !== null);
   const total = pieces.find((piece) => piece.total !== undefined)?.total;
   if (total !== undefined) {
@@ -1201,14 +1215,15 @@ const mergeFileParts = async function(partFilePaths: Array<string>, originalFile
   // Step 1: test archive integrity. Writes nothing - so a corrupted / incomplete set of volumes is caught
   // before we ever consider deleting anything.
   try {
-    await exec(`"${_7zipExecutablePath}" t "${firstPart}"`);
+    await execWithPaths(`"%MY_BACKUP_7ZIP%" t "%MY_BACKUP_FIRST_PART%"`, { MY_BACKUP_7ZIP: _7zipExecutablePath, MY_BACKUP_FIRST_PART: firstPart });
   } catch (error) {
     return { merged: false, message: 'The partial files failed a 7-Zip integrity check (they may be corrupted, or some parts may be missing): ' + (error && (error as any).message ? (error as any).message : String(error)) };
   }
 
   // Step 2: actually extract.
   try {
-    await exec(`"${_7zipExecutablePath}" x -y -o"${outputDir}" "${firstPart}"`);
+    await execWithPaths(`"%MY_BACKUP_7ZIP%" x -y -o"%MY_BACKUP_OUTPUT_DIR%" "%MY_BACKUP_FIRST_PART%"`,
+      { MY_BACKUP_7ZIP: _7zipExecutablePath, MY_BACKUP_OUTPUT_DIR: outputDir, MY_BACKUP_FIRST_PART: firstPart });
   } catch (error) {
     return { merged: false, message: 'The 7-Zip extraction command failed: ' + (error && (error as any).message ? (error as any).message : String(error)) };
   }
@@ -1610,12 +1625,11 @@ const splitLargeFileIntoPieces = async function (originalAbsolutePath: string, f
   };
   removeUnfinishedPieces();
   fs.mkdirSync(partialDir, { recursive: true });
-  const util = require('util');
-  const exec = util.promisify(require('child_process').exec);
   let pieces: Array<Piece & { name: string }>;
   try {
     // See LARGE_FILE_SPLIT_VOLUME_SIZE_MIB's own comment for why this size.
-    await exec(`"${_7zipExecutablePath}" -v${LARGE_FILE_SPLIT_VOLUME_SIZE_MIB}m -mx0 a "${partialDir}\\${fileName}.part" "${originalAbsolutePath}"`);
+    await execWithPaths(`"%MY_BACKUP_7ZIP%" -v${LARGE_FILE_SPLIT_VOLUME_SIZE_MIB}m -mx0 a "%MY_BACKUP_ARCHIVE%" "%MY_BACKUP_SOURCE%"`,
+      { MY_BACKUP_7ZIP: _7zipExecutablePath, MY_BACKUP_ARCHIVE: `${partialDir}\\${fileName}.part`, MY_BACKUP_SOURCE: originalAbsolutePath });
     pieces = piecesInFolder(partialDir, fileName).filter((piece) => piece.total === undefined);
     const burned = planned.burned;
     if (burned) {
@@ -3294,8 +3308,6 @@ const insertBranch_for_IBB_creation = function (tree: any, tokens: Array<string>
  *  ImgBurn exiting with a non-zero code AFTER it started is not a launch failure (the user may just have closed
  *  it, or a burn failed inside ImgBurn's own window, which tells them itself) - that is only logged. */
 const invokeImgBurnOnIBBFile = async function (pathToIBBFile: string): Promise<void> {
-  const util = require('util');
-  const exec = util.promisify(require('child_process').exec);
   let imgBurnExecutablePath: string | undefined;
   try {
     const configJSON = fs.readFileSync(node_path_module.join(__dirname, `../../appData/config.json`));
@@ -3312,7 +3324,8 @@ const invokeImgBurnOnIBBFile = async function (pathToIBBFile: string): Promise<v
   try {
     // The .ibb path is quoted like the executable's: it lives under the temp directory, which sits inside the app
     // folder (or wherever config.json's cacheDataDirectoryPath points), and either can contain spaces.
-    const { stdout, stderr } = await exec(`"${imgBurnExecutablePath}" /MODE BUILD /SRC "${pathToIBBFile}"`);
+    const { stdout, stderr } = await execWithPaths(`"%MY_BACKUP_IMGBURN%" /MODE BUILD /SRC "%MY_BACKUP_IBB%"`,
+      { MY_BACKUP_IMGBURN: imgBurnExecutablePath, MY_BACKUP_IBB: pathToIBBFile });
     console.log('stdout:', stdout);
     console.log('stderr:', stderr);
   } catch (error) {

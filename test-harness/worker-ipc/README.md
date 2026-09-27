@@ -55,7 +55,8 @@ node test-harness/worker-ipc/test-merge.js
 Makes a small test file, splits it into several pieces using the same tool (7-Zip) and the same settings the app
 itself uses — just with a much smaller piece size, so a tiny 50KB test file produces several real pieces instead
 of needing a 500-megabyte file — then asks the app's engine to merge those pieces back together, and checks the
-result matches the original file exactly (by fingerprint).
+result matches the original file exactly (by fingerprint). The file's name holds `%USERNAME%`, which 7-Zip must
+receive as it is, not replaced by the user's name.
 
 This one really does write into the app's actual, real temp/working folder (there's no separate "test" version
 of that folder — the app always uses the one real one). So, before doing anything, it checks that folder is

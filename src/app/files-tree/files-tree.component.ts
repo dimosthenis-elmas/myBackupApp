@@ -59,12 +59,21 @@
     return root;
   }
 
-  /** How often (every Nth item processed) list_to_json/buildFileTree below yield to the event loop and report
-   *  progress - frequently enough for a progress bar bound to it to look smooth, rarely enough not to spend
-   *  more time yielding than actually working on a huge tree. */
+  /** How often (every Nth item processed) list_to_json/buildFileTree below report progress and check whether it is time
+   *  to let the window redraw (yieldIfDue). */
   const TREE_BUILD_PROGRESS_REPORT_INTERVAL = 25;
 
   const yieldToEventLoop = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  let lastYield = 0;
+
+  /** Lets the window redraw - and so show progress, and not freeze - about every 50 ms while a tree is built. Not every
+   *  few items: each pause takes about 6 ms, far longer than the work between them. */
+  const yieldIfDue = async (): Promise<void> => {
+    if (performance.now() - lastYield < 50) { return; }
+    await yieldToEventLoop();
+    lastYield = performance.now();
+  };
 
   // New version including Extras (additional info not displayed, but retained in the 'database'). Async (unlike
   // the synchronous list_to_json_ above) so it can yield periodically on a huge file list instead of blocking
@@ -106,7 +115,7 @@
       }
       if ((index + 1) % TREE_BUILD_PROGRESS_REPORT_INTERVAL === 0) {
         onProgress?.(index + 1);
-        await yieldToEventLoop();
+        await yieldIfDue();
       }
     }
     return root;
@@ -136,8 +145,8 @@
     /** Deliberately does NOT call initialize() here (it used to). dataChange already starts at its own default
      *  value ([]), which is exactly what initialize() would have (redundantly) recomputed from the still-empty
      *  treeData at this point - so calling it here achieves nothing a caller could ever observe, while creating
-     *  a real race: initialize() is async (buildFileTree has its own ~20%-chance setTimeout(0) yield per tree
-     *  level - see its own comment), so this constructor-triggered call is still in flight, with nothing
+     *  a real race: initialize() is async (buildFileTree can pause to let the window redraw - see yieldIfDue),
+     *  so this constructor-triggered call is still in flight, with nothing
      *  forcing it to finish first, at the exact moment a caller can turn around and call setTreeData() on a
      *  just-constructed instance (see backup-to-optical-media.component.ts's maybeAppendOverflowDiscs, which
      *  does exactly that for a freshly-appended disc's tree). If THIS stray call happened to resolve AFTER
@@ -174,7 +183,7 @@
      * The return value is the list of `TodoItemNode`.
      * 
      * This is the old version of buildFileTree. Because this function is synchronous we created an async
-     * version of it. Please also read the comment on buildFileTree for an explanation on why we needed something like this. 
+     * version of it, which lets the window redraw while a large tree is built (see yieldIfDue).
      */
     buildFileTree_(obj: {[key: string]: any}, level: number): TodoItemNode[] {
       return Object.keys(obj).reduce<TodoItemNode[]>((accumulator, key) => {
@@ -220,20 +229,10 @@
         //Push instead of concat, more efficient (per AI)
         accumulator.push(node);
         counter.count++;
-        if (onProgress && counter.count % TREE_BUILD_PROGRESS_REPORT_INTERVAL === 0) { onProgress(counter.count); }
-      }
-      /* This is necessary in order for the UI to not freeze.
-      This function is going to occupy the single thread for some time.
-      By setting a timeout we give the chance for other stuff (like the user pressing the cancel button)
-      to be processed. Because we also need this function to finish in a shorter period of time we run this
-      timeout only 10% of the iterations or something.
-      Note that this is still not an elegant solution and we must (in a future version) try to offload the conputation
-      done here to the worker process. But for now, it is what it is.
-      */
-      const prob = 0.2
-      if(Math.random() < prob){
-        //Only way (as far as I understand) to make buildFileTree function blocking is to use an await.
-        await yieldToEventLoop();
+        if (counter.count % TREE_BUILD_PROGRESS_REPORT_INTERVAL === 0) {
+          onProgress?.(counter.count);
+          await yieldIfDue();
+        }
       }
       return accumulator;
     }
