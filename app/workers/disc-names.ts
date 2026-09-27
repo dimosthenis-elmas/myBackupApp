@@ -58,6 +58,28 @@ export function originalNamesFileFor(relativePaths: string[]): OriginalNamesFile
   };
 }
 
+/** How many bytes `text` takes in a file written in UTF-8, as the list of original names is. */
+const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
+
+/** The size in bytes of the list of original names of a disc holding `relativePaths` - exactly the file createIBB_file
+ *  writes (originalNamesFileFor, as indented JSON) - or 0 when no name on that disc is too long for it. */
+export function originalNamesFileBytes(relativePaths: string[]): number {
+  const list = originalNamesFileFor(relativePaths);
+  return Object.keys(list.originalPaths).length === 0 ? 0 : utf8Bytes(JSON.stringify(list, null, 2));
+}
+
+/** What the item at `relativePath` adds to its disc's list of original names, in bytes - its line in the list, at
+ *  most - or 0 when its name, and every folder's on its way, fits on a disc. Planning counts a disc's list as the sum of
+ *  its items' lines plus ORIGINAL_NAMES_FILE_BASE_BYTES, without building it. Two bytes more for a planned piece: its
+ *  real total can have one digit more than the planned one (a sliver), in both of its paths. */
+export function originalNamesEntryBytes(relativePath: string): number {
+  const onDisc = discPath(relativePath);
+  return onDisc === relativePath ? 0 : utf8Bytes(`    ${JSON.stringify(onDisc)}: ${JSON.stringify(relativePath)},\n`) + 2;
+}
+
+/** The bytes of a disc's list of original names besides its items' lines, at most - see originalNamesEntryBytes. */
+export const ORIGINAL_NAMES_FILE_BASE_BYTES = utf8Bytes(JSON.stringify(originalNamesFileFor([]), null, 2)) + 8;
+
 /** `value` if it is an OriginalNamesFile (read back from a disc), otherwise undefined. */
 export function asOriginalNamesFile(value: any): OriginalNamesFile | undefined {
   if (!value || value.format !== ORIGINAL_NAMES_FILE_FORMAT || !value.originalPaths || typeof value.originalPaths !== 'object') {

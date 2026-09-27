@@ -15,8 +15,8 @@
  * volume but below two). Worked out by hand-tracing the actual first-fit-decreasing packing loop in
  * partitionBackupToOpticalMedia: sorted largest-first, the two FULL pieces (524,288,000 bytes each, tied in
  * size) each fill their own disc alone (524,288,000 + 524,288,000 would exceed the 570,000,000 effective
- * capacity), but the two REMAINDER pieces (75,712,000 bytes each) both fit together on a third disc
- * (75,712,000 * 2 = 151,424,000, comfortably under capacity) - producing exactly 3 large-file discs, the third
+ * capacity), but the two REMAINDER pieces (75,712,000 bytes each, planned with 64 KiB more for 7-Zip's own records)
+ * both fit together on a third disc (about 151.5 MB, comfortably under capacity) - producing exactly 3 large-file discs, the third
  * one genuinely mixing pieces from both source files.
  *
  * What this proves, beyond just "planning pools files correctly":
@@ -47,6 +47,9 @@ const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const VOLUME_SIZE_BYTES = 500 * 1024 * 1024; // 524,288,000 - must match LARGE_FILE_SPLIT_VOLUME_SIZE_MIB in worker.ts
 const LARGE_FILE_BYTES = 600_000_000; // both files - see sizing comment above
 const REMAINDER_BYTES = LARGE_FILE_BYTES - VOLUME_SIZE_BYTES; // 75,712,000
+// A last piece is planned as the remainder plus room for 7-Zip's own records - must match
+// SPLIT_ARCHIVE_OVERHEAD_ALLOWANCE_BYTES in app/workers/worker.ts.
+const PLANNED_LAST_PIECE_BYTES = REMAINDER_BYTES + 64 * 1024;
 const MEDIA_CAPACITY_BYTES = 600_000_000; // same proven-safe constant as test-large-file-split.js
 
 function writeExactSizeFile(filePath, sizeBytes) {
@@ -124,9 +127,9 @@ async function main() {
     console.log(`  two solo (one-file) discs, each exactly one full volume: ${results.twoSoloDiscsFound && soloSizesCorrect}`);
 
     if (mixedDisc) {
-      const mixedRemainderSizesCorrect = mixedDisc.entries.every((e) => e.stats.size === REMAINDER_BYTES);
+      const mixedRemainderSizesCorrect = mixedDisc.entries.every((e) => e.stats.size === PLANNED_LAST_PIECE_BYTES);
       results.mixedDiscPiecesAreBothRemainders = mixedRemainderSizesCorrect;
-      console.log(`  mixed disc's two pieces are both exactly the ${REMAINDER_BYTES.toLocaleString()}-byte remainder: ${mixedRemainderSizesCorrect}`);
+      console.log(`  mixed disc's two pieces are both planned at the ${REMAINDER_BYTES.toLocaleString()}-byte remainder plus 7-Zip's room (${PLANNED_LAST_PIECE_BYTES.toLocaleString()}): ${mixedRemainderSizesCorrect}`);
 
       // 1 & 2: materialize ONLY the mixed disc's pieces - this should real-split BOTH files, so the two solo
       // discs' pieces should come into existence too, as a side effect, without ever being requested.

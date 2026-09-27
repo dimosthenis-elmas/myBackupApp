@@ -247,15 +247,18 @@ export class WorkerCommunicator {
 
     /** @param nameClash see incrementalPreview.
      *  @param sourcePaths for recovery: where a file of `sourceOnlyPaths` is on the disc when its name there was
-     *  shortened - see createTree in worker.ts. */
+     *  shortened - see createTree in worker.ts.
+     *  @param clearReadOnly for recovery: the copied files are made writable - on a disc every file is read-only, and
+     *  a copy keeps that mark. */
     static incrementalCopyFiles(sourceOnlyPaths: Array<string>, sourcePath: string, targetPath: string, nameClash?: NameClash,
-        sourcePaths?: { [path: string]: string }): Promise<WorkerResponse> {
+        sourcePaths?: { [path: string]: string }, clearReadOnly: boolean = false): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('incremental-copy-files', {
             sourceOnlyPaths: sourceOnlyPaths,
             source: sourcePath,
             target: targetPath,
             nameClash: nameClash,
-            sourcePaths: sourcePaths
+            sourcePaths: sourcePaths,
+            clearReadOnly: clearReadOnly
         }, 'response.res');
     }
 

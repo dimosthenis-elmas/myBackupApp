@@ -369,7 +369,11 @@ stops it). The source files must be unchanged. Then a split file, the whole way:
 120-character name fits on a disc but whose pieces' names (`.outOf.2.part.001` added) do not - planned and split for real
 (the wizard's dialog would list the file itself, once), both discs built by the real ImgBurn without a warning, each
 recovered under the original piece names, and the pieces rejoined by `merge-file-parts` (7-Zip) into the file under
-its own name, byte for byte the original. Last, clearing the temp folder must remove everything left there, the lists
-of original names and the pieces included. Points
+its own name, byte for byte the original - and no real piece larger than planned (the last one holds 7-Zip's own
+records too). Planning must count each disc's list of original names, never putting more on a disc than its capacity
+times its fill ratio: the list written must be exactly the size computed (Greek and emoji included) and no larger than
+planning counts; two files that fit side by side only without the list go on two discs, and on one with room for it;
+a file that fits only without its list is too large for a disc. Last, clearing the temp folder must remove everything
+left there, the lists of original names and the pieces included. Points
 `cacheDataDirectoryPath` at a scratch folder and `imgBurnExecutablePath` at a stub for the run; needs ImgBurn, and no
 disc in any optical drive.

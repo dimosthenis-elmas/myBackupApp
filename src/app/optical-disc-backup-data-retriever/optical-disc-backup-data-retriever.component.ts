@@ -790,9 +790,9 @@ import { discsLabel } from '../shared/utils/split-files';
         if (onDisc !== undefined) { sourcePaths[p] = onDisc; }
       });
 
-      // Send request to worker to copy the selected files to target.
+      // Send request to worker to copy the selected files to target - writable, not read-only as on the disc.
       this.showLogs=true;
-      this.copyingPromise = ipc.incrementalCopyFiles(selectedPathsPresentInTheInsertedDisk, this.mountedVolumeLetter, this.backup.targetPath, undefined, sourcePaths);
+      this.copyingPromise = ipc.incrementalCopyFiles(selectedPathsPresentInTheInsertedDisk, this.mountedVolumeLetter, this.backup.targetPath, undefined, sourcePaths, true);
       // The copy's failure arrives as a rejection of this promise, not as a throw from the call above (so a
       // surrounding try/catch would never see it). Without a handler it was an unhandled rejection: a generic
       // "something unexpected went wrong" dialog, and a wizard left showing a progress bar that never finishes

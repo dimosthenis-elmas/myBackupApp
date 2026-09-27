@@ -169,7 +169,7 @@ wait for the app to notice the mounted disc and read it → click "all discs pro
 appears in the chosen folder → click "recover selected data" → "Choose an empty folder" again (checked again right
 before copying) → "Choose another folder" (an empty one) → confirm → wait for the copy to finish → click "Ok" on the
 success message. The two folders that were not empty must be left exactly as they were. Then it checks every recovered file's fingerprint
-against the original, and finally un-mounts the disc and deletes its own scratch files — but **only if
+against the original, and that every recovered file is writable (on the disc each one is read-only), and finally un-mounts the disc and deletes its own scratch files — but **only if
 everything passed**. If something fails, it deliberately leaves everything in place (the test folder, the
 recovered folder, the `.iso`) so it can actually be looked at afterward instead of guessing, and also saves a
 screenshot of whatever the app looked like at the exact moment something went wrong.

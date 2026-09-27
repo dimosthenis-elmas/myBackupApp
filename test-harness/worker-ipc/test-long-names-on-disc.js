@@ -19,7 +19,12 @@
  *  6. A real 700 MB file whose 120-character name fits on a disc but whose pieces' names (".outOf.2.part.001" added) do not,
  *     the whole way: planned and split for real (the wizard's dialog would list the file itself, once), both discs
  *     built by the real ImgBurn without a warning, each recovered under the original piece names, and the pieces
- *     rejoined by merge-file-parts (7-Zip) into the file under its own name - byte for byte the original.
+ *     rejoined by merge-file-parts (7-Zip) into the file under its own name - byte for byte the original. No piece is
+ *     larger than planned (the last one holds 7-Zip's own records too).
+ *  7. Planning counts each disc's list of original names - never more on a disc than its capacity times its fill ratio:
+ *     two files that fit side by side only without the list go on two discs, and on one with room for it; a file that
+ *     fits only without its list is too large for a disc. (Section 1 checks the list written is exactly the size
+ *     computed, and no larger than planning counts.)
  *  Last, clearing the temp folder removes everything left there, the lists of original names included.
  *
  * Never touches the app's real temp folder: cacheDataDirectoryPath points at a scratch folder, and
@@ -42,7 +47,10 @@ const { realImgBurnPath, buildIsoWithImgBurn } = require('../lib/imgburn-build')
 const { assertNoOpticalMediaAlreadyMounted, mountIso, dismountIso } = require('../ui/iso-disc');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 const { writeRandomFile } = require('../lib/random-file-writer');
-const { discPath, itemsWithNamesTooLong, ORIGINAL_NAMES_FILE_NAME, MAX_DISC_NAME_LENGTH } = require('../../app/workers/disc-names');
+const {
+  discPath, itemsWithNamesTooLong, ORIGINAL_NAMES_FILE_NAME, MAX_DISC_NAME_LENGTH,
+  originalNamesFileBytes, originalNamesEntryBytes, ORIGINAL_NAMES_FILE_BASE_BYTES,
+} = require('../../app/workers/disc-names');
 
 // The name that started it all: 138 characters.
 const PAPER = 'End-to-End_Modeling_of_Hierarchical_Time_Series_Using_Autoregressive_Transformer_and_Conditional_Normalizing_Flow-based_Reconciliation.pdf';
@@ -176,6 +184,11 @@ async function main() {
     report(results, 'theDiscGetsTheListOfOriginalNamesAtItsRoot',
       fileLines.get(ORIGINAL_NAMES_FILE_NAME) === namesFileTemp && JSON.stringify(namesFile.originalPaths) === JSON.stringify(expectedOriginals)
       && project.originalNamesFile && project.originalNamesFile.sha256 === sha256(namesFileTemp) && project.originalNamesFile.size === fs.statSync(namesFileTemp).size);
+    // What planning counts for this list (see section 7) - the list written, with its Greek and emoji, is no larger.
+    const countedListBytes = ORIGINAL_NAMES_FILE_BASE_BYTES + planned.reduce((sum, p) => sum + originalNamesEntryBytes(p), 0);
+    const realListBytes = fs.statSync(namesFileTemp).size;
+    report(results, 'theListIsAsLargeAsComputed_andNoLargerThanPlanningCounts',
+      realListBytes === originalNamesFileBytes(planned) && realListBytes <= countedListBytes, `${realListBytes} bytes, ${countedListBytes} counted`);
 
     // ---- 2. a real ImgBurn build
     console.log('\nBuilding the disc image with the real ImgBurn...');
@@ -256,9 +269,12 @@ async function main() {
     const recoveredLarge = path.join(scratchRoot, 'recovered large');
     fs.mkdirSync(recoveredLarge, { recursive: true });
     const discNamesOk = [];
+    const plannedPieceSize = new Map(plan.flat().map((e) => [path.relative(sessionDir2, e.path), e.stats.size]));
+    const pieceSizes = [];
     for (let d = 0; d < plannedByDisc.length; d++) {
       // What "Send to ImgBurn" does for disc d: the real split (the first time), then the project.
       const discFiles = (await callWorker(win, 'create-optical-media-disc-partials', { dirPath: largeSource, paths: plannedByDisc[d], sessionId: sessionId2 }, 10 * 60_000)).res;
+      discFiles.forEach((e) => pieceSizes.push({ piece: e.path, planned: plannedPieceSize.get(e.path), real: e.stats.size }));
       await callWorker(win, 'create-IBB-file', { disk_id: d, paths: discFiles.map((e) => e.path), sourcePath: largeSource, sessionId: sessionId2, volumeLabel: `Split ${d + 1}` });
       const iso = path.join(scratchRoot, `split disc ${d + 1}.iso`);
       const splitBuild = buildIsoWithImgBurn(imgBurnExe, path.join(sessionDir2, `Disk_${d + 1}.ibb`), iso, path.join(scratchRoot, `imgburn split ${d + 1}.log`));
@@ -274,6 +290,9 @@ async function main() {
       dismount(iso);
     }
     report(results, 'bothDiscsAreBuiltWithTheirPiecesShortenedAndNothingElseChanged', discNamesOk.length === 2 && discNamesOk.every(Boolean), JSON.stringify(discNamesOk));
+    // Never more on a disc than planned: the last piece holds 7-Zip's own records too, and was planned with room for them.
+    report(results, 'noPieceIsLargerThanPlanned', pieceSizes.length === 2 && pieceSizes.every((p) => p.planned >= p.real),
+      pieceSizes.map((p) => `${p.real} of ${p.planned} planned`).join(' | '));
     const recoveredPieces = listTree(recoveredLarge);
     report(results, 'bothPiecesAreRecoveredUnderTheirOriginalNames',
       JSON.stringify(recoveredPieces) === JSON.stringify([`${SPLIT_FILE}.outOf.2.part.001`, `${SPLIT_FILE}.outOf.2.part.002`]), recoveredPieces.join(' | '));
@@ -290,6 +309,25 @@ async function main() {
     report(results, 'theLargeSourceFileIsUntouched',
       largeFileStatsAfter.size === largeFileStatsBefore.size && largeFileStatsAfter.mtimeMs === largeFileStatsBefore.mtimeMs
       && (await sha256Streamed(largeFile)) === largeFileSha256);
+
+    // ---- 7. planning counts the list of original names
+    console.log('\nPlanning counts the list of original names a disc gets...');
+    const planningRoot = path.join(scratchRoot, 'planning');
+    const item = (rel, size) => ({ path: `${planningRoot}\\${rel}`, stats: { size, mtime: new Date(), isDirectory: false } });
+    const longRel = `papers\\${PAPER}`;
+    const listBytes = ORIGINAL_NAMES_FILE_BASE_BYTES + originalNamesEntryBytes(longRel);
+    // `room` is what a disc may hold: its capacity times its fill ratio (0.5 here). Only stats are planned - no file is read.
+    const planFiles = (filesMetadata, room) => callWorker(win, 'partition-backup-to-optical-media', {
+      rootPath: planningRoot, mediaCapacityInBytes: room * 2, maxRepletionRatio: 0.5, splitLargeFiles: false, sessionId: `session-${runId + 2}`, filesMetadata,
+    }, 30_000);
+    const twoFiles = [item('short.bin', 1_000_000), item(longRel, 2_000_000)];
+    const discsWithoutRoomForTheList = (await planFiles(twoFiles, 3_000_000)).res.length;
+    const discsWithRoomForTheList = (await planFiles(twoFiles, 3_000_000 + listBytes)).res.length;
+    report(results, 'planningCountsTheListOfOriginalNames', discsWithoutRoomForTheList === 2 && discsWithRoomForTheList === 1,
+      `${discsWithoutRoomForTheList} discs without room for the list, ${discsWithRoomForTheList} with it`);
+    const fitsOnlyWithoutItsList = await planFiles([item(longRel, 3_000_000 - 10)], 3_000_000).then(() => 'planned', (e) => e.message);
+    report(results, 'aFileThatFitsOnlyWithoutItsListIsTooLargeForADisc', /FILE_TOO_LARGE_FOR_SINGLE_OPTICAL_DISC/.test(fitsOnlyWithoutItsList),
+      fitsOnlyWithoutItsList.slice(0, 120));
 
     // ---- the temp folder
     const cleared = (await callWorker(win, 'clear-temp-data-directory', {})).res;

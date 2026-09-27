@@ -27,8 +27,8 @@
  *      Recover selected data -> "Choose an empty folder" again (checked again right before copying) -> "Choose
  *      another folder" (an empty one) -> confirm -> (waits for copy) -> "Ok" on the success dialog.
  *   5. Verifies the recovered folder's contents against the manifest by hash (verify-manifest.js) - a real
- *      pass/fail, not just "no error was thrown" - and that the two folders that were not empty were left exactly
- *      as they were.
+ *      pass/fail, not just "no error was thrown" - that every recovered file is writable (on the disc each one is
+ *      read-only), and that the two folders that were not empty were left exactly as they were.
  *   6. Dismounts the .iso and cleans up its own scratch files either way.
  *
  * NOTE: needs a real Windows desktop/window session (see worker-ipc/call-worker.js's top comment) - run from
@@ -229,17 +229,28 @@ async function main() {
     && untouched(emptiedTooLateFolder, 'appeared later.txt', 'must stay as it is too');
   console.log(`Folders that were not empty were left exactly as they were: ${refusedFoldersUntouched ? 'OK' : 'WRONG'}`);
 
+  // Every recovered file is writable: on a disc every file is read-only, and recovery clears that mark.
+  const readOnlyRecovered = [];
+  (function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(entryPath); } else if ((fs.statSync(entryPath).mode & 0o200) === 0) { readOnlyRecovered.push(entryPath); }
+    }
+  })(outputRoot);
+  const recoveredFilesWritable = readOnlyRecovered.length === 0;
+  console.log(`Every recovered file is writable, not read-only as on the disc: ${recoveredFilesWritable ? 'OK' : `WRONG - ${readOnlyRecovered.length} read-only, e.g. ${readOnlyRecovered[0]}`}`);
+
   // 6. Clean up our own scratch files ONLY on success - on failure, leave everything (source tree, recovered
   //    output, the .iso) in place under scratchRoot so it can actually be inspected afterwards instead of
   //    guessing blind at what went wrong.
-  const pass = verifyPassed && totalsLabelCorrect && refusedFoldersUntouched;
+  const pass = verifyPassed && totalsLabelCorrect && refusedFoldersUntouched && recoveredFilesWritable;
   if (pass) {
     fs.rmSync(scratchRoot, { recursive: true, force: true });
   } else {
     console.log(`\nLeaving scratch files in place for inspection: ${scratchRoot}`);
   }
 
-  console.log(`\n${pass ? 'PASS' : 'FAIL'} - recovery wizard ${pass ? 'refused folders that were not empty, showed the right totals and correctly recovered every file with matching content.' : 'did not produce a correct result, see above.'}`);
+  console.log(`\n${pass ? 'PASS' : 'FAIL'} - recovery wizard ${pass ? 'refused folders that were not empty, showed the right totals and correctly recovered every file with matching content, writable.' : 'did not produce a correct result, see above.'}`);
   process.exitCode = pass ? 0 : 1;
 }
 

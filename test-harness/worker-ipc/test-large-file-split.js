@@ -58,6 +58,9 @@ const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 // Must match LARGE_FILE_SPLIT_VOLUME_SIZE_MIB in app/workers/worker.ts (500 MiB) - not importable across the
 // Electron/plain-Node boundary, so restated here with a comment pointing back at the source of truth.
 const EXPECTED_VOLUME_SIZE_BYTES = 500 * 1024 * 1024; // 524,288,000 - see LARGE_FILE_SPLIT_VOLUME_SIZE_MIB
+// Must match SPLIT_ARCHIVE_OVERHEAD_ALLOWANCE_BYTES in app/workers/worker.ts: the room a file's last piece is planned
+// with for 7-Zip's own records.
+const SPLIT_ARCHIVE_OVERHEAD_ALLOWANCE_BYTES = 64 * 1024;
 // 700 MB (not MiB) - comfortably over one full volume, so the real split produces exactly 2 real pieces (one
 // full 500 MiB volume + a remainder), the minimum needed to genuinely prove multi-piece splitting.
 const LARGE_FILE_BYTES = 700_000_000;
@@ -193,15 +196,15 @@ async function main() {
     results.planningHadNoFilesystemSideEffects = noPartFilesMaterializedYet;
     console.log(`  none of them physically exist yet (planning is side-effect-free): ${noPartFilesMaterializedYet}`);
     if (predictedPartEntries.length === 2) {
-      // The ESTIMATE is plain arithmetic with no 7-Zip archive overhead folded in (see estimateLargeFileSplitPartials
-      // in worker.ts) - so, unlike the real split checked after materialization below, both predicted sizes are
-      // exact: the first is exactly one full volume, the second is exactly the raw remainder.
+      // Planned sizes (plannedPieceSize in worker.ts): the first is exactly one full volume, the second the raw
+      // remainder plus room for 7-Zip's own records, which only the last piece holds - never less than it really takes.
       const [predictedFirst, predictedSecond] = predictedPartEntries;
+      const expectedSecond = LARGE_FILE_BYTES - EXPECTED_VOLUME_SIZE_BYTES + SPLIT_ARCHIVE_OVERHEAD_ALLOWANCE_BYTES;
       const predictedFirstCorrect = predictedFirst.stats.size === EXPECTED_VOLUME_SIZE_BYTES;
-      const predictedSecondCorrect = predictedSecond.stats.size === (LARGE_FILE_BYTES - EXPECTED_VOLUME_SIZE_BYTES);
+      const predictedSecondCorrect = predictedSecond.stats.size === expectedSecond;
       results.predictedSizesAreExactlyRight = predictedFirstCorrect && predictedSecondCorrect;
       console.log(`    predicted part 1: ${predictedFirst.stats.size.toLocaleString()} bytes (expected exactly ${EXPECTED_VOLUME_SIZE_BYTES.toLocaleString()}) - ${predictedFirstCorrect ? 'OK' : 'WRONG'}`);
-      console.log(`    predicted part 2: ${predictedSecond.stats.size.toLocaleString()} bytes (expected exactly ${(LARGE_FILE_BYTES - EXPECTED_VOLUME_SIZE_BYTES).toLocaleString()}) - ${predictedSecondCorrect ? 'OK' : 'WRONG'}`);
+      console.log(`    predicted part 2: ${predictedSecond.stats.size.toLocaleString()} bytes (expected exactly ${expectedSecond.toLocaleString()}) - ${predictedSecondCorrect ? 'OK' : 'WRONG'}`);
     } else {
       results.predictedSizesAreExactlyRight = false;
     }

@@ -7,7 +7,7 @@ import { LogsBuffer } from './logsbuffer'
 import { filesMetadata } from '../../src/types/interface';
 import { ColdStorageMetadata, WorkerResponse, OpticalMediaPartitioning, DiffComparison, NameClash, CreatedIbbProject, IncompleteSplitFile } from './ipc.interfaces';
 import { installConsoleLogging } from '../logging';
-import { discName, discPath, originalNamesFileFor, ORIGINAL_NAMES_FILE_NAME } from './disc-names';
+import { discName, discPath, originalNamesFileFor, ORIGINAL_NAMES_FILE_NAME, originalNamesEntryBytes, ORIGINAL_NAMES_FILE_BASE_BYTES } from './disc-names';
 import { PIECE_ENDING, parsePiece, pieceName, missingPieceNumbers, Piece } from './split-pieces';
 import type { Dirent } from 'fs';
 
@@ -257,8 +257,9 @@ const zeroPad = (num: number, places: number) => String(num).padStart(places, '0
 
 /** Pure-arithmetic prediction of how many partials the real `-v${LARGE_FILE_SPLIT_VOLUME_SIZE_MIB}m -mx0 a` split
  *  will produce for a file of `fileSizeBytes`, and each partial's size - WITHOUT ever invoking 7-Zip. Used by
- *  partitionBackupToOpticalMedia for planning (so an entire multi-disc job's worth of large files no longer has
- *  to be physically split, all at once, before a single disc is even burned) and by
+ *  partitionBackupToOpticalMedia for planning how many pieces a file gets (so an entire multi-disc job's worth of large
+ *  files no longer has to be physically split, all at once, before a single disc is even burned - the size each piece
+ *  is planned at is plannedPieceSize's, which does count 7-Zip's overhead) and by
  *  createOpticalMediaDiscPartials to sanity-check a real split's result against what was planned.
  *
  *  Deliberately does NOT try to account for 7-Zip's own archive-format overhead (the header/footer/CRC bytes a
@@ -284,6 +285,23 @@ const estimateLargeFileSplitPartials = function (fileSizeBytes: number): Array<{
     partials.push({ size: i < partialCount ? volumeSizeBytes : (fileSizeBytes - (partialCount - 1) * volumeSizeBytes) });
   }
   return partials;
+}
+
+/** Room planned on top of a split file's last piece for 7-Zip's own records of the archive, which only the last piece
+ *  holds besides the file's bytes - well under 2 KB for one stored file, even with a long name. Generous on purpose: a
+ *  piece must never take more on a disc than planned (see plannedPieceSize). */
+const SPLIT_ARCHIVE_OVERHEAD_ALLOWANCE_BYTES = 64 * 1024;
+
+/** The size piece `number` of `total` of a file of `fileSizeBytes` is planned at - at least what it really takes, so a
+ *  disc never holds more than its plan: every piece but the last is exactly one volume (7-Zip writes no smaller one);
+ *  the last holds the rest of the file plus 7-Zip's own records (SPLIT_ARCHIVE_OVERHEAD_ALLOWANCE_BYTES). When the real
+ *  total is one more than the estimate (a sliver - see estimateLargeFileSplitPartials), the piece before it is a full
+ *  volume, which the allowance also covers, and the sliver - checked against the disc's room when it appears, or
+ *  planned as the last piece when resuming - is only those records. */
+const plannedPieceSize = function (fileSizeBytes: number, total: number, number: number): number {
+  const volumeSizeBytes = LARGE_FILE_SPLIT_VOLUME_SIZE_MIB * 1024 * 1024;
+  if (number < total) { return volumeSizeBytes; }
+  return Math.max(0, fileSizeBytes - (total - 1) * volumeSizeBytes) + SPLIT_ARCHIVE_OVERHEAD_ALLOWANCE_BYTES;
 }
 
 /** How the disc plan of a job splits one large file - see plannedSplitsBySession. */
@@ -1292,11 +1310,35 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
       : undefined, skipped, linksLeftOut)
   }
 
+  // What an item takes up on a disc: its size, and - when its name, or a folder's on its way, is too long for a disc -
+  // its line in that disc's list of original names, plus the list's other bytes once per disc (see
+  // originalNamesEntryBytes in disc-names.ts). The list is only written when the disc is sent, but it has to fit.
+  // Worked out once per item: the packing loops below look at every item again for every disc.
+  const sourcePrefix = asPathPrefix(dirPath);
+  const sessionPrefix = asPathPrefix(node_path_module.join(tempDataDirectoryPath, sessionId));
+  const namesListBytesByItem = new Map<object, number>();
+  const namesListBytes = (item: { path: string }): number => {
+    let bytes = namesListBytesByItem.get(item);
+    if (bytes === undefined) {
+      // Its path on the disc: a piece's below this job's session folder, anything else's below the folder backed up.
+      const onDisc = item.path.startsWith(sessionPrefix) ? item.path.slice(sessionPrefix.length)
+        : item.path.startsWith(sourcePrefix) ? item.path.slice(sourcePrefix.length) : item.path;
+      bytes = originalNamesEntryBytes(onDisc);
+      namesListBytesByItem.set(item, bytes);
+    }
+    return bytes;
+  };
+  /** The bytes `item` takes up on a disc of its own - its whole list of original names included, if it needs one. */
+  const bytesAlone = (item: { path: string, stats: { size: number } }): number => {
+    const listBytes = namesListBytes(item);
+    return item.stats.size + (listBytes === 0 ? 0 : listBytes + ORIGINAL_NAMES_FILE_BASE_BYTES);
+  };
+
   // Without splitting, every file too large for a single disc is reported at once - all of them, not just the first
   // one the packing loop below would stop at - so the user sees the full list of what "split the large files"
   // would apply to (too_large_files: full paths and sizes). Same >= threshold as that loop's own check.
   if (!splitLargeFiles) {
-    const tooLargeFiles = filePathsAndStats.filter((item) => item.stats.size >= mediaCapacityInBytes);
+    const tooLargeFiles = filePathsAndStats.filter((item) => bytesAlone(item) >= mediaCapacityInBytes);
     if (tooLargeFiles.length > 0) {
       throw {
         msg: `${tooLargeFiles.length} file(s) are too large to be contained on any single optical disk, e.g. ${tooLargeFiles[0].path}`,
@@ -1323,7 +1365,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
     //Filter files too large to fit to any single optical disc - and files already split on discs, whatever their size
     [filePathsAndStats, largeFilePathsAndStats] = partitionArrayBasedOnFilter(
       filePathsAndStats,
-      (item) => item.stats.size <= mediaCapacityInBytes && !incompleteSplitFileByPath.has(item.path),
+      (item) => bytesAlone(item) <= mediaCapacityInBytes && !incompleteSplitFileByPath.has(item.path),
     );
   }
 
@@ -1342,12 +1384,15 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
     if(process.env._stop == 'stop'){break;}
     let paths: {"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}[] = []
     const initialUsedSpaceInBytes = 0;
+    // Whether this disc has a list of original names yet (see namesListBytes above).
+    let namesListStarted = false;
     // The slice(0) is used for breaking from reduce if needed. See https://stackoverflow.com/questions/36144406/how-to-early-break-reduce-method
     const usedSpaceInBytes = filePathsAndStats.slice(0).reduce(
     (accumulator, currentRecord, i, arr) => {
-      const r = accumulator + currentRecord.stats.size
-      
-      if(currentRecord.stats.size >= mediaCapacityInBytes && !splitLargeFiles){
+      const listBytes = namesListBytes(currentRecord);
+      const r = accumulator + currentRecord.stats.size + (listBytes === 0 ? 0 : listBytes + (namesListStarted ? 0 : ORIGINAL_NAMES_FILE_BASE_BYTES));
+
+      if(bytesAlone(currentRecord) >= mediaCapacityInBytes && !splitLargeFiles){
         console.log(
           "That's a problem! Found a file which is too large to be contained to ANY single optical disk. Size of file in bytes: " +
           currentRecord.stats.size + ". path: " + currentRecord.path + ". Canceling operation.");
@@ -1369,6 +1414,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
       if(r <= mediaCapacityInBytes){
     	  accumulator = r
           paths.push(currentRecord)
+          if (listBytes > 0) { namesListStarted = true; }
       }
 
       return accumulator
@@ -1379,7 +1425,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
     // This is the amount of used space for the particular optical disk in the set.
     //console.log(usedSpaceInBytes)
 
-    // remove the files assigned to this optical disk from the complete records. 
+    // remove the files assigned to this optical disk from the complete records.
     filePathsAndStats = filePathsAndStats.filter(function(itm){
       return !paths.includes(itm)
     });
@@ -1424,7 +1470,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
 
       const predictedPartials = estimateLargeFileSplitPartials(itm.stats.size);
       // A file whose first pieces are already on discs keeps the real total those pieces' names have; only the
-      // others are planned (a piece past the estimate, a sliver, is planned as empty - it is a few bytes).
+      // others are planned. Each piece is planned at what it really takes, at least - see plannedPieceSize.
       const incomplete = incompleteSplitFileByPath.get(itm.path);
       const total = incomplete ? incomplete.total : predictedPartials.length;
       const burnedNumbers = new Set(incomplete ? incomplete.burnedPieces.map((p) => p.number) : []);
@@ -1436,7 +1482,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
         if (burnedNumbers.has(number)) { continue; }
         largeFilePathsAndStats_.push({
           path: node_path_module.join(pathToLargeFileSplitsInTempDirectory, pieceName(fileName, total, zeroPad(number, 3))),
-          stats: { size: predictedPartials[number - 1]?.size ?? 0, mtime: itm.stats.mtime, isDirectory: false }
+          stats: { size: plannedPieceSize(itm.stats.size, total, number), mtime: itm.stats.mtime, isDirectory: false }
         });
       }
     }
@@ -1452,9 +1498,12 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
       if(process.env._stop == 'stop'){break;}
       let paths: {"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}[] = []
       const initialUsedSpaceInBytes = 0;
+      // Whether this disc has a list of original names yet (see namesListBytes above).
+      let namesListStarted = false;
       const usedSpaceInBytes = largeFilePathsAndStats.slice(0).reduce(
       (accumulator, currentRecord, i, arr) => {
-      const r = accumulator + currentRecord.stats.size
+      const listBytes = namesListBytes(currentRecord);
+      const r = accumulator + currentRecord.stats.size + (listBytes === 0 ? 0 : listBytes + (namesListStarted ? 0 : ORIGINAL_NAMES_FILE_BASE_BYTES));
 
       // Same guard the ordinary-file pass above already has (see its own "too large to be contained to ANY
       // single optical disk" check) - without it, a split partial (fixed at LARGE_FILE_SPLIT_VOLUME_SIZE_MIB)
@@ -1464,7 +1513,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
       // Not reachable through the real app UI today (the smallest selectable medium is always bigger than one
       // split partial - see that constant's own comment for why), but a real risk if this is ever called directly
       // with too small a capacity.
-      if(currentRecord.stats.size >= mediaCapacityInBytes){
+      if(bytesAlone(currentRecord) >= mediaCapacityInBytes){
         console.log(
           "That's a problem! Found a large-file split partial which is too large to be contained to ANY single optical disk. Size of partial in bytes: " +
           currentRecord.stats.size + ". path: " + currentRecord.path + ". Canceling operation.");
@@ -1486,6 +1535,7 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
       if(r <= mediaCapacityInBytes){
         accumulator = r
           paths.push(currentRecord)
+          if (listBytes > 0) { namesListStarted = true; }
       }
 
       return accumulator
@@ -2593,9 +2643,11 @@ const recoveryFolderState = function (folder: string): 'empty' | 'not-empty' | '
  *  and Sync, diff has already refused that; recovery has no diff.
  *  @param nameClash see NameClash (ipc.interfaces.ts).
  *  @param sourcePaths for recovery: where a file of `sourceOnlyPaths` is in `source` when that is not the same path -
- *  its name on the disc was shortened (see disc-names.ts); keyed by its path in sourceOnlyPaths. */
+ *  its name on the disc was shortened (see disc-names.ts); keyed by its path in sourceOnlyPaths.
+ *  @param clearReadOnly for recovery: every file on a disc is read-only, and a copy keeps that mark - each copied file
+ *  is made writable. */
 const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boolean, source: string, target: string, nameClash?: NameClash,
-  sourcePaths?: { [path: string]: string }): Promise<void> {
+  sourcePaths?: { [path: string]: string }, clearReadOnly: boolean = false): Promise<void> {
   process.env._stop = "noStop";
   refuseLinkedFolder(target);
 
@@ -2611,7 +2663,7 @@ const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boole
     }
     path = sourceOnlyPaths[index];
     let tokens = path.split('\\')
-    insertBranch(tree, tokens, 0, doCopy, source, target, nameClash, sourcePaths);
+    insertBranch(tree, tokens, 0, doCopy, source, target, nameClash, sourcePaths, clearReadOnly);
     // A dedicated progress marker, on top of insertBranch's own descriptive lines above (which don't map 1:1 to
     // items - a copy can log a size-tier line plus a "copied/updated" line, a directory logs its own separate
     // "will create"/"created" line, etc.) - callers who already know sourceOnlyPaths.length up front (every one
@@ -3040,9 +3092,10 @@ const copyEntryReplacingTarget = function (sourcePath: string, targetPath: strin
  *  replaced as the link itself (what it points to is left alone), so everything created stays inside the target. A
  *  real folder where a file is being copied, or a file where a folder is needed, is dealt with by resolveNameClash.
  *  Refuses a path that would lead outside `target` (or, through `sourcePaths` - see createTree - outside `source`):
- *  recovery's paths come from a metadata JSON, or from a list of original names on a disc. */
+ *  recovery's paths come from a metadata JSON, or from a list of original names on a disc. With `clearReadOnly`
+ *  (recovery - see createTree), a copied file is made writable. */
 const insertBranch = function (tree: any, tokens: Array<string>, index: number, doCopy: boolean, source: string, target: string, nameClash?: NameClash,
-  sourcePaths?: { [path: string]: string }): void {
+  sourcePaths?: { [path: string]: string }, clearReadOnly: boolean = false): void {
   const refuseUnlessInside = (fullPath: string, folder: string): void => {
     if (!isPathStrictlyInside(node_path_module.resolve(fullPath), node_path_module.resolve(folder))) {
       throw new Error(`"${fullPath}" is not inside "${folder}" - nothing was copied there.`);
@@ -3068,6 +3121,7 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
       }
       if (doCopy) {
         copyEntryReplacingTarget(source_path, target_path);
+        if (clearReadOnly) { fs.chmodSync(target_path, 0o666); } // on Windows: clears only the read-only mark
         if(existingTarget){
           logsBuffer.push(`updated existing file :` + target_path);
         }else{
@@ -3107,7 +3161,7 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
     }
     let a = tokens[index]
     index += 1
-    insertBranch(tree[a], tokens, index, doCopy, source, target, nameClash, sourcePaths);
+    insertBranch(tree[a], tokens, index, doCopy, source, target, nameClash, sourcePaths, clearReadOnly);
   }
 }
 
@@ -3517,7 +3571,8 @@ const init = function() : void
       case 'incremental-copy-files':
         logsBuffer.setChannel("incremental-copy-files");
         createTree(arg.params.sourceOnlyPaths, /*doCopy=*/true, arg.params.source, arg.params.target, asNameClash(arg.params.nameClash),
-          (arg.params.sourcePaths && typeof arg.params.sourcePaths === 'object') ? arg.params.sourcePaths : undefined).then((res) => {
+          (arg.params.sourcePaths && typeof arg.params.sourcePaths === 'object') ? arg.params.sourcePaths : undefined,
+          arg.params.clearReadOnly === true).then((res) => {
         //dummy_copy().then((res) => {
           logsBuffer.flush(); // whatever remained in the buffer
           //tell user that the function has finished

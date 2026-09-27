@@ -38,7 +38,7 @@ import { ColdStorageMetadata } from '../../../app/workers/ipc.interfaces';
 import { SerialQueue } from '../shared/utils/serial-queue';
 import { withLinksLeftOutNote } from '../shared/utils/links-note';
 import { PIECE_ENDING, parsePiece, missingPieceNumbers, withoutPieceTotal, Piece } from '../../../app/workers/split-pieces';
-import { OPTICAL_MEDIA } from '../shared/utils/optical-media';
+import { OPTICAL_MEDIA, discContentBytes } from '../shared/utils/optical-media';
 import { OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { backedUpPath, confirmDiscNameAndPathLimits, isOriginalNamesList, metadataEntriesForDisc } from '../shared/utils/shortened-names';
 import { metadataJsonFileName } from '../shared/utils/metadata-file-name';
@@ -924,8 +924,21 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       const requestedPaths = new Set(bareRelativePaths.map(withoutPieceTotal));
       const normalStats = realStats.filter(e => requestedPaths.has(withoutPieceTotal(e.path)));
       const ownSurplusStats = realStats.filter(e => !requestedPaths.has(withoutPieceTotal(e.path)));
-      let discUsedBytes = normalStats.reduce((sum, e) => sum + e.stats.size, 0);
       const finalStats = normalStats.slice();
+
+      // Never more on a disc than effectiveMediaCapacityInBytes - the rest is a safety margin. The plan counted everything
+      // (the list of original names too - see discContentBytes); only files that grew since planning can make it more.
+      if (discContentBytes(normalStats) > this.effectiveMediaCapacityInBytes) {
+        this.pendingOverflowPartials = this.pendingOverflowPartials.concat(ownSurplusStats);
+        const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        errorDialog.componentInstance.title = "Disc too full";
+        errorDialog.componentInstance.message = `Disc ${this.getNextDiscNumber(i)} no longer fits: some of its files grew ` +
+          `since the discs were planned. Start "Add missing files" again to plan them anew.`;
+        errorDialog.componentInstance.actionsNum = 1;
+        errorDialog.componentInstance.action1Label = "Ok";
+        errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
+        return;
+      }
 
       // A surplus partial is accepted onto THIS disc only if the disc's total real, created size still fits
       // within effectiveMediaCapacityInBytes - the SAME margin-discounted capacity partitionBackupToOpticalMedia
@@ -946,8 +959,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       this.pendingOverflowPartials = [];
       const acceptedSurplusPartials: filesMetadata[] = [];
       for (const surplusPartial of candidateSurplusPartials) {
-        if (discUsedBytes + surplusPartial.stats.size <= this.effectiveMediaCapacityInBytes) {
-          discUsedBytes += surplusPartial.stats.size;
+        if (discContentBytes(finalStats.concat([surplusPartial])) <= this.effectiveMediaCapacityInBytes) {
           finalStats.push(surplusPartial);
           acceptedSurplusPartials.push(surplusPartial);
         } else {
@@ -1056,15 +1068,12 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
 
     const overflowPartitions: filesMetadata[][] = [];
     let currentPartition: filesMetadata[] = [];
-    let currentPartitionBytes = 0;
     for (const partial of this.pendingOverflowPartials) {
-      if (currentPartition.length > 0 && currentPartitionBytes + partial.stats.size > this.effectiveMediaCapacityInBytes) {
+      if (currentPartition.length > 0 && discContentBytes(currentPartition.concat([partial])) > this.effectiveMediaCapacityInBytes) {
         overflowPartitions.push(currentPartition);
         currentPartition = [];
-        currentPartitionBytes = 0;
       }
       currentPartition.push(partial);
-      currentPartitionBytes += partial.stats.size;
     }
     if (currentPartition.length > 0) {
       overflowPartitions.push(currentPartition);

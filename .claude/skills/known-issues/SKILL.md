@@ -46,17 +46,7 @@ None open.
 - **Code:** the path trimming in `WriteToOpticalMediaProceed` (Backup to optical media) and `sendToImgBurn` (Add
   missing files).
 
-#### 3. A disc full of very small files may not fit
-- **What happens:** discs are planned by file sizes only, but each file also takes about 3 KB on a disc. The share
-  kept free covers roughly 16,000 files on a CD, 46,000 on a DVD, 81,000 on a 25 GB Blu-ray; a full disc of smaller
-  files than that doesn't fit and ImgBurn refuses it. (Estimate, not measured.)
-- **How likely:** only for backups with tens of thousands of tiny files (source code, mail, thumbnails). The README
-  already says so and suggests zipping such folders first - that's the realistic answer for now.
-- **Simplest fix, if ever needed:** count each file as its size rounded up to 2 KB, plus 3 KB.
-- **Code:** `partitionBackupToOpticalMedia` in `app/workers/worker.ts`; the README table "How many files fit on one
-  disc".
-
-#### 4. The metadata JSON is rewritten in place
+#### 3. The metadata JSON is rewritten in place
 - **What happens:** each confirmed disc rewrites the whole JSON; a crash or power cut in that instant leaves it empty
   or cut short. The discs themselves are fine - recovery and Add missing files can read the discs instead.
 - **How likely:** very unlikely (a write of a moment).
@@ -65,14 +55,14 @@ None open.
 
 ### Low
 
-#### 5. A failed ImgBurn project write is reported as success
+#### 4. A failed ImgBurn project write is reported as success
 - **What happens:** if the `.ibb` file can't be written (the temp folder became unwritable), the disc is still marked
   sent and ImgBurn just doesn't open. Sending the disc again rebuilds it, so the job can go on.
 - **How likely:** rare.
 - **Simplest fix:** make that failure an error, so the wizard's existing message shows. No test needed.
 - **Code:** `createIBB_file` in `app/workers/worker.ts`.
 
-#### 6. A wrongly chosen 7-Zip or ImgBurn is kept for good
+#### 5. A wrongly chosen 7-Zip or ImgBurn is kept for good
 - **What happens:** the "not found" dialog saves whatever .exe is picked (7zFM.exe, a portable launcher, the ImgBurn
   setup file): as that file exists, it is never asked again - every split then fails with "plan the discs again",
   and "Send to ImgBurn" starts the wrong program. Only editing config.json gets out of it.
@@ -80,14 +70,14 @@ None open.
 - **Simplest fix:** the chooser accepts only a file named 7z.exe or ImgBurn.exe, and says so otherwise.
 - **Code:** `askWhereExecutableIs` in `app.component.ts`; `locateExecutables` in `app/workers/worker.ts`.
 
-#### 7. Cumulative backup to an exFAT drive may copy everything again on every run (unverified)
+#### 6. Cumulative backup to an exFAT drive may copy everything again on every run (unverified)
 - **What happens:** exFAT keeps modified times to 10 ms; Cumulative copies when the source is newer by even 1 ms.
   The result is still correct - just slow.
 - **How likely:** exFAT is common on large USB drives, so worth one check: two runs onto an exFAT stick; the second
   must copy nothing.
 - **Simplest fix, if confirmed:** allow 2 seconds of difference, as Sync already does (`MIRROR_MTIME_TOLERANCE_MS`).
 
-#### 8. An unreadable folder inside Cumulative backup's backup folder is reported as "NOT backed up"
+#### 7. An unreadable folder inside Cumulative backup's backup folder is reported as "NOT backed up"
 - **What happens:** the "Some items were left out" warning also lists folders in the backup folder that can't be read,
   as if they were source folders left out.
 - **How likely:** rare (a drive root, which always did this, is now refused).
@@ -96,7 +86,7 @@ None open.
   also backs up the recycle bin and warns about "System Volume Information" every time. Simplest: refuse it there too,
   like Cumulative backup and Sync.
 
-#### 9. The startup checks run again after every Home
+#### 8. The startup checks run again after every Home
 - **What happens:** Home reloads the whole app, so what runs at start runs again: the "leftover items in the temp
   folder" offer comes back, and a 7-Zip or ImgBurn "not found" dialog answered "Not now" is asked again - "Not now"
   lasts only until the next Home.
@@ -104,7 +94,7 @@ None open.
 - **Simplest fix:** run the startup checks once per launch - a flag in `sessionStorage` survives the reload.
 - **Code:** `ngOnInit` in `app.component.ts`; `goToMainMenuAndReload` in `src/app/shared/utils/go-to-main-menu.ts`.
 
-#### 10. Add missing files is slow on a large collection
+#### 9. Add missing files is slow on a large collection
 - **What happens:** each file of the master is looked for by a search through the whole cold storage list - about 6
   minutes at 100,000 files and an hour at 300,000 (measured). Planning looks up each ticked file in the master the
   same way, without pausing, so the window freezes while many missing files are planned.
@@ -112,7 +102,7 @@ None open.
 - **Simplest fix:** look them up in a Map keyed by path.
 - **Code:** `diff` and `partition` in `add-missing-files-to-optical-media-cold-storage.component.ts`.
 
-#### 11. Discs read without a JSON are numbered in the order they are inserted
+#### 10. Discs read without a JSON are numbered in the order they are inserted
 - **What happens:** read one by one ("This disc is now disc 3"), discs get the number of their turn, not the one on
   their label. The JSON Add missing files then writes keeps that order, so a later recovery with it asks for discs by
   numbers that don't match their labels.
@@ -120,7 +110,7 @@ None open.
 - **Simplest fix:** ask for them in order ("Insert disc 1") in the reading step.
 - **Code:** `readAllDiscsToReconstructTheCompleteBackupFilePaths` in `optical-disc-backup-data-retriever.component.ts`.
 
-#### 12. Small ones
+#### 11. Small ones
 - **A failed Cumulative copy shows two error dialogs** - one `.then(...).catch(...)` chain instead of two handlers in
   `incremental-copying.component.ts`.
 - **Cancel during the first count of "Planning discs" is ignored** - the scan resets the stop flag; reset it once, in
@@ -143,11 +133,8 @@ None open.
   was itself written by an Add missing files run that read the discs, which has no SHA-256 - so the advice can't be
   followed. Reword it: leave this file out (`splitLargeFileIntoPieces` in `app/workers/worker.ts`).
 - **A read-only save location for the metadata JSON** leaves a loading dialog open with no message - catch the error.
-- **Files that grew since planning** are burned without a fit check; ImgBurn then refuses the disc - plan again.
 - **Split pieces get discs of their own** - they never fill the last ordinary disc's free space (e.g. 3 DVDs where 2
   would do). Wasteful, not wrong.
-- **Recovered files are all read-only** - files on a disc are, and the copy keeps the mark. Clear it after
-  recovering (recovery only).
 - **The label burned on a disc is cut to 32 characters** - "<collection name> Disc N" loses "Disc N" when the name is
   long. Shorten the name part so " Disc N" always fits; recovery doesn't need the label.
 - **A read-only file hard-linked into the backup from outside** loses its read-only mark outside too when it is
@@ -155,6 +142,20 @@ None open.
 
 ## Limitations (by design)
 
+- **Nothing is planned or sent beyond a disc's capacity times its maxRepletionRatio** - the rest is a safety margin,
+  never spent. Planning (`partitionBackupToOpticalMedia`) counts a split file's pieces at
+  what they really take (`plannedPieceSize`: every piece but the last is one volume; the last gets 64 KiB for 7-Zip's
+  own records), and each disc's list of original names (`originalNamesEntryBytes` + `ORIGINAL_NAMES_FILE_BASE_BYTES`
+  in `disc-names.ts`, once per disc holding a shortened name); a file that fits only without its list is too large for
+  a disc. At "Send to ImgBurn" both wizards check what the disc really holds (`discContentBytes` in `optical-media.ts`,
+  its list included) and refuse the disc ("Disc too full") when files grew since planning; slivers are accepted, and
+  overflow discs filled, by the same measure. Tested in `worker-ipc/test-long-names-on-disc.js` (sections 1, 6, 7).
+- **A disc full of very small files may not fit:** discs are planned by file sizes only, but each file also takes
+  about 3 KB on a disc. The share kept free covers roughly 16,000 files on a CD, 46,000 on a DVD, 81,000 on a 25 GB
+  Blu-ray; a full disc of smaller files than that doesn't fit, and ImgBurn refuses it (estimate, not measured). Only
+  backups with tens of thousands of tiny files (source code, mail, thumbnails) meet it; the README says so and
+  suggests zipping such folders first. If it ever needs more: count each file as its size rounded up to 2 KB, plus
+  3 KB (`partitionBackupToOpticalMedia` in `app/workers/worker.ts`; the README table "How many files fit on one disc").
 - **Changed files are replaced safely** (Cumulative backup, Sync, recovery): the new copy is written next to the old
   one under a temporary name (`~my-backup-copy-<hex>.tmp`), then renamed over it - a copy that fails part way leaves
   the old one as it was. Needs room for both until done; a crash leaves the temporary file behind.
@@ -163,6 +164,9 @@ None open.
   `UpdateBackupProceed` in `incremental-entry-point.component.ts`.)
 - **Recovery only copies into an empty folder** - checked at "Next" and again right before copying - so no file
   already there is ever replaced (`recovery-folder.ts`). Tested in `ui/test-recover-single-disc.js`.
+- **Recovered files are writable:** on a disc every file is read-only (measured on a real ImgBurn disc), and a copy
+  keeps that mark, so recovery clears it (`clearReadOnly` in `createTree`, recovery only). A file that was read-only
+  in the folder backed up comes back writable too - the disc cannot tell. Tested in `ui/test-recover-single-disc.js`.
 - **FAT / FAT32 are not supported** (stated in the README).
 - **Links are never backed up**, by any feature: left out, logged in logs.txt, and counted in a dialog the wizard
   already shows. Sync deletes links in its target (the link itself); Cumulative backup never deletes. A chosen folder

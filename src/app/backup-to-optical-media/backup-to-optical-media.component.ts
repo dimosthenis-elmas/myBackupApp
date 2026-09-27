@@ -15,7 +15,7 @@ import { SerialQueue } from '../shared/utils/serial-queue';
 import { PIECE_ENDING, withoutPieceTotal } from '../../../app/workers/split-pieces';
 import { withLinksLeftOutNote } from '../shared/utils/links-note';
 import { discsLabel, splitFileOf } from '../shared/utils/split-files';
-import { OPTICAL_MEDIA, OpticalMedium } from '../shared/utils/optical-media';
+import { OPTICAL_MEDIA, OpticalMedium, discContentBytes } from '../shared/utils/optical-media';
 import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
 import { confirmDiscNameAndPathLimits, metadataEntriesForDisc } from '../shared/utils/shortened-names';
@@ -804,8 +804,21 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       const requestedPaths = new Set(selectedRelativePaths.map(withoutPieceTotal));
       const normalStats = realStats.filter(e => requestedPaths.has(withoutPieceTotal(e.path)));
       const ownSurplusStats = realStats.filter(e => !requestedPaths.has(withoutPieceTotal(e.path)));
-      let discUsedBytes = normalStats.reduce((sum, e) => sum + e.stats.size, 0);
       const finalStats = normalStats.slice();
+
+      // Never more on a disc than effectiveMediaCapacityInBytes - the rest is a safety margin. The plan counted everything
+      // (the list of original names too - see discContentBytes); only files that grew since planning can make it more.
+      if (discContentBytes(normalStats) > this.effectiveMediaCapacityInBytes) {
+        this.pendingOverflowPartials = this.pendingOverflowPartials.concat(ownSurplusStats);
+        const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        errorDialog.componentInstance.title = "Disc too full";
+        errorDialog.componentInstance.message = `Disc ${i + 1} no longer fits: some of its files grew since the discs were ` +
+          `planned. Untick a file on this disc, or plan the discs again.`;
+        errorDialog.componentInstance.actionsNum = 1;
+        errorDialog.componentInstance.action1Label = "Ok";
+        errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
+        return;
+      }
 
       // A surplus partial is accepted onto THIS disc only if the disc's total real, created size still fits
       // within effectiveMediaCapacityInBytes - the SAME margin-discounted capacity partitionBackupToOpticalMedia
@@ -826,8 +839,7 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       this.pendingOverflowPartials = [];
       const acceptedSurplusPartials: filesMetadata[] = [];
       for (const surplusPartial of candidateSurplusPartials) {
-        if (discUsedBytes + surplusPartial.stats.size <= this.effectiveMediaCapacityInBytes) {
-          discUsedBytes += surplusPartial.stats.size;
+        if (discContentBytes(finalStats.concat([surplusPartial])) <= this.effectiveMediaCapacityInBytes) {
           finalStats.push(surplusPartial);
           acceptedSurplusPartials.push(surplusPartial);
         } else {
@@ -933,15 +945,12 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
 
     const overflowPartitions: filesMetadata[][] = [];
     let currentPartition: filesMetadata[] = [];
-    let currentPartitionBytes = 0;
     for (const partial of this.pendingOverflowPartials) {
-      if (currentPartition.length > 0 && currentPartitionBytes + partial.stats.size > this.effectiveMediaCapacityInBytes) {
+      if (currentPartition.length > 0 && discContentBytes(currentPartition.concat([partial])) > this.effectiveMediaCapacityInBytes) {
         overflowPartitions.push(currentPartition);
         currentPartition = [];
-        currentPartitionBytes = 0;
       }
       currentPartition.push(partial);
-      currentPartitionBytes += partial.stats.size;
     }
     if (currentPartition.length > 0) {
       overflowPartitions.push(currentPartition);

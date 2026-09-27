@@ -88,7 +88,8 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
 
   Files are recovered only into an **empty folder**, so that no file already there can be replaced: a folder that
   holds anything is refused - when you click "Next", and again right before copying starts - and you choose an empty
-  one, or create a new one.
+  one, or create a new one. Recovered files are writable: on a disc every file is read-only, and recovery clears that
+  mark (so a file that was read-only in the folder you backed up comes back writable too).
 
   Choosing any piece of a split large file chooses all of its pieces. If any recovered files are parts of a large
   file that was split across discs, the app offers to reassemble the
@@ -189,6 +190,13 @@ These apply to more than one feature, or to the app as a whole.
   message names the folder it leads to; choose that one instead. (Recovery says so when it starts copying from the
   first disc.) Cumulative backup and Synchronize dirs also refuse two folders where one is inside the other.
 
+- **What is planned onto a disc** ("Backup to optical media" and "Add missing files"): never more than its capacity
+  times its fill ratio - 93% of a CD, 97% of a DVD, 99% of a Blu-ray; the rest is kept free as a safety margin. That
+  counts the files, the pieces of split files with room for 7-Zip's own few bytes in each file's last piece, and a
+  disc's list of original names (see "Long names" below). When a disc is sent to ImgBurn, what it really holds is
+  checked again: if some of its files grew since the discs were planned, the disc is refused ("Disc too full") -
+  untick a file on it, or plan the discs again.
+
 - **How many files fit on one disc** ("Backup to optical media" and "Add missing files"): discs are planned by the
   files' own sizes only, but on a disc every file also takes about 3 KB more - a file record, plus its data rounded
   up to whole 2 KB sectors - and that comes out of the share of each disc kept free (7% of a CD, 3% of a DVD, 1% of a
@@ -214,8 +222,9 @@ These apply to more than one feature, or to the app as a whole.
   large file split into pieces, counting the ending such as ".outOf.23.part.001" its pieces add - and recommends that you cancel and shorten
   them in your folder. If you continue instead, each one is burned under a shorter name, on the disc only: its first
   part, then "~" and a code of 8 characters, then its extension. Your own files are never renamed or changed. The
-  metadata JSON records each original name, and so does a file on each such disc, `my-backup original names.json`,
-  so recovering - from the JSON or from the discs alone - puts the original names back; other programs show the
+  metadata JSON records each original name, and so does a file on each such disc, `my-backup original names.json`
+  (counted when the discs are planned), so recovering - from the JSON or from the discs alone - puts the original
+  names back; other programs show the
   shorter names on the disc. A disc burned by an older version of the app has such a name cut by ImgBurn itself, and
   its metadata JSON does not match it: recover that disc by reading the discs, not from the JSON.
 

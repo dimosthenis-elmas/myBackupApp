@@ -1,3 +1,12 @@
+import { originalNamesFileBytes } from '../../../../app/workers/disc-names';
+
+/** What `files` (a disc's, by their paths on the disc) take up on it: their sizes, plus the list of original names the
+ *  disc gets when a name on it is too long for a disc (see originalNamesFileBytes). Never more than a disc's capacity
+ *  times its maxRepletionRatio may be put on it - the rest is a safety margin. */
+export function discContentBytes(files: Array<{ path: string, stats: { size: number } }>): number {
+  return files.reduce((sum, e) => sum + e.stats.size, 0) + originalNamesFileBytes(files.map((e) => e.path));
+}
+
 /** A kind of disc the "Backup to optical media" and "Add missing files" wizards can plan and burn. */
 export interface OpticalMedium {
   value: string;
