@@ -73,6 +73,9 @@ export class SyncDirsComponent {
    *  before each phase, so no phase starts after Cancel - including when Cancel was pressed before the commit
    *  itself had started. */
   commitCancelled=false;
+  /** Files that could not be copied during the commit (locked by another program, etc.) and were skipped - the
+   *  commit still finishes, but checkAndShowSyncResult reports the sync as incomplete when this is non-empty. */
+  skippedFiles: string[] = [];
 
   @ViewChild(ScrollableListComponent)  set scrollableLogsList(v: ScrollableListComponent) {
     setTimeout(() => {
@@ -373,6 +376,9 @@ export class SyncDirsComponent {
     // unhandled here, leaving the disableClose loading dialog open forever with no error shown.
     try {
       this.pathsOfFilesToBeCopied = await this.getPathsOfFilesToBeCopied();
+      // The user cancelled while the first comparison was running: don't start the second - it is slow and would
+      // also be misleading after a cancel. Nothing has been written to disk either way.
+      if (userCancelledOperation) { return; }
       diffProgressListener = listenForDiffProgress();
       this.pathsOfFilesToBeDeleted = await this.getPathsOfFilesToBeDeleted();
       this.letterCaseRenames = (await ipc.matchLetterCase(this.backup.sourcePath, this.backup.targetPath, false)).res;
@@ -545,12 +551,15 @@ export class SyncDirsComponent {
       });
     });
 
-    this.copyFilesPromise = ipc.incrementalCopyFiles(this.pathsOfFilesToBeCopied, this.backup.sourcePath, this.backup.targetPath, 'replace');
+    this.copyFilesPromise = ipc.incrementalCopyFiles(this.pathsOfFilesToBeCopied, this.backup.sourcePath, this.backup.targetPath, 'replace', undefined, false, true);
     const copyResult = await this.copyFilesPromise;
     // See the identical cleanup (and its comment) in previewOperationsBeforeCommiting - this listener has
     // already handled the final message by the time copyFilesPromise resolved, and the delete-phase listener
     // registered next needs this one gone first so it isn't left dangling once THAT one is itself reassigned.
     this.workerListener.removeListener();
+    // Files skipped as unreadable (see skipUnreadable above) - carried out so checkAndShowSyncResult reports
+    // the sync as incomplete instead of success.
+    this.skippedFiles = Array.isArray(copyResult.res) ? copyResult.res : [];
     if (copyResult.status === 'stopped' || this.commitCancelled) {
       // Cancel was pressed during the copy phase: the deletions must not start.
       this.backup.previewLogsStream.complete();
@@ -640,13 +649,17 @@ export class SyncDirsComponent {
       loadingDialogRef.close();
     }
 
-    const resultDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: result && !result.matched ? '700px' : '450px' });
+    const resultDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: (result && !result.matched) || this.skippedFiles.length > 0 ? '700px' : '450px' });
     resultDialog.componentInstance.actionsNum = 1;
     resultDialog.componentInstance.action1Label = "Ok";
     resultDialog.componentInstance.action1Callback = () => { resultDialog.close(); }
     if (!result) {
       resultDialog.componentInstance.title = "Directory synchronization";
       resultDialog.componentInstance.message = `Directory synchronization completed, but checking the result afterwards failed: ${checkError}`;
+    } else if (this.skippedFiles.length > 0) {
+      resultDialog.componentInstance.title = "Directory synchronization incomplete";
+      resultDialog.componentInstance.message = `${this.skippedFiles.length} file(s) could not be copied (e.g. open in another program) - the rest were synchronized.`;
+      resultDialog.componentInstance.lists = [{ label: `Skipped (${this.skippedFiles.length}):`, items: this.skippedFiles }];
     } else if (result.matched) {
       resultDialog.componentInstance.title = "Directory synchronization successful";
       resultDialog.componentInstance.message = `Directory synchronization completed successfully. Both directories hold ` +

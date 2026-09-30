@@ -141,7 +141,23 @@ export class AppComponent implements OnInit {
         filters: [{ name: executable.fileName, extensions: ['exe'] }]
       });
       const chosenPath: string | undefined = (res.filePaths && res.filePaths.length > 0) ? res.filePaths[0] : undefined;
-      if (chosenPath) { return chosenPath; }
+      if (!chosenPath) { continue; } // the file picker was cancelled - back to the dialog
+      // Accept only the program file itself (7z.exe / ImgBurn.exe): a wrong pick (7zFM.exe, a portable launcher,
+      // the installer) exists too, so it would otherwise be kept for good and every later use would fail.
+      const chosenName = chosenPath.replace(/\\/g, '/').split('/').pop();
+      if (chosenName && chosenName.toLowerCase() === executable.fileName.toLowerCase()) {
+        return chosenPath;
+      }
+      await new Promise<void>((resolve) => {
+        const dialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        dialog.disableClose = true;
+        dialog.componentInstance.title = "Wrong file";
+        dialog.componentInstance.message =
+          `That is not ${executable.program}. Select the file named ${executable.fileName}.`;
+        dialog.componentInstance.actionsNum = 1;
+        dialog.componentInstance.action1Label = "Ok";
+        dialog.componentInstance.action1Callback = () => { dialog.close(); resolve(); };
+      });
     }
   }
 

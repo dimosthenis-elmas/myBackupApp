@@ -74,8 +74,9 @@ export class IncrementalCopyingComponent implements OnInit, OnDestroy {
 
   ngAfterViewInit() {
     // 'keep-both': see the matching preview call in incremental.component.ts.
-    this.copyingPromise = ipc.incrementalCopyFiles(this.selectedFiles, this.backup.sourcePath, this.backup.targetPath, 'keep-both')
-    
+    // skipUnreadable: a file locked by another program is skipped (and listed below), not fatal.
+    this.copyingPromise = ipc.incrementalCopyFiles(this.selectedFiles, this.backup.sourcePath, this.backup.targetPath, 'keep-both', undefined, false, true)
+
     this.copyingPromise.catch((err)=>{
       this.onError(err);
     });
@@ -84,10 +85,17 @@ export class IncrementalCopyingComponent implements OnInit, OnDestroy {
       this.finished = true;
       if (res.status == 'completed') {
         this.dialog.closeAll();
-        const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
-        loadingDialogRef.componentInstance.message =
-          `The files have been copied successfully`;
-        loadingDialogRef.componentInstance.title = "Copy"
+        const skipped = Array.isArray(res.res) ? res.res : [];
+        const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: skipped.length > 0 ? '700px' : '450px'});
+        if (skipped.length === 0) {
+          loadingDialogRef.componentInstance.message = `The files have been copied successfully`;
+          loadingDialogRef.componentInstance.title = "Copy";
+        } else {
+          loadingDialogRef.componentInstance.message =
+            `${skipped.length} file(s) could not be copied (e.g. open in another program) - the rest were copied.`;
+          loadingDialogRef.componentInstance.title = "Copy incomplete";
+          loadingDialogRef.componentInstance.lists = [{ label: `Skipped (${skipped.length}):`, items: skipped }];
+        }
       }else if(res.status == 'stopped'){
         this.dialog.closeAll();
         const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});

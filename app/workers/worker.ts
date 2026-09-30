@@ -1041,7 +1041,11 @@ const readJSONfromDisk = async function(path: string): Promise<Object> {
 }
 
 const writeJSONtoDisk = async function(path: string, json:Object): Promise<void> {
-  await fs.promises.writeFile(path, json);
+  // Write to a temporary sibling first, then rename it over the target, so a crash or power cut part-way through
+  // can never leave the real JSON empty or cut short (an in-place write could).
+  const temporaryPath = path + '.tmp';
+  await fs.promises.writeFile(temporaryPath, json);
+  await fs.promises.rename(temporaryPath, path);
   return;
 }
 
@@ -1082,8 +1086,6 @@ const getAllFilePathsWithStats = async function (
   linksLeftOut?: string[]
 ): Promise<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean}}>> {
 
-  // This resets the stop signal in case the user canceled the operation previously.
-  process.env._stop = 'NoStop'
   let files: Array<string> = fs.readdirSync(dirPath)
 
   arrayOfFiles = arrayOfFiles || []
@@ -1288,7 +1290,6 @@ const partitionArrayBasedOnFilter = <T,>(
  *  already on discs: split whatever their size, into the same number of pieces, and only the missing pieces planned. */
 const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapacityInBytes: number, maxRepletionRatio: number, splitLargeFiles:boolean=false, sessionId: string, filesMetadata?:filesMetadata[], onProgress?: (line: string) => void, skipUnreadable: boolean = false, linksLeftOut?: string[], incompleteSplitFiles: IncompleteSplitFile[] = []): Promise<ColdStorageMetadata>{
   assertValidSessionId(sessionId);
-  process.env._stop="NoStop";
 
   // A disc is filled at most up to maxRepletionRatio of its rated capacity - see
   // getEffectiveOpticalMediumCapacityInBytes's own comment for why this margin exists.
@@ -1305,6 +1306,18 @@ const partitionBackupToOpticalMedia = async function(dirPath: string, mediaCapac
 
   // No trailing backslash - except on a drive root ("D:\"), which needs it (see trimTrailingBackslash).
   dirPath = asScanRoot(trimTrailingBackslash(dirPath));
+
+  // The app's own temp folder must not be inside the folder being backed up (or the folder inside it): split
+  // pieces live there, and when the source contains the temp folder their paths get trimmed wrongly (both
+  // wizards trim a source-prefix and a temp-prefix off each path) and every disc holding a piece fails to send.
+  const resolvedSource = node_path_module.resolve(dirPath);
+  const resolvedTemp = node_path_module.resolve(tempDataDirectoryPath);
+  if (isPathStrictlyInside(resolvedTemp, resolvedSource) || isPathStrictlyInside(resolvedSource, resolvedTemp)) {
+    throw {
+      msg: 'The folder you chose contains the app\'s own working folder, where it keeps files while burning a disc. Move the app to a different folder, or choose another folder to back up.',
+      err_code: 'SOURCE_FOLDER_CONTAINS_TEMP_DIRECTORY'
+    };
+  }
 
   // Skips the scan entirely when filesMetadata is given (its result would just be thrown away below) - this
   // used to run unconditionally, silently wasting however long a full scan of dirPath took even when the
@@ -1646,7 +1659,7 @@ const splitLargeFileIntoPieces = async function (originalAbsolutePath: string, f
         if (!recorded) {
           throw new Error(`"${originalAbsolutePath}": no SHA-256 is known for its piece ${piece.number} of ${burned.total} ` +
             `already on a disc, so the app cannot check that the pieces still missing fit together with it. Nothing was ` +
-            `sent - give "Add missing files" the cold storage metadata JSON, rather than reading the discs.`);
+            `sent - start "Add missing files" again and leave this file out.`);
         }
         if (await sha256OfFile(node_path_module.join(partialDir, piece.name)) !== recorded) {
           throw new Error(`${changed} (its piece ${piece.number} of ${burned.total} is no longer the same). ${outOfSync}`);
@@ -2548,7 +2561,14 @@ const diff = async function (source: string, target: string, onProgress?: (line:
         // Size and mtime say "unchanged" - the bytes are the only thing left that can still differ. Sizes are
         // equal here, so haveSameContent's chunk-by-chunk comparison is well defined.
         contentBuffers = contentBuffers || [Buffer.allocUnsafe(CONTENT_COMPARE_CHUNK_BYTES), Buffer.allocUnsafe(CONTENT_COMPARE_CHUNK_BYTES)];
-        differs = !(await haveSameContent(sourcePath, targetPath, contentBuffers));
+        try {
+          differs = !(await haveSameContent(sourcePath, targetPath, contentBuffers));
+        } catch (error) {
+          // A file that cannot be read (locked by another program) cannot be compared: treat it as differing, so
+          // it is scheduled for the copy step - which, with skipUnreadable, skips it and lists it, rather than
+          // this comparison failing outright.
+          differs = true;
+        }
         contentWasCompared = true;
       }
       if (differs) {
@@ -2661,13 +2681,17 @@ const recoveryFolderState = function (folder: string): 'empty' | 'not-empty' | '
  *  @param clearReadOnly for recovery: every file on a disc is read-only, and a copy keeps that mark - each copied file
  *  is made writable. */
 const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boolean, source: string, target: string, nameClash?: NameClash,
-  sourcePaths?: { [path: string]: string }, clearReadOnly: boolean = false): Promise<void> {
+  sourcePaths?: { [path: string]: string }, clearReadOnly: boolean = false, skipUnreadable: boolean = false): Promise<string[]> {
   process.env._stop = "noStop";
   refuseLinkedFolder(target);
 
   if (source[source.length - 1] != '\\') { source += "\\"; }
   if (target[target.length - 1] != '\\') { target += "\\"; }
   let tree = newNameTree()
+
+  // One "<path>  -  <reason>" line per file that could not be copied and was skipped instead (only when
+  // skipUnreadable - see insertBranch). Returned to the caller so it can list them and, for Sync, not claim success.
+  const skippedFiles: string[] = [];
 
   let path: string;
   for (let index = 0; index < sourceOnlyPaths.length; index++) {
@@ -2677,7 +2701,7 @@ const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boole
     }
     path = sourceOnlyPaths[index];
     let tokens = path.split('\\')
-    insertBranch(tree, tokens, 0, doCopy, source, target, nameClash, sourcePaths, clearReadOnly);
+    insertBranch(tree, tokens, 0, doCopy, source, target, nameClash, sourcePaths, clearReadOnly, skipUnreadable, skippedFiles);
     // A dedicated progress marker, on top of insertBranch's own descriptive lines above (which don't map 1:1 to
     // items - a copy can log a size-tier line plus a "copied/updated" line, a directory logs its own separate
     // "will create"/"created" line, etc.) - callers who already know sourceOnlyPaths.length up front (every one
@@ -2687,7 +2711,7 @@ const createTree = async function (sourceOnlyPaths: Array<string>, doCopy: boole
     logsBuffer.push(`Processed item (${index + 1} of ${sourceOnlyPaths.length})`);
     await holdOn();
   }
-  //console.log(tree)
+  return skippedFiles;
 }
 
 //Note: the pathsMarkedForDeletion contain a list of full paths consisting of 2 cases:
@@ -3109,7 +3133,7 @@ const copyEntryReplacingTarget = function (sourcePath: string, targetPath: strin
  *  recovery's paths come from a metadata JSON, or from a list of original names on a disc. With `clearReadOnly`
  *  (recovery - see createTree), a copied file is made writable. */
 const insertBranch = function (tree: any, tokens: Array<string>, index: number, doCopy: boolean, source: string, target: string, nameClash?: NameClash,
-  sourcePaths?: { [path: string]: string }, clearReadOnly: boolean = false): void {
+  sourcePaths?: { [path: string]: string }, clearReadOnly: boolean = false, skipUnreadable: boolean = false, skippedFiles: string[] = []): void {
   const refuseUnlessInside = (fullPath: string, folder: string): void => {
     if (!isPathStrictlyInside(node_path_module.resolve(fullPath), node_path_module.resolve(folder))) {
       throw new Error(`"${fullPath}" is not inside "${folder}" - nothing was copied there.`);
@@ -3134,8 +3158,18 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
         existingTarget = null;
       }
       if (doCopy) {
-        copyEntryReplacingTarget(source_path, target_path);
-        if (clearReadOnly) { fs.chmodSync(target_path, 0o666); } // on Windows: clears only the read-only mark
+        try {
+          copyEntryReplacingTarget(source_path, target_path);
+          if (clearReadOnly) { fs.chmodSync(target_path, 0o666); } // on Windows: clears only the read-only mark
+        } catch (error) {
+          if (!skipUnreadable) { throw error; }
+          // A file locked by another program (or otherwise unreadable) is skipped, not fatal: the rest is still
+          // copied, and the caller lists what was skipped (Sync then does not report success).
+          const message = error && (error as any).message ? (error as any).message : String(error);
+          skippedFiles.push(`${source_path}  -  ${message}`);
+          logsBuffer.push(`skipped file (could not be copied) :` + target_path);
+          return;
+        }
         if(existingTarget){
           logsBuffer.push(`updated existing file :` + target_path);
         }else{
@@ -3175,7 +3209,7 @@ const insertBranch = function (tree: any, tokens: Array<string>, index: number, 
     }
     let a = tokens[index]
     index += 1
-    insertBranch(tree[a], tokens, index, doCopy, source, target, nameClash, sourcePaths, clearReadOnly);
+    insertBranch(tree[a], tokens, index, doCopy, source, target, nameClash, sourcePaths, clearReadOnly, skipUnreadable, skippedFiles);
   }
 }
 
@@ -3442,12 +3476,9 @@ const createIBB_file = async function(disk_id: number, paths: Array<string>, sou
   await saveIBB_toDisk(pathToIBBFile, pathTo_IBB_Template, [
     { regEx: /\[START_BACKUP_LIST\]/g, dataToInsert: ["[START_BACKUP_LIST]"].concat(logs).join('\r\n') },
     { regEx: /VolumeLabel_UDF=/, dataToInsert: 'VolumeLabel_UDF=' + resolvedVolumeLabel }
-  ]).then(() => {
-      // Now the IBB file has been created. Open ImgBurn using this file as source list.
-      invokeImgBurnOnIBBFile(pathToIBBFile);
-  }).catch(err => {
-    console.log(err);
-  });
+  ]);
+  // Now the IBB file has been created. Open ImgBurn using this file as source list.
+  invokeImgBurnOnIBBFile(pathToIBBFile);
 
   return { lines: logs, discPaths, originalNamesFile };
 }
@@ -3585,13 +3616,13 @@ const init = function() : void
         logsBuffer.setChannel("incremental-copy-files");
         createTree(arg.params.sourceOnlyPaths, /*doCopy=*/true, arg.params.source, arg.params.target, asNameClash(arg.params.nameClash),
           (arg.params.sourcePaths && typeof arg.params.sourcePaths === 'object') ? arg.params.sourcePaths : undefined,
-          arg.params.clearReadOnly === true).then((res) => {
-        //dummy_copy().then((res) => {
+          arg.params.clearReadOnly === true, arg.params.skipUnreadable === true).then((res) => {
           logsBuffer.flush(); // whatever remained in the buffer
           //tell user that the function has finished
           if (process.env._stop != 'stop') {
-            //finished completely
-            ipc.sendResponseToMain({ key: "incremental-copy-files", res: null, status: "completed" });
+            //finished completely - res is the list of files that could not be copied and were skipped (see
+            // createTree/insertBranch), so a caller can list them (and Sync not claim success).
+            ipc.sendResponseToMain({ key: "incremental-copy-files", res: res, status: "completed" });
           } else {
             //stopped by the user
             ipc.sendResponseToMain({ key: "incremental-copy-files", res: null, status: "stopped" });
@@ -3607,6 +3638,9 @@ const init = function() : void
       case 'partition-backup-to-optical-media':
         console.log("(worker) in partition-backup-to-optical-media")
         logsBuffer.setChannel('partition-backup-to-optical-media');
+        // Resets any stale `stop` once, here, rather than inside the scan/partition helpers - those used to reset
+        // it at their own start and so wiped a cancel issued during this plan's first countAllFilesQuick probe.
+        process.env._stop = 'NoStop';
         const linksLeftOutByPlanning: string[] = [];
         partitionBackupToOpticalMedia(arg.params.rootPath, arg.params.mediaCapacityInBytes, arg.params.maxRepletionRatio, arg.params.splitLargeFiles, arg.params.sessionId, arg.params.filesMetadata, (line) => logsBuffer.push(line), arg.params.skipUnreadable === true, linksLeftOutByPlanning, arg.params.incompleteSplitFiles || []).then((d)=>{
           logsBuffer.flush(); // whatever remained in the buffer

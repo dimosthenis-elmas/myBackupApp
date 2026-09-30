@@ -26,51 +26,11 @@ None open.
 
 ### Medium
 
-#### 1. A file another program has open stops the whole run
-- **What happens:** a file locked by another program (an open Outlook `.pst`, a browser's profile) can't be read.
-  Cumulative backup and Sync stop at it and leave the rest uncopied; Sync's comparison fails outright; a disc with
-  it can't be sent.
-- **How likely:** fairly common if such programs are running during a backup. The error names the file, so the
-  workaround is easy: close that program and run again.
-- **Simplest fix:** in the copy step, skip a file that fails, carry on, and list the skipped files at the end (Sync
-  must then not report success).
-- **Code:** `insertBranch` / `copyEntryReplacingTarget`, `haveSameContent`, `sha256OfFile` in `app/workers/worker.ts`.
-
-#### 2. Splitting fails when the app's own folder is inside the folder being backed up
-- **What happens:** e.g. the app lives on the Desktop and the Desktop is backed up to discs. Split pieces live in the
-  app's temp folder, which is then also inside the source, and their paths get trimmed wrongly - every disc with a
-  piece fails to send ("plan the discs again", which doesn't help).
-- **How likely:** plausible - the app folder is portable and may sit anywhere, the Desktop included.
-- **Simplest fix:** refuse a source folder that contains the app's temp folder, saying why (move the app, or choose
-  another folder).
-- **Code:** the path trimming in `WriteToOpticalMediaProceed` (Backup to optical media) and `sendToImgBurn` (Add
-  missing files).
-
-#### 3. The metadata JSON is rewritten in place
-- **What happens:** each confirmed disc rewrites the whole JSON; a crash or power cut in that instant leaves it empty
-  or cut short. The discs themselves are fine - recovery and Add missing files can read the discs instead.
-- **How likely:** very unlikely (a write of a moment).
-- **Simplest fix:** write `<name>.tmp` first, then rename it over the JSON. No test needed.
-- **Code:** `writeJSONtoDisk` in `app/workers/worker.ts`.
+None open.
 
 ### Low
 
-#### 4. A failed ImgBurn project write is reported as success
-- **What happens:** if the `.ibb` file can't be written (the temp folder became unwritable), the disc is still marked
-  sent and ImgBurn just doesn't open. Sending the disc again rebuilds it, so the job can go on.
-- **How likely:** rare.
-- **Simplest fix:** make that failure an error, so the wizard's existing message shows. No test needed.
-- **Code:** `createIBB_file` in `app/workers/worker.ts`.
-
-#### 5. A wrongly chosen 7-Zip or ImgBurn is kept for good
-- **What happens:** the "not found" dialog saves whatever .exe is picked (7zFM.exe, a portable launcher, the ImgBurn
-  setup file): as that file exists, it is never asked again - every split then fails with "plan the discs again",
-  and "Send to ImgBurn" starts the wrong program. Only editing config.json gets out of it.
-- **How likely:** only where the program is not installed in the usual place (portable copies), but then it sticks.
-- **Simplest fix:** the chooser accepts only a file named 7z.exe or ImgBurn.exe, and says so otherwise.
-- **Code:** `askWhereExecutableIs` in `app.component.ts`; `locateExecutables` in `app/workers/worker.ts`.
-
-#### 6. An unreadable folder inside Cumulative backup's backup folder is reported as "NOT backed up"
+#### 1. An unreadable folder inside Cumulative backup's backup folder is reported as "NOT backed up"
 - **What happens:** the "Some items were left out" warning also lists folders in the backup folder that can't be read,
   as if they were source folders left out.
 - **How likely:** rare (a drive root, which always did this, is now refused).
@@ -79,7 +39,7 @@ None open.
   also backs up the recycle bin and warns about "System Volume Information" every time. Simplest: refuse it there too,
   like Cumulative backup and Sync.
 
-#### 7. The startup checks run again after every Home
+#### 2. The startup checks run again after every Home
 - **What happens:** Home reloads the whole app, so what runs at start runs again: the "leftover items in the temp
   folder" offer comes back, and a 7-Zip or ImgBurn "not found" dialog answered "Not now" is asked again - "Not now"
   lasts only until the next Home.
@@ -87,33 +47,16 @@ None open.
 - **Simplest fix:** run the startup checks once per launch - a flag in `sessionStorage` survives the reload.
 - **Code:** `ngOnInit` in `app.component.ts`; `goToMainMenuAndReload` in `src/app/shared/utils/go-to-main-menu.ts`.
 
-#### 8. Discs read without a JSON are numbered in the order they are inserted
-- **What happens:** read one by one ("This disc is now disc 3"), discs get the number of their turn, not the one on
-  their label. The JSON Add missing files then writes keeps that order, so a later recovery with it asks for discs by
-  numbers that don't match their labels.
-- **How likely:** whenever the discs are not inserted in label order.
-- **Simplest fix:** ask for them in order ("Insert disc 1") in the reading step.
-- **Code:** `readAllDiscsToReconstructTheCompleteBackupFilePaths` in `optical-disc-backup-data-retriever.component.ts`.
-
-#### 9. Small ones
+#### 3. Small ones
 - **A failed Cumulative copy shows two error dialogs** - one `.then(...).catch(...)` chain instead of two handlers in
   `incremental-copying.component.ts`.
-- **Cancel during the first count of "Planning discs" is ignored** - the scan resets the stop flag; reset it once, in
-  the request handler.
-- **Sync: Cancel during the first comparison doesn't stop the second** - check `userCancelledOperation` before the
-  second `diff` in `sync-dirs.component.ts`. Nothing is changed on disk.
-- **Backing up an empty folder to discs** ends in "this should never happen" - say "nothing to back up" at planning.
-- **Add missing files with nothing ticked** goes on to an empty list of discs and writes an "updated" JSON - say
-  "Tick at least one file" in `partition`.
 - **A JSON the user dropped is still used** - Add missing files uses a loaded JSON even after "Provide ... JSON" is
   unticked; Recover data, after a good JSON and then a failed pick, still uses the good one. Check the tick box in
   `step1`, and forget the loaded JSON when a pick fails.
-- **"No SHA-256 is known ... rather than reading the discs"** (resuming a split file) also shows when the JSON given
-  was itself written by an Add missing files run that read the discs, which has no SHA-256 - so the advice can't be
-  followed. Reword it: leave this file out (`splitLargeFileIntoPieces` in `app/workers/worker.ts`).
 - **A read-only save location for the metadata JSON** leaves a loading dialog open with no message - catch the error.
-- **Split pieces get discs of their own** - they never fill the last ordinary disc's free space (e.g. 3 DVDs where 2
-  would do). Wasteful, not wrong.
+- **A file locked by another program still stops a disc from being sent** (optical backup): unlike Cumulative backup
+  and Sync, whose copy step now skips and lists such files, a disc cannot be burned without a SHA-256 hash for every
+  file, so a file locked during hashing fails that disc's send with a clear error. Close the program and send again.
 - **The label burned on a disc is cut to 32 characters** - "<collection name> Disc N" loses "Disc N" when the name is
   long. Shorten the name part so " Disc N" always fits; recovery doesn't need the label.
 - **A read-only file hard-linked into the backup from outside** loses its read-only mark outside too when it is

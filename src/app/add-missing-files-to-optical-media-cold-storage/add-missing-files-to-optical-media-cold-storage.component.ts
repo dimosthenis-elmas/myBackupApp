@@ -645,6 +645,17 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       return;
     }
 
+    if (this.filesTree.getSelectedData().length === 0) {
+      const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
+      infoDialog.disableClose = true;
+      infoDialog.componentInstance.title = "No files selected";
+      infoDialog.componentInstance.message = `Tick at least one file to add to the cold storage.`;
+      infoDialog.componentInstance.actionsNum = 1;
+      infoDialog.componentInstance.action1Label = "Ok";
+      infoDialog.componentInstance.action1Callback = () => { infoDialog.close(); }
+      return;
+    }
+
     this.isPartitioning = true;
     let partitionProgressListener: WorkerListener | undefined;
     try {
@@ -698,7 +709,20 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       // disc by disc, in sendToImgBurn - see its own comment and createOpticalMediaDiscPartials in worker.ts.
       // A large file only some of whose pieces are on discs gets only its missing pieces planned (see incompleteSplitFiles).
       const incompleteSplitFilesSelected = this.incompleteSplitFiles.filter((f) => selectedPathsWithMetadata.some((s) => s.path === f.path));
-      this.partitions =  (await ipc.partitionBackupToOpticalMedia(this.backup.targetPath, this.selected_optical_medium.capacity, this.selected_optical_medium.maxRepletionRatio, true, this.tempSessionId, selectedPathsWithMetadata, false, incompleteSplitFilesSelected)).res;
+      try {
+        this.partitions =  (await ipc.partitionBackupToOpticalMedia(this.backup.targetPath, this.selected_optical_medium.capacity, this.selected_optical_medium.maxRepletionRatio, true, this.tempSessionId, selectedPathsWithMetadata, false, incompleteSplitFilesSelected)).res;
+      } catch (error) {
+        // E.g. the master folder contains the app's own temp folder (see partitionBackupToOpticalMedia) - show
+        // that message and stop, rather than going on to write an empty/unchanged JSON.
+        loadingDialogRef.close();
+        const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+        errorDialog.componentInstance.title = "Error";
+        errorDialog.componentInstance.message = `${error}`;
+        errorDialog.componentInstance.actionsNum = 1;
+        errorDialog.componentInstance.action1Label = "Ok";
+        errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); };
+        return;
+      }
       console.log(this.partitions)
 
       // Names too long for a disc, and paths too long for some programs: the user is told about every one before

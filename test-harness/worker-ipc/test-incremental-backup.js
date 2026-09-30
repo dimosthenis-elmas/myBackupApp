@@ -32,7 +32,8 @@
  *      - An unreadable entry (a folder Windows denies listing) in the source: with `skipUnreadable` - which is
  *        how the Cumulative backup wizard calls diff - the rest is still compared and one warning lists the
  *        skipped entry by full path; without it, diff fails.
- *      - A file that disappears between diff and the copy makes incremental-copy-files report an error.
+ *      - A file that disappears between diff and the copy makes incremental-copy-files report an error; with
+ *        skipUnreadable (the wizard's choice) it is instead skipped, the rest copied, and the file listed.
  *      - A changed file whose earlier copy in the backup is read-only (a copy of a read-only file is read-only
  *        too, and Windows refuses to copy over one) is replaced with the new version. Synchronize directories
  *        copies through the same incremental-copy-files.
@@ -346,6 +347,23 @@ async function main() {
     try { await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: vanishDiff.res, source: vanishSource, target: vanishTarget, nameClash: 'keep-both' }); } catch { copyReportedError = true; }
     results.vanishedFileMakesCopyReportAnError = copyReportedError;
     console.log(`  the copy reported an error: ${copyReportedError}`);
+
+    console.log('\nEdge case: a file that disappears between diff and the copy, with skipUnreadable...');
+    const vanishSkipSource = path.join(edgeRoot, 'source-vanish-skip');
+    const vanishSkipTarget = path.join(edgeRoot, 'target-vanish-skip');
+    writeFileAt(path.join(vanishSkipSource, 'will vanish.txt'), 'v', 0);
+    fs.mkdirSync(vanishSkipTarget, { recursive: true });
+    const vanishSkipDiff = await callWorker(win, 'diff', { source: vanishSkipSource, target: vanishSkipTarget });
+    fs.rmSync(path.join(vanishSkipSource, 'will vanish.txt'));
+    let skippedCopyResponse = null;
+    let skippedCopyError = null;
+    try {
+      skippedCopyResponse = await callWorker(win, 'incremental-copy-files', { sourceOnlyPaths: vanishSkipDiff.res, source: vanishSkipSource, target: vanishSkipTarget, nameClash: 'keep-both', skipUnreadable: true });
+    } catch (e) {
+      skippedCopyError = String(e.message).split('\n')[0];
+    }
+    results.vanishedFileIsSkippedAndReported = skippedCopyError === null && Array.isArray(skippedCopyResponse?.res) && skippedCopyResponse.res.length === 1;
+    console.log(`  the vanished file was skipped (not fatal) and reported: ${results.vanishedFileIsSkippedAndReported}${skippedCopyError ? ` (${skippedCopyError})` : ''}`);
 
     console.log('\nEdge case: a changed file whose earlier copy in the backup is read-only...');
     const readOnlySource = path.join(edgeRoot, 'source-read-only');

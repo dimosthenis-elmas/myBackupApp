@@ -344,6 +344,19 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
   
           loadingDialogRef.close();
 
+          // A source folder with no files (empty, or only empty folders) has nothing to burn - say so here rather
+          // than walking into a later "this should never happen" on an empty disc.
+          if (!opticalDiskPartitioningTrimmed.flat().some((x) => !x.stats.isDirectory)) {
+            const nothingDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
+            nothingDialog.disableClose = true;
+            nothingDialog.componentInstance.title = "Nothing to back up";
+            nothingDialog.componentInstance.message = `The folder you chose contains no files to back up.`;
+            nothingDialog.componentInstance.actionsNum = 1;
+            nothingDialog.componentInstance.action1Label = "Ok";
+            nothingDialog.componentInstance.action1Callback = () => { nothingDialog.close(); };
+            return;
+          }
+
           // Names too long for a disc, and paths too long for some programs: the user is told about every one, and
           // recommended to shorten them in their own folder first - planning again picks the new names up.
           if (!(await confirmDiscNameAndPathLimits(this.dialog, opticalDiskPartitioningTrimmed.flat().map(x => x.path),

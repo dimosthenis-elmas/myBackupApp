@@ -249,16 +249,19 @@ export class WorkerCommunicator {
      *  @param sourcePaths for recovery: where a file of `sourceOnlyPaths` is on the disc when its name there was
      *  shortened - see createTree in worker.ts.
      *  @param clearReadOnly for recovery: the copied files are made writable - on a disc every file is read-only, and
-     *  a copy keeps that mark. */
+     *  a copy keeps that mark.
+     *  @param skipUnreadable true to skip (and list, in the response's `res`) a file that cannot be copied instead of
+     *  failing the whole copy - Cumulative backup and Sync; recovery leaves it false so a bad disc still fails loudly. */
     static incrementalCopyFiles(sourceOnlyPaths: Array<string>, sourcePath: string, targetPath: string, nameClash?: NameClash,
-        sourcePaths?: { [path: string]: string }, clearReadOnly: boolean = false): Promise<WorkerResponse> {
+        sourcePaths?: { [path: string]: string }, clearReadOnly: boolean = false, skipUnreadable: boolean = false): Promise<WorkerResponse> {
         return this.sendAndAwaitResponse('incremental-copy-files', {
             sourceOnlyPaths: sourceOnlyPaths,
             source: sourcePath,
             target: targetPath,
             nameClash: nameClash,
             sourcePaths: sourcePaths,
-            clearReadOnly: clearReadOnly
+            clearReadOnly: clearReadOnly,
+            skipUnreadable: skipUnreadable
         }, 'response.res');
     }
 
