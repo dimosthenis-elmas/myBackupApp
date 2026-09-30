@@ -99,19 +99,18 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
 
   If the cold storage has SHA-256 checksums recorded, the app re-checks every recovered file once copying finishes
   and tells you exactly which ones (if any) failed - a real, actionable sign of drive or disc trouble, not just
-  "recovery completed." Files recovered from an older cold storage with no recorded checksum are listed as having
-  no integrity data, not as a failure. If any files do fail the check, you can choose to have just those files
+  "recovery completed." Files with no recorded checksum are listed as having no integrity data, not as a failure.
+  If any files do fail the check, you can choose to have just those files
   deleted.
 
 - **Add missing (new) files to existing optical media cold storage:** adds only the files that are new since your
   last backup, onto new discs - large files that don't fit on one disc are split the same way as in "Backup to
-  optical media." New discs always get SHA-256 checksums; if the existing cold storage JSON predates this feature,
-  those older entries are simply listed as having no integrity data when later verified or recovered. New discs
+  optical media." New discs always get SHA-256 checksums. Discs
   continue your collection's numbering (after 3 discs, the first new one is "Optical disk 4"), and every number the
   wizard shows is the one burned onto that disc's label.
 
   Split files are recognized by a naming convention (`largeFile.data` becomes `largeFile.data.outOf.3.part.001`,
-  etc.; discs burned by older versions of the app have `largeFile.data.part.001`), which can misfire if you happen
+  etc.), which can misfire if you happen
   to have unrelated files matching that same pattern. A large file only some of whose pieces are on your discs -
   the app was closed before the rest were burned - is listed as missing, and only its missing pieces are burned.
   Before they are, the app checks that splitting the file again gives back the very pieces already on your discs
@@ -132,9 +131,8 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   missing files" later with that JSON, and it burns whatever is not on your discs yet, the missing pieces of a split
   file included. A disc not burned yet is an empty entry at the end of the JSON; "Add missing files" drops those, so
   its new discs take their numbers: with discs 1 and 2 of 5 confirmed, the next new disc is disc 3. If you burned such
-  a disc without confirming it, set it aside - a new disc gets its number. A JSON from an older version of the app may
-  have an empty entry before a confirmed disc (discs could be burned in any order then): it stays, so that disc keeps
-  its number. Recovery, "Verify integrity" and "Add missing files" all accept a JSON with empty entries.
+  a disc without confirming it, set it aside - a new disc gets its number. Recovery, "Verify integrity" and
+  "Add missing files" all accept a JSON with empty entries.
 
 - **Verify integrity of cold storage disc:** a read-only wizard that checks a disc's SHA-256 checksums without
   recovering or copying anything - useful for periodically spot-checking discs you already have. Point it at the
@@ -229,8 +227,7 @@ These apply to more than one feature, or to the app as a whole.
   metadata JSON records each original name, and so does a file on each such disc, `my-backup original names.json`
   (counted when the discs are planned), so recovering - from the JSON or from the discs alone - puts the original
   names back; other programs show the
-  shorter names on the disc. A disc burned by an older version of the app has such a name cut by ImgBurn itself, and
-  its metadata JSON does not match it: recover that disc by reading the discs, not from the JSON.
+  shorter names on the disc.
 
   A whole path has no such limit on a disc, but some programs cannot open a file whose full path is over 259
   characters. The app lists such files before burning (by their path on the disc) and before recovering (by their
