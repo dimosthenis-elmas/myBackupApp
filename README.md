@@ -116,7 +116,9 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   the app was closed before the rest were burned - is listed as missing, and only its missing pieces are burned.
   Before they are, the app checks that splitting the file again gives back the very pieces already on your discs
   (by their SHA-256 checksums); if the file has changed since, the disc with its missing pieces is refused - your
-  cold storage is out of sync with that file, as with any other file that changed.
+  cold storage is out of sync with that file, as with any other file that changed. A large file that changed after
+  all of its pieces were already burned is not noticed by "Add missing files" - accepted as a compromise of cold
+  storage; a changed ordinary file, or a split file with pieces still missing, is still caught.
 
   Both "Backup to optical media" and "Add missing files" ask you where to save the resulting cold storage metadata
   JSON file, via a normal save dialog - named after the collection ("My Backup.json", and "My Backup - updated.json"
