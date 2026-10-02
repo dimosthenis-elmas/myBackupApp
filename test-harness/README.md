@@ -394,7 +394,9 @@ what each one does, since you'll see them imported (`require('../lib/...')`) at 
 
 All 6 of the app's main-menu features are covered end to end by automated tests — incremental backup,
 synchronize directories, recover data (both entry points: physically reading discs, and importing a cold storage
-metadata JSON), backup to optical media, add missing files to cold storage, and verify integrity of cold storage
+metadata JSON), backup to optical media, add missing files to cold storage (all three of its tasks: adding new files
+from a master folder and a metadata JSON, reading the discs alone with "I do not have a json", and adding
+already-burnt discs to an existing metadata JSON), and verify integrity of cold storage
 disc — including their real "Send to ImgBurn" clicks (safely redirected away from a real ImgBurn launch, never
 your actual ImgBurn). The SHA-256 integrity-checksum feature (a mandatory per-file hash recorded at backup time
 and checked again on recovery, or via the standalone verify wizard) is covered separately too - both its
@@ -406,12 +408,6 @@ mandatory backup-side hashing and its recovery-side corruption detection have th
 - The automated on-screen recovery test needs a short, deliberate pause to avoid a timing hiccup that only
   happens when clicking through much faster than a human ever would — not something a real person is likely to
   hit; see `ui/README.md`.
-
-## Natural next steps
-
-- **Automating the "add missing files" screen's OTHER entry point** — the "no JSON, physically re-insert every
-  existing disc one by one" path, deliberately skipped by `ui/test-add-missing-files.js` since it reuses the same
-  `<optical-disc-backup-data-retriever>` component `ui/test-recover-multi-disc.js` already thoroughly exercises.
 
 ## How bugs here actually get found
 

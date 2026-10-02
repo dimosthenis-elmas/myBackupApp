@@ -20,16 +20,23 @@ machinery to grab screenshots for the top-level README instead of verifying anyt
   (with the real ImgBurn launch safely redirected to a no-op stub - see its own section below).
 - `test-add-missing-files.js` — the "Add missing files to optical media cold storage" wizard - see its own
   section below.
+- `test-add-missing-files-update-existing-json.js` — that wizard's "Update cold storage metadata with
+  existing (already burnt) discs" task - see its own section below.
 - `test-verify-cold-storage-integrity.js` — the "Verify integrity of cold storage disc" wizard (the app's 6th
   main-menu feature, added alongside the SHA-256 integrity-checksum feature - see its own section below).
 
-Three more scripts each cover one specific edge case/sub-feature rather than a whole wizard - see their own
+Six more scripts each cover one specific edge case/sub-feature rather than a whole wizard - see their own
 sections below: `test-backup-to-optical-media-overflow-disc.js` (a rare large-file-split boundary case),
 `test-backup-to-optical-media-sha256.js` and `test-recover-integrity-detects-corruption.js` (the SHA-256
-integrity-checksum feature's backup-side and recovery-side halves). Only the first of these three deliberately
+integrity-checksum feature's backup-side and recovery-side halves), `test-add-missing-files-no-json-sha256.js`
+(the "Add missing files" wizard's "Build the metadata JSON from my discs" task),
+`test-add-missing-files-update-existing-json.js` (that wizard's "update an existing metadata JSON with discs it
+does not record" task) and `test-add-missing-files-update-json-bad-input.js` (what that wizard does with a
+metadata JSON it cannot use - no disc involved, so it needs no .iso).
+Only the first of these deliberately
 does NOT follow the shared conventions described below (own bespoke fixture-building, no `--random-tree`/
 `--json-tree` switch, a shorter click pause) - it needs a deliberately-tampered split rather than a real one, so
-the shared tree generator doesn't fit. The other two DO use the same shared `generateFixtureTree()` (and so
+the shared tree generator doesn't fit. The others DO use the same shared `generateFixtureTree()` (and so
 support `--random-tree`/`--json-tree` like the eight main scripts above) - they just don't ship a bundled
 `tree-spec.json` of their own yet, so `--json-tree` isn't usable against them without adding one first.
 
@@ -43,6 +50,19 @@ for that test, via the shared `lib/print-tree.js` (an indented listing of every 
 directories marked as such) - so you can actually see what went where, not just a pass/fail summary. This is
 purely for visual inspection; the real pass/fail authority is still whatever byte-for-byte check (usually
 `verify-manifest.js`) each script already runs.
+
+## Finding things on screen: two traps
+
+**A dialog that is open hides the whole app from `getByRole`.** Angular Material marks the app's own content
+`aria-hidden` while a modal is up, and `getByRole` skips `aria-hidden` subtrees - so a locator for a button on the
+screen behind the dialog matches nothing at all, and waits out its full timeout. The tell is the call log: a modal
+that merely *covers* a button gives a long log ("locator resolved to...", "subtree intercepts pointer events"), a
+hidden subtree gives one line, `- waiting for getByRole(...)`. A step that reads a dialog's text therefore has to
+dismiss it (click its button) before the next step locates anything on the page behind it.
+
+**A dialog's `innerText` is its title and its buttons too** - `"Error This disc was already read: it is disc 1. Ok"`,
+not just the message - so compare it with `includes()` or a regex, never `===`, and take the sentence being matched
+from the component that sets it (each wizard's `.component.ts`) rather than from memory.
 
 An interrupted run deliberately leaves its scratch data in place for inspection instead of cleaning up - see each
 script's own cleanup notes. Run `node test-harness/cleanup.js` (or `--dry-run` to just see what it would remove)
@@ -405,10 +425,12 @@ real total, the sliver counted: the plan has 2 pieces, the stub 7-Zip makes 3, a
 node test-harness/ui/test-add-missing-files.js
 ```
 
-Deliberately scoped to the JSON-metadata entry point only - the "no JSON, physically re-insert every existing
-disc one by one" path reuses the exact same `<optical-disc-backup-data-retriever>` component (and
-`getCombinedFilePathsFromAllOpticalDiscs`) that `test-recover-multi-disc.js` already thoroughly exercises, so it
-isn't the genuinely new thing worth proving here.
+Deliberately scoped to the master-folder-plus-JSON task only - the "Build the metadata JSON from my discs" task
+reads the discs
+instead and reuses the exact same `<optical-disc-backup-data-retriever>` component (and
+`getCombinedFilePathsFromAllOpticalDiscs`) that `test-recover-multi-disc.js` and
+`test-add-missing-files-no-json-sha256.js` already exercise, so it isn't the genuinely new thing worth proving
+here.
 
 **What makes this flow genuinely different from every other test here:** every other backup/recover test either
 starts a cold storage from scratch or reads one back unchanged. This is the one flow that *adds* to an
@@ -458,8 +480,8 @@ checked once every disc is confirmed.
 
 `add-missing-files-to-optical-media-cold-storage.component.ts`'s `ngAfterViewInit()` unconditionally opens an
 "Info" dialog (explaining that large-file split pieces are materialized lazily, per disc, only when that disc is
-sent to ImgBurn, and deleted automatically once confirmed) the instant the wizard loads, before step 1's own form
-is usable at all - not a bug, just something the script has to click through before anything else.
+sent to ImgBurn, and deleted automatically once confirmed) the instant the wizard loads, before step 1's own task
+chooser is usable at all - not a bug, just something the script has to click through before anything else.
 
 ## `test-add-missing-files-split-resume.js`
 
@@ -477,6 +499,104 @@ its missing pieces are planned; there must be exactly one new disc, whose `.ibb`
 disc 2 with its SHA-256. Last, piece 1 from the earlier job and piece 2 from this one must rejoin
 (`merge-file-parts`) into the file, byte for byte. `worker-ipc/test-split-file-resume.js` covers the worker side in
 more detail - a file that changed since is refused there.
+
+## `test-add-missing-files-no-json-sha256.js`
+
+```
+node test-harness/ui/test-add-missing-files-no-json-sha256.js
+```
+
+The "Add missing files" wizard's SECOND task, "Build the metadata JSON from my discs" (its button reads "I do not
+have a json") - for someone who has the discs but no
+metadata JSON: no master folder, no diff, no new discs burned, just the existing discs read one by one into the
+JSON that was missing. Mounts one `.iso` whose contents ARE the whole fixture (nothing is copied around, since
+there is no master folder in this flow), launches the app with only a `showSaveDialog` stub - this flow must never
+ask for a master folder, so if it ever did, a real picker would open and the test would stall visibly rather than
+quietly pass - and clicks "I do not have a json", waits for the disc to be read and hashed, and clicks "Ok" on
+"Metadata JSON saved".
+
+**What it actually checks:** the saved JSON holds every file that is on the disc, under its path on the disc, each
+with a real sha256 that matches an independent re-hash of that file's bytes - not just any 64-character string -
+while no directory entry has one, and the JSON does not end in an empty disc entry. The hashing itself
+(`computeSha256ForReadDiscs`/`attachSha256ToReadDisc` in `optical-disc-backup-data-retriever.component.ts`) and
+the per-disc write (`onDiscsUpdated` in the wizard) are the two pieces this flow added; the multi-disc read and
+the JSON-seeded diff are covered by `test-recover-multi-disc.js` and `test-add-missing-files.js` instead, which
+is why this one uses a deliberately single, small disc.
+
+## `test-add-missing-files-update-existing-json.js`
+
+```
+node test-harness/ui/test-add-missing-files-update-existing-json.js
+```
+
+The "Add missing files" wizard's THIRD task, "Update cold storage metadata with existing (already
+burnt) discs" - for someone who has the metadata JSON but has since burned discs it does not record. No master
+folder, no diff, no new discs burned either; the discs missing from the JSON are read into it, the ones it already
+records kept as they are.
+
+Mounts and swaps three real `.iso` files, driving the wizard through all three phases in one run:
+
+1. **Building the seed** - the "I do not have a json" flow reads disc 1 into a JSON. Nothing is hand-written: the
+   disc id that JSON carries is a hash of disc 1's own paths (`disc-id-hash.ts`), so the duplicate check the update
+   flow relies on has a genuine id to match against.
+2. **The update flow** - that JSON is picked as the existing metadata, and disc 2 is mounted and read. It must be
+   announced and recorded as **disc 2** (the JSON records one disc), with every file on it hashed for real.
+3. **The refusal** - disc 1 is mounted once more against the updated JSON: it must be refused as already read, not
+   listed a second time.
+
+**What it actually checks:** disc 1's own entries come through byte-for-byte unchanged (same paths, same sha256s)
+and disc 2's are appended after them, so a read that replaced the existing entries - or that put the new disc at
+the wrong index, which is what would happen if the seeded JSON were trimmed differently from the file written
+alongside it - fails loudly instead of quietly renumbering the collection. Also that every file on disc 2 is
+recorded with its real sha256 and nothing extra is, and that the JSON does not end in an empty disc entry.
+
+## `test-add-missing-files-update-json-bad-input.js`
+
+```
+node test-harness/ui/test-add-missing-files-update-json-bad-input.js
+```
+
+The same wizard, handed a metadata JSON it cannot use - through the "Update JSON" task for the first six
+cases, and through the "Add new files" task's own "Select JSON file" picker for the last one.
+
+A JSON that holds no discs at all is a legitimate thing to work with - a cold storage with nothing recorded yet,
+whose discs are then numbered from 1, which is exactly what the "Build the metadata JSON from my discs" task does -
+so the flow must not stop
+and must not ask: it carries on to "where to save the updated metadata JSON" and reads discs into it. A file with
+nothing in it (0 bytes, or only whitespace) means the same to this flow as a JSON holding `[]`, so
+`readJSONfromDisk` is called with `emptyFileAsNoDiscs` from here and nowhere else (recovery and the integrity check
+still treat an empty file as an error - there it means the wrong file was picked, and "no discs recorded" would be
+a worse answer than saying the file has nothing in it).
+
+A file holding something that is NOT valid JSON is a different matter and is still refused: it may be a real
+metadata JSON that got damaged or was only partly written, and it must not be written over. The refusal says so in
+plain words, never as the raw parse error.
+
+A JSON that records the same file on two discs is refused too, naming the file in a list - before anything is asked
+for or written. Left to the disc read, it would make every disc inserted afterwards be refused as "files in common
+with a disc read before", which blames the disc in the drive for something the JSON says. The other side of that
+check is covered as well: two discs that each needed shortened names carry a list of original names at the *same*
+path on both (`ORIGINAL_NAMES_FILE_NAME`), so that repetition is legitimate and must not be refused.
+
+The last case is the other picker: a JSON that was read and accepted, then replaced by one that is not valid JSON.
+The wizard must forget the first one - a "Next" then has to ask for a JSON again, not quietly diff the master folder
+against the file the user just replaced (and, by then, not protect that file from being overwritten either, since
+the path it names was cleared with the pick).
+
+**How it runs:** one fresh app per case, seven cases in all (empty file, whitespace-only file, `[]`, a truncated
+JSON, a JSON recording a file on two discs, a JSON whose two discs each carry a list of original names, and a good
+JSON replaced by a truncated one), each stopped no later than the point where the updated metadata JSON has been
+written - which happens before the first disc is read, so this script builds no `.iso` and mounts nothing.
+
+**What it actually checks:** for the first three, that the flow reached the save dialog (`showSaveDialog` is
+stubbed and counted, and would not be called at all if the flow had stopped), that the file it wrote there is
+`[]` (the empty metadata JSON it is about to read discs into), and that the wizard has left step 1. For the
+truncated JSON, that the dialog reads "Could not read this JSON file: it is not valid JSON - it may be damaged or
+only partly written.", with no save dialog asked for and nothing written. For the file-on-two-discs JSON, that the
+dialog names it and says how many there are, with no save dialog asked for and nothing written. For the two
+lists of original names, the opposite: the flow carries on, and both discs and both lists survive into the file it
+wrote. For the replaced JSON, that "Next" shows the "Missing fields" dialog asking for a metadata JSON file rather
+than starting the diff.
 
 ## `test-backup-to-optical-media-sha256.js`
 
@@ -660,9 +780,11 @@ Names over 127 characters and paths over 259, end to end, across four wizard run
   must put them back.
 - **Verify integrity of cold storage disc** with that JSON: the disc is recognized, and every file on it - the list of
   original names included - is verified, none failed.
-- **Add missing files**, after a file with a long name was added - first reading the disc (no JSON), then with that
-  JSON: only that file is missing (the shortened ones count as backed up); with the JSON, "Names too long for a disc"
-  lists it, the new disc's entry records its `originalPath`, and the first disc's entries are unchanged.
+- **Add missing files**, after a file with a long name was added - first "I do not have a json", reading the disc
+  alone into a fresh metadata JSON: every file under its original name (the disc's own list of original names), each
+  one hashed, no trailing empty disc entry. Then with that JSON: only the new file is missing (the shortened ones
+  count as backed up), "Names too long for a disc" lists it, the new disc's entry records its `originalPath`, and the
+  first disc's entries are unchanged.
 
 The source files must never change. Points `cacheDataDirectoryPath` at a scratch folder and `imgBurnExecutablePath` at a
 stub for the run; needs ImgBurn, and no disc in any optical drive.
@@ -703,7 +825,8 @@ README, so there's something to actually choose between:
 - `incremental-backup/` - paths chosen, the diff screen, the preview dialog, the success dialog.
 - `sync-dirs/` - paths chosen, the destructive-operation warning, the preview dialog, the success dialog.
 - `recover-data/` - the JSON entry point selected, the combined files tree (twice: before and after "Select all").
-- `add-missing-files/` - step 1 filled in, the diff results, the metadata-saved confirmation, the burn screen.
+- `add-missing-files/` - the task chooser, the "Add new files" screen filled in, the diff results, the
+  metadata-saved confirmation, the burn screen.
 
 Kept deliberately fast and side-effect-free: every fixture tree here has no large file, so "Backup to optical
 media" never hits the "too large, split it?" confirmation chain, "Add missing files"'s `partition()` still runs

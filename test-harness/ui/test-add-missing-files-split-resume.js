@@ -142,6 +142,8 @@ async function main() {
     await step('main menu -> Add missing files to optical media cold storage', () =>
       clickMainMenuButton(win, 'Add missing files to optical media cold storage'));
     await step('"Ok" on the wizard\'s info dialog', () => win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
+    await step('pick the "Add new files" task', () =>
+      win.getByRole('button', { name: 'Add new files', exact: true }).click({ timeout: 15_000 }));
     await step('choose the master folder', async () => {
       await win.getByRole('button', { name: 'Select the location of your files (Master)' }).click({ timeout: 15_000 });
       await win.getByText(masterDir, { exact: true }).waitFor({ timeout: 10_000 });
@@ -151,7 +153,6 @@ async function main() {
       await win.getByRole('option', { name: 'CD (700 MB)' }).click({ timeout: 15_000 });
     });
     await step('choose the JSON', async () => {
-      await win.getByRole('checkbox', { name: 'Provide cold storage files metadata by importing a JSON file', exact: false }).click({ timeout: 15_000 });
       await win.getByRole('button', { name: 'Select JSON file' }).click({ timeout: 15_000 });
       await win.getByText(existingJsonPath, { exact: true }).waitFor({ timeout: 10_000 });
       await pause(2000); // the JSON is still being read and checked (see test-add-missing-files.js)

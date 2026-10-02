@@ -18,9 +18,10 @@
  *     original names puts them back.
  *  E. Verify integrity of cold storage disc: the disc is recognized from the JSON, and every file on it - the list of
  *     original names included - is verified, none failed.
- *  D. Add missing files, after a new file with a long name was added - first reading the disc (no JSON), then with the
- *     JSON: only the new file is missing (the shortened ones are recognized as backed up); with the JSON, "Names too
- *     long for a disc" lists it and the new disc's entry records its original path.
+ *  D. Add missing files, after a new file with a long name was added: "I do not have a json" reads the disc alone and
+ *     writes a metadata JSON holding every file under its original name, hashed, with no trailing empty disc entry;
+ *     then, with the JSON, only the new file is missing (the shortened ones are recognized as backed up), "Names too
+ *     long for a disc" lists it, and the new disc's entry records its original path.
  *  Throughout, the source files are never renamed or changed.
  *
  * Never touches the app's real temp folder: cacheDataDirectoryPath points at a scratch folder, and
@@ -101,6 +102,7 @@ async function main() {
   const cache = path.join(scratchRoot, 'app temp');
   const metadataJsonPath = path.join(scratchRoot, 'cold-storage-metadata.json');
   const updatedJsonPath = path.join(scratchRoot, 'cold-storage-metadata - updated.json');
+  const discOnlyJsonPath = path.join(scratchRoot, 'cold-storage-metadata from the disc alone.json');
   const recoveredFirstChoice = path.join(scratchRoot, 'recovered from the JSON, first choice');
   const recoveredFromJson = path.join(scratchRoot, 'recovered from the JSON');
   const recoveredFromDisc = path.join(scratchRoot, 'recovered from the disc alone');
@@ -321,28 +323,38 @@ async function main() {
 
     report('theSourceFilesWereNotChanged', snapshot(source) === sourceBefore);
 
-    // ---- D. Add missing files - first reading the disc (no JSON), then with the JSON
-    console.log('\nD. Add missing files, after a new file with a long name - without the JSON, reading the disc...');
+    // ---- D. Add missing files - first reading the disc alone into a fresh JSON, then with the JSON
+    console.log('\nD. Add missing files, after a new file with a long name - first the disc alone, no JSON...');
     fs.writeFileSync(path.join(source, NEW_LONG_FILE), 'added later');
     sourceBefore = snapshot(source);
-    await launch([source]);
+    await launch([], [discOnlyJsonPath]);
     await step('main menu -> Add missing files, "Ok" on its notice', async () => {
       await openFeature('Add missing files to optical media cold storage');
       await win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 });
     });
-    await step('choose the master folder, "Next" (no JSON), read the disc', async () => {
-      await win.getByRole('button', { name: 'Select the location of your files (Master)' }).click({ timeout: 15_000 });
-      await win.getByText(source, { exact: true }).waitFor({ timeout: 10_000 });
-      await win.getByRole('button', { name: 'Next', exact: true }).click({ timeout: 15_000 });
+    // No master folder is asked for: this task only builds a metadata JSON out of what the discs hold.
+    await step('"I do not have a json" - read the disc, save the metadata JSON', async () => {
+      await win.getByRole('button', { name: 'I do not have a json' }).click({ timeout: 15_000 });
       await win.getByRole('button', { name: 'All disks have been processed, continue to the next step' }).click({ timeout: 60_000 });
-      await win.getByRole('checkbox', { name: 'Select all' }).waitFor({ state: 'visible', timeout: 60_000 });
+      await clickIn('Metadata JSON saved', 'Ok');
+      await win.getByText('Cumulative backup', { exact: true }).waitFor({ timeout: 60_000 });
     });
-    const newName = NEW_LONG_FILE.split('\\').pop();
-    const onlyTheNewFileIsListed = async () =>
-      (await win.getByRole('checkbox', { name: new RegExp(escapeRegExp(newName)) }).count()) === 1
-      && (await win.getByRole('checkbox', { name: new RegExp(escapeRegExp(PAPER)) }).count()) === 0
-      && (await win.getByRole('checkbox', { name: /inner\.txt|short\.txt|f{60}\.txt/ }).count()) === 0;
-    report('withoutTheJsonOnlyTheNewFileIsMissing', await onlyTheNewFileIsListed());
+    // The JSON holds the disc's own listing: every file under its ORIGINAL name (the disc's list of original names
+    // puts them back - the same thing recovering from the disc alone relies on), each one hashed, and no trailing
+    // empty disc entry.
+    const discOnlyMetadata = (() => { try { return JSON.parse(fs.readFileSync(discOnlyJsonPath, 'utf8')); } catch { return null; } })();
+    const discOnlyFiles = (discOnlyMetadata || []).flat().filter((e) => !e.stats.isDirectory && !e.originalNamesList);
+    const paperEntry = discOnlyFiles.find((e) => e.originalPath === D + `papers\\${PAPER}`);
+    report('readingTheDiscAloneRecordedOriginalNamesAndTheirShortenedDiscPaths',
+      !!paperEntry && paperEntry.path === D + discPath(`papers\\${PAPER}`)
+      && !!discOnlyFiles.find((e) => e.originalPath === D + `${LONG_FOLDER}\\inner.txt`),
+      paperEntry ? `disc path ${paperEntry.path}` : 'the long-named paper is not in the JSON at all');
+    report('readingTheDiscAloneHashedEveryFile',
+      discOnlyFiles.length === Object.keys(FILES).length && discOnlyFiles.every((e) => /^[0-9a-f]{64}$/.test(e.stats.sha256 || '')),
+      `${discOnlyFiles.length} files, ${discOnlyFiles.filter((e) => e.stats.sha256).length} with a sha256`);
+    report('theSavedJsonHasNoTrailingEmptyDiscEntry',
+      !!discOnlyMetadata && discOnlyMetadata.length > 0 && discOnlyMetadata[discOnlyMetadata.length - 1].length > 0,
+      `last entry holds ${discOnlyMetadata ? (discOnlyMetadata[discOnlyMetadata.length - 1] || []).length : '-'} item(s)`);
     await close();
     dismountIso(isoPath);
     mounted = false;
@@ -354,18 +366,23 @@ async function main() {
       await openFeature('Add missing files to optical media cold storage');
       await win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 });
     });
-    await step('choose the master folder, "CD (700 MB)" and the JSON, "Next"', async () => {
+    await step('pick the "Add new files" task, then the master folder, "CD (700 MB)" and the JSON, "Next"', async () => {
+      await win.getByRole('button', { name: 'Add new files', exact: true }).click({ timeout: 15_000 });
       await win.getByRole('button', { name: 'Select the location of your files (Master)' }).click({ timeout: 15_000 });
       await win.getByText(source, { exact: true }).waitFor({ timeout: 10_000 });
       await win.getByRole('combobox').click({ timeout: 15_000 });
       await win.getByRole('option', { name: 'CD (700 MB)' }).click({ timeout: 15_000 });
-      await win.getByRole('checkbox', { name: 'Provide cold storage files metadata by importing a JSON file', exact: false }).click({ timeout: 15_000 });
       await win.getByRole('button', { name: 'Select JSON file' }).click({ timeout: 15_000 });
       await win.getByText(metadataJsonPath, { exact: true }).waitFor({ timeout: 10_000 });
       await pause(2000);
       await win.getByRole('button', { name: 'Next', exact: true }).click({ timeout: 15_000 });
       await win.getByRole('checkbox', { name: 'Select all' }).waitFor({ state: 'visible', timeout: 60_000 });
     });
+    const newName = NEW_LONG_FILE.split('\\').pop();
+    const onlyTheNewFileIsListed = async () =>
+      (await win.getByRole('checkbox', { name: new RegExp(escapeRegExp(newName)) }).count()) === 1
+      && (await win.getByRole('checkbox', { name: new RegExp(escapeRegExp(PAPER)) }).count()) === 0
+      && (await win.getByRole('checkbox', { name: /inner\.txt|short\.txt|f{60}\.txt/ }).count()) === 0;
     report('onlyTheNewFileIsMissing', await onlyTheNewFileIsListed());
     await step('collection name, "Next" - "Names too long for a disc" lists the new file; "Continue"', async () => {
       await win.getByPlaceholder('e.g. My Backup').fill('Long names test');

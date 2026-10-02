@@ -2,14 +2,12 @@
 'use strict';
 
 /**
- * End-to-end test of the "Add missing files to optical media cold storage" wizard - the last of the app's 5
- * main-menu features with no automated test, and the one your own git history flags as still a work in progress
- * (commit 87b2064's message says so explicitly; the component still has a commented-out "//---- testing only
- * ---- START ----" block in step1()). Scoped deliberately to the JSON-metadata entry point only (useExternalMetadata
- * = true) - the "no JSON, physically re-insert every existing disc one by one" path reuses the SAME
- * <optical-disc-backup-data-retriever> component (and getCombinedFilePathsFromAllOpticalDiscs) already thoroughly
- * exercised by ui/test-recover-multi-disc.js, so it isn't the genuinely new thing worth proving here - the
- * JSON-seeded diff/continuation logic below is.
+ * End-to-end test of the "Add missing files to optical media cold storage" wizard's first task, "Add new files to my
+ * cold storage". Scoped deliberately to that task only - the "I do not have a json" task reads the discs instead and
+ * reuses the SAME <optical-disc-backup-data-retriever>
+ * component (and getCombinedFilePathsFromAllOpticalDiscs) already thoroughly exercised by
+ * ui/test-recover-multi-disc.js, so it isn't the genuinely new thing worth proving here - the JSON-seeded
+ * diff/continuation logic below is.
  *
  * ============================================================================================================
  * What this actually proves, and why it's a meaningfully different code path from every other test here
@@ -46,8 +44,8 @@
  * edge case AND the real 700MB file - is deliberately left OUT of that JSON, so the wizard's own diff has to
  * discover all of it as missing on its own. One more empty folder IS on that disc, recorded with an older modified
  * time than the master's: the wizard must take it as backed up, not refuse the job as "changed". The wizard is then
- * driven through: master folder -> medium -> JSON
- * checkbox -> select JSON -> Next (diff) -> select all (already pre-selected) -> collection name -> Next
+ * driven through: master folder -> medium -> select JSON -> Next (diff) -> select all (already pre-selected) ->
+ * collection name -> Next
  * (partition - asks where to save the updated JSON; this run deliberately picks the ORIGINAL JSON's own path
  * first, to exercise the "Overwrite original metadata JSON?" warning - see promptForUpdatedMetadataSavePath in
  * add-missing-files-to-optical-media-cold-storage.component.ts - then "Choose a different location", which is
@@ -293,17 +291,22 @@ async function main() {
       await new Promise((r) => setTimeout(r, WATCH_PAUSE_MS));
     };
 
-    // --- Phase A: step 1 - master folder, medium, JSON checkbox + file, Next ---
+    // --- Phase A: step 1 - pick the "Add new files" task, then master folder, medium, JSON file, Next ---
 
     await step('main menu -> Add missing files to optical media cold storage', () =>
       clickMainMenuButton(win, 'Add missing files to optical media cold storage'));
 
-    // This component's ngAfterViewInit() unconditionally opens a "This app is a work in progress..." warning
-    // dialog (title "Warning", default single "Ok" button) the instant it loads - before step 1's own form is
-    // usable. click()'s own actionability wait covers the small delay before it appears (ngAfterViewInit awaits
-    // getTempDataDirectoryPath() first).
-    await step('click "Ok" on the "This app is a work in progress" warning', () =>
+    // This component's ngAfterViewInit() unconditionally opens an "Info" dialog (saying where large-file split
+    // pieces are kept, and that leftovers are offered to be cleared at the next start) the instant it loads -
+    // before step 1's task chooser is usable. click()'s own actionability wait covers the small delay before it
+    // appears (ngAfterViewInit awaits getTempDataDirectoryPath() first).
+    await step('click "Ok" on the wizard\'s info dialog', () =>
       win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
+
+    // step 1 is a chooser of this wizard's three tasks; the master folder and the JSON belong to the first one,
+    // which has a screen of its own behind this button.
+    await step('click "Add new files"', () =>
+      win.getByRole('button', { name: 'Add new files', exact: true }).click({ timeout: 15_000 }));
 
     await step('click "Select the location of your files (Master)"', () =>
       win.getByRole('button', { name: 'Select the location of your files (Master)' }).click({ timeout: 15_000 }));
@@ -317,9 +320,6 @@ async function main() {
     await step('select "CD (700 MB)"', () =>
       win.getByRole('option', { name: 'CD (700 MB)' }).click({ timeout: 15_000 }));
 
-    await step('check "Provide cold storage files metadata by importing a JSON file"', () =>
-      win.getByRole('checkbox', { name: 'Provide cold storage files metadata by importing a JSON file', exact: false }).click({ timeout: 15_000 }));
-
     await step('click "Select JSON file"', () =>
       win.getByRole('button', { name: 'Select JSON file' }).click({ timeout: 15_000 }));
 
@@ -327,14 +327,11 @@ async function main() {
       win.getByText(existingMetadataJsonPath, { exact: true }).waitFor({ timeout: 10_000 }));
 
     // Same race as ui/test-recover-from-json-metadata.js's step 1 - the mat-chip above appears the instant a
-    // path is chosen, BEFORE afterJSONpathIsGiven() actually finishes reading+schema-validating it over IPC. But
-    // THIS wizard's own step1() is more exposed to it: unlike recover-data-from-optical-media.component.ts's
-    // step1(), this component's step1() only guards on externalMetadataJSONpath being truthy (already true by
-    // then) - NOT on json_coldStorageFilesMetadata itself. Clicking "Next" before that validation IPC round trip
-    // completes wouldn't hit a "not ready yet" guard at all; it would silently fall through to the NO-JSON
-    // branch instead (step1()'s `if (this.json_coldStorageFilesMetadata) {...} else {...}`), launching the
-    // physical-disc-reading UI unexpectedly. A generous deliberate pause here avoids ever finding out the hard
-    // way whether that's a real, hittable bug.
+    // path is chosen, BEFORE afterJSONpathIsGiven() actually finishes reading+schema-validating it over IPC. Unlike
+    // recover-data-from-optical-media.component.ts's step1(), this component's step1() only guards on
+    // json_coldStorageFilesMetadata itself, so clicking "Next" before that validation IPC round trip completes
+    // shows the "Missing fields" dialog rather than starting the diff. A generous deliberate pause here keeps the
+    // test from tripping over that dialog.
     await new Promise((r) => setTimeout(r, 2000));
 
     await step('click "Next" (validates + diffs against the JSON - no disc reads needed)', () =>
@@ -342,7 +339,7 @@ async function main() {
 
     // --- Phase B: step 3 - the wizard's own diff results (should be exactly the missing files) ---
 
-    // If this times out, see the race noted above - it would mean step1() took the wrong (no-JSON) branch.
+    // If this times out, see the race noted above - it would mean the "Missing fields" dialog appeared instead.
     await step('wait for step 3 ("files missing from your cold storage") to render (up to 30s)', () =>
       win.getByText('Below you see the files missing from your cold storage.', { exact: true }).waitFor({ timeout: 30_000 }));
 

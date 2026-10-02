@@ -33,7 +33,8 @@
  *   incremental-backup/01-paths-chosen.png, 02-diff-select-all.png, 03-preview.png, 04-success.png
  *   sync-dirs/01-paths-chosen.png, 02-warning.png, 03-preview.png, 04-success.png
  *   recover-data/01-json-selected.png, 02-file-tree.png, 03-file-tree-select-all.png
- *   add-missing-files/01-step1-filled.png, 02-diff-results.png, 03-metadata-saved.png, 04-burn-screen.png
+ *   add-missing-files/00-choose-a-task.png, 01-step1-filled.png, 02-diff-results.png, 03-metadata-saved.png,
+ *                      04-burn-screen.png
  *   verify-integrity/01-tally.png
  */
 
@@ -134,8 +135,8 @@ async function captureBackupToOpticalMedia() {
     await clickMainMenuButton(win, 'Backup to optical media');
     await win.getByRole('button', { name: 'Path to backup' }).click({ timeout: 15_000 });
     await win.getByText(sourceRoot, { exact: true }).waitFor({ timeout: 10_000 });
-    // The only combobox on this step - the "File integrity data" toggle that used to sit alongside it has been
-    // removed (SHA-256 is now mandatory, no opt-out), leaving "Optical medium type" unambiguous on its own.
+    // The only combobox on this step: SHA-256 is recorded for every burn, with no opt-out, so nothing sits
+    // alongside "Optical medium type" and it is unambiguous on its own.
     await win.getByRole('combobox').click({ timeout: 15_000 });
     await win.getByRole('option', { name: 'CD (700 MB)' }).click({ timeout: 15_000 });
     await win.getByPlaceholder('e.g. My Backup').fill('Documents Archive');
@@ -384,19 +385,22 @@ async function captureAddMissingFiles() {
     await stubDialogs(app, [masterDir, existingMetadataJsonPath], [updatedMetadataJsonPath]);
 
     await clickMainMenuButton(win, 'Add missing files to optical media cold storage');
-    // ngAfterViewInit() unconditionally opens a "This app is a work in progress..." warning the instant the
-    // wizard loads - see add-missing-files-to-optical-media-cold-storage.component.ts.
+    // ngAfterViewInit() unconditionally opens an "Info" dialog the instant the wizard loads - see
+    // add-missing-files-to-optical-media-cold-storage.component.ts.
     await win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 });
+    await pause(500);
+    await shot(win, 'The task chooser', '00-choose-a-task.png');
 
+    // step 1 is a chooser of this wizard's three tasks; the master folder, medium and JSON are the first one's.
+    await win.getByRole('button', { name: 'Add new files', exact: true }).click({ timeout: 15_000 });
     await win.getByRole('button', { name: 'Select the location of your files (Master)' }).click({ timeout: 15_000 });
     await win.getByText(masterDir, { exact: true }).waitFor({ timeout: 10_000 });
     await win.getByRole('combobox').click({ timeout: 15_000 });
     await win.getByRole('option', { name: 'CD (700 MB)' }).click({ timeout: 15_000 });
-    await win.getByRole('checkbox', { name: 'Provide cold storage files metadata by importing a JSON file', exact: false }).click({ timeout: 15_000 });
     await win.getByRole('button', { name: 'Select JSON file' }).click({ timeout: 15_000 });
     await win.getByText(existingMetadataJsonPath, { exact: true }).waitFor({ timeout: 10_000 });
     await pause(2000); // avoid the validation-IPC race documented in ui/test-add-missing-files.js
-    await shot(win, 'Step 1 filled in', '01-step1-filled.png');
+    await shot(win, 'The "Add new files" screen, filled in', '01-step1-filled.png');
 
     await win.getByRole('button', { name: 'Next', exact: true }).click({ timeout: 15_000 });
     await win.getByText('Below you see the files missing from your cold storage.', { exact: true }).waitFor({ timeout: 30_000 });
@@ -424,8 +428,7 @@ async function captureAddMissingFiles() {
 
 // ============================================================================================================
 // Verify integrity of cold storage disc (one representative screenshot: the "Verify another disc?" running
-// tally, now a real scrolling list - see ConfirmationDialogComponent's own `lists` field - rather than the
-// single joined "disc 1 passed, disc 2 FAILED, ..." line an earlier version of this dialog used). Unlike every
+// tally, a real scrolling list - see ConfirmationDialogComponent's own `lists` field). Unlike every
 // capture above, this one DOES mount real virtual discs - the wizard has no JSON-seeded shortcut around that
 // (it always reads a disc's real listing to auto-identify it), and a mix of one passed + one FAILED disc is
 // what actually makes the tally worth screenshotting.
