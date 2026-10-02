@@ -20,6 +20,7 @@ import { goToMainMenuAndReload } from '../shared/utils/go-to-main-menu';
 import { parseScanItemsProgress, parsePackingProgress } from '../shared/utils/progress-line';
 import { confirmDiscNameAndPathLimits, metadataEntriesForDisc } from '../shared/utils/shortened-names';
 import { metadataJsonFileName } from '../shared/utils/metadata-file-name';
+import { trimTrailingEmptyDiscs } from '../shared/utils/cold-storage-metadata';
 
 import {FormBuilder, Validators, FormsModule, ReactiveFormsModule} from '@angular/forms';
 import {MatButtonModule} from '@angular/material/button';
@@ -502,8 +503,9 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
 
     await this.goToStep2();
-    let metadataJSON: string[][] = Array(this._disks.length).fill([]);
-    await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPath, JSON.stringify(metadataJSON));
+    // No empty placeholders for the discs planned but not burned yet: each disc's real entry is written when it is
+    // confirmed burned (see recordConfirmedDisc). See trimTrailingEmptyDiscs.
+    await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPath, JSON.stringify([], null, 2));
 
     await this.holdOn();
 
@@ -1072,7 +1074,9 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
         // A disc appended for a sliver lies past the entries written when the discs were planned: no gaps (null) in
         // the array.
         for (let d = 0; d < metadataJSON.length; d++) { if (!Array.isArray(metadataJSON[d])) { metadataJSON[d] = []; } }
-        await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPath, JSON.stringify(metadataJSON, null, 2));
+        // Discs not confirmed yet are recorded nowhere, so a saved JSON never ends in empty entries - see
+        // trimTrailingEmptyDiscs.
+        await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPath, JSON.stringify(trimTrailingEmptyDiscs(metadataJSON), null, 2));
       });
     } catch (error) {
       const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });

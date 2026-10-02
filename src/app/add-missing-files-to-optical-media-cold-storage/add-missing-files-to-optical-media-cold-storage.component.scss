@@ -4,3 +4,60 @@
 .disc-confirmed {
   opacity: 0.6;
 }
+
+// The main-icon and folder-picker-button rules every other feature declares for itself - Angular's view
+// encapsulation keeps another component's copy from applying here, so the wizard needs its own. Used by step_1's
+// three panels and by the "Add new files" screen's master-folder and medium icons.
+.home-icons {
+  width: 64px !important;
+  height: 64px !important;
+  font-size: 50px;
+}
+
+.file-chooser-btn {
+  margin: 0.4em !important;
+}
+
+// step_1's task chooser: three panels a level in from the card, one per task, so the screen reads as "pick one
+// of these three" rather than as one form whose fields mostly do not apply.
+.task-intro {
+  text-align: center;
+}
+
+.task-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  padding: 16px;
+  width: 100%;
+  max-width: 720px;
+  margin: 12px auto;
+}
+
+.task-panel h3 {
+  margin: 8px 0 0;
+}
+
+// The paragraph explaining a task (or, on the "Add new files" screen, the metadata JSON itself) - the same
+// smaller, dimmed body copy the rest of this wizard's notes use.
+.task-text {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.6);
+  max-width: 620px;
+  line-height: 1.4;
+  margin: 8px 0 16px;
+}
+
+// A screen's way back reads as a link rather than as a second button of equal weight: Angular Material's text
+// button, underlined, with its label in the theme's primary colour (color="primary" in the template). It stays a
+// <button>, so it is still keyboard-reachable and still greys out while a JSON is being read. The horizontal
+// padding is trimmed so the underline does not sit far from the button beside it - the vertical padding is left
+// alone (see the global rule in styles.scss that keeps wrapping labels inside the button).
+.link-btn {
+  text-decoration: underline;
+  padding-left: 8px;
+  padding-right: 8px;
+}

@@ -364,8 +364,15 @@ export class WorkerCommunicator {
      *  missing/unreadable/malformed/too-large JSON file all surface this way) - every caller already just drops
      *  this straight into a dialog's message, which is broken by rejecting with the whole wrapping response
      *  object instead (stringifies to "[object Object]"). */
-    static readJSONfromDisk(path: string): Promise<WorkerResponse> {
-        return this.sendAndAwaitResponse('read-json-from-disk', { path: path }, 'response.res');
+    /** @param emptyFileAsNoDiscs true to read a file with nothing in it (0 bytes, or only whitespace) as an empty
+     *  metadata JSON (`[]`) rather than failing. Only the "add already-burnt discs to an existing metadata JSON"
+     *  flow passes it: there, a JSON recording no discs is a legitimate starting point, and picking an empty file
+     *  means the same thing as picking one that holds `[]` - create a new metadata JSON from the discs and carry
+     *  on. Everywhere else an empty file stays an error, because there it means the wrong file was picked, and
+     *  "no discs recorded" would be a worse answer than saying the file has nothing in it. */
+    static readJSONfromDisk(path: string, emptyFileAsNoDiscs: boolean = false): Promise<WorkerResponse> {
+        return this.sendAndAwaitResponse('read-json-from-disk',
+            { path: path, emptyFileAsNoDiscs: emptyFileAsNoDiscs }, 'response.res');
     }
 
     static writeJSONtoDisk(path: string, json: Object): Promise<WorkerResponse> {

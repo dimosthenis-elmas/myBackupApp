@@ -76,10 +76,19 @@ import { discsLabel } from '../shared/utils/split-files';
     coldStorageMetadataForAllOpticalDiscs: ColdStorageMetadata = [];
     /** Whether reading discs (via getCombinedFilePathsFromAllOpticalDiscs) should also SHA-256 every file as each
      *  disc is read, so the cold storage metadata JSON later written from those entries carries integrity data for
-     *  the existing discs too. Set by add-missing-files-to-optical-media-cold-storage.component.ts before its "no
-     *  metadata JSON" read; recovery leaves it false (it only lists discs, and verifies each file separately right
-     *  after it is copied). */
+     *  the existing discs too. Set by add-missing-files-to-optical-media-cold-storage.component.ts before its
+     *  "I do not have a json" read; recovery leaves it false (it only lists discs, and verifies each file
+     *  separately right after it is copied). */
     computeSha256ForReadDiscs = false;
+    /** When set, called (and awaited) right after each disc is read, hashed (if computeSha256ForReadDiscs) and
+     *  appended to coldStorageMetadataForAllOpticalDiscs, with the growing metadata array - lets the
+     *  add-missing-files "I do not have a json" flow write the metadata JSON after each disc instead of only once
+     *  at the end. Recovery leaves it unset. */
+    onDiscsUpdated?: (metadata: ColdStorageMetadata) => void | Promise<void>;
+    /** What the "could not be read" dialog tells the user when reading a disc throws - recovery keeps this
+     *  default, and the add-missing-files "I do not have a json" flow replaces it (there is no recovery to
+     *  cancel there, and the user needs to know the discs already read are still recorded, and where). */
+    discReadErrorMessage = 'The disc could not be read. Retry, or cancel the recovery.';
 
     /** Shown under the files tree: how many files the whole cold storage holds (each piece of a split large file
      *  counts, as that is what is on the discs) and their total size, as "n MB (m bytes)" (see formatMegabytes).
@@ -359,7 +368,7 @@ import { discsLabel } from '../shared/utils/split-files';
     }
 
     /** SHA-256s every file on the disc just read and attaches each hash to its entry's stats.sha256, mutating
-     *  `discEntries` in place - but only when this read is the "no metadata JSON" add-missing-files flow
+     *  `discEntries` in place - but only when this read is the "I do not have a json" add-missing-files flow
      *  (computeSha256ForReadDiscs, set by that wizard before it calls getCombinedFilePathsFromAllOpticalDiscs):
      *  the JSON later written from these entries must carry integrity data for the existing discs, exactly as
      *  every NEW disc's files do (see attachSha256HashesToDiscFiles in add-missing-files-to-optical-media-cold-
@@ -550,8 +559,9 @@ import { discsLabel } from '../shared/utils/split-files';
         }else{
           //Ok the disk provided meets the specs.
           // Before the disc is ejected (the "insert the next disc" prompt comes right after): SHA-256 every file
-          // on it, when this read is the no-JSON add-missing-files flow - the JSON written later must carry
-          // integrity data for the existing discs too. See computeSha256ForReadDiscs / attachSha256ToReadDisc.
+          // on it, when this read is the "I do not have a json" add-missing-files flow - the JSON written later
+          // must carry integrity data for the existing discs too. See computeSha256ForReadDiscs /
+          // attachSha256ToReadDisc.
           if (this.computeSha256ForReadDiscs) {
             await this.attachSha256ToReadDisc(normalizedFilePathsWithStats, mountedRoot);
           }
@@ -564,7 +574,9 @@ import { discsLabel } from '../shared/utils/split-files';
           this.discIdsForCompleteBackupFilePaths = this.discIdsForCompleteBackupFilePaths.concat(Array(backedUpFilePaths.length).fill(currentDiskId))
 
           this.finishedReadingFilePaths = true;
-        
+
+          if (this.onDiscsUpdated) { await this.onDiscsUpdated(this.coldStorageMetadataForAllOpticalDiscs); }
+
 
           // Waiting for eject CD...
           const confirmDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
@@ -593,7 +605,7 @@ import { discsLabel } from '../shared/utils/split-files';
       } catch (error) {
           const confirmDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
           confirmDialog.disableClose = true;
-          confirmDialog.componentInstance.message = `The disc could not be read. Retry, or cancel the recovery.`;
+          confirmDialog.componentInstance.message = this.discReadErrorMessage;
           confirmDialog.componentInstance.title = "Error reading disk"
           confirmDialog.componentInstance.actionsNum = 2;
           confirmDialog.componentInstance.action2Label = "Retry"

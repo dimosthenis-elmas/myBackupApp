@@ -105,9 +105,38 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
 
 - **Add missing (new) files to existing optical media cold storage:** adds only the files that are new since your
   last backup, onto new discs - large files that don't fit on one disc are split the same way as in "Backup to
-  optical media." New discs always get SHA-256 checksums. Discs
+  optical media." Every file gets a SHA-256 checksum: both the ones burned onto a new disc and the ones read back
+  off an existing disc. Discs
   continue your collection's numbering (after 3 discs, the first new one is "Optical disk 4"), and every number the
   wizard shows is the one burned onto that disc's label.
+
+  The wizard opens by asking **"What do you want to do?"** - pick one of its three tasks, and only that task's own
+  screen follows. **"Add new files to my cold storage"** (the button **"Add new files"**) is the one above: it asks
+  for the folder your files are in and for the collection's metadata JSON, then shows you what is missing from your
+  discs.
+
+  If you no longer have the metadata JSON, pick the task **"Build the metadata JSON from my discs"** instead - the
+  button is **"I do not have a json"**. The wizard asks where to save a new one, then has you insert your existing
+  discs one at a time - it needs nothing else: no folder of your original files, and no disc is burned. Each disc is
+  read and every file on it is hashed as it is read, and the JSON is written again after every disc, so stopping
+  half way still leaves you a JSON of the discs read so far. Keep it - from then on it is what "Recover data from
+  optical media", "Verify integrity" and this wizard itself use.
+
+  If you have the metadata JSON but it does not cover every disc you have burned, pick the task **"Update cold
+  storage metadata with existing (already burnt) discs"** instead, and press its **"Update JSON"** button. That asks
+  for the JSON, then has you insert the discs it is missing, in order,
+  starting with the disc after the last one it records; each is read, hashed and
+  added to the JSON, which is written again after every disc, as above. A disc the JSON already records (or one
+  holding files that another disc in it already holds) is refused, so nothing ends up listed twice. Nothing is
+  burned, and no folder of your original files is needed. A JSON that records no discs at all (or an empty file)
+  is not an error here - it means a cold storage with nothing recorded yet, so the discs are read into it and
+  numbered from disc 1, exactly as if you had picked "Build the metadata JSON from my discs". A file that is not
+  valid JSON is
+  refused rather than written over, since it may be a real metadata JSON that was damaged. So is a JSON that
+  records the same file on two discs - every disc of a cold storage holds different files, so such a JSON
+  misdescribes the discs, and the app lists the files it repeats rather than reading discs against it. While the
+  discs are being read, everything read so far is written into the metadata JSON as it goes, so stopping part way
+  (even by leaving for the main menu) keeps it.
 
   Split files are recognized by a naming convention (`largeFile.data` becomes `largeFile.data.outOf.3.part.001`,
   etc.), which can misfire if you happen
@@ -129,10 +158,11 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   JSON when you click "Confirm disc burned", not when you send it to ImgBurn - also a disc that holds only some pieces
   of a large file. So you can close the app at any time: the discs burned are the first ones, with no gap. Run "Add
   missing files" later with that JSON, and it burns whatever is not on your discs yet, the missing pieces of a split
-  file included. A disc not burned yet is an empty entry at the end of the JSON; "Add missing files" drops those, so
-  its new discs take their numbers: with discs 1 and 2 of 5 confirmed, the next new disc is disc 3. If you burned such
-  a disc without confirming it, set it aside - a new disc gets its number. Recovery, "Verify integrity" and
-  "Add missing files" all accept a JSON with empty entries.
+  file included. A disc you have not confirmed yet is recorded nowhere, so a saved JSON never ends in empty entries:
+  the app trims those on every save, and ignores any it still finds at the end of a JSON. That is what keeps new
+  discs' numbering right: with discs 1 and 2 confirmed, the next new disc is disc 3. If you burned a disc without
+  confirming it, set it aside - a new disc gets its number. Recovery, "Verify integrity" and "Add missing files" all
+  accept a JSON that still has empty entries.
 
 - **Verify integrity of cold storage disc:** a read-only wizard that checks a disc's SHA-256 checksums without
   recovering or copying anything - useful for periodically spot-checking discs you already have. Point it at the

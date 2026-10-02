@@ -1022,8 +1022,43 @@ const checkTempDataDirectoryForLeftovers = async function (): Promise<{ path: st
  *  non-ASCII characters (e.g. file paths with accented/non-Latin characters), and this margin absorbs that. */
 const MAX_READABLE_JSON_FILE_SIZE_BYTES = 400 * 1024 * 1024;
 
-const readJSONfromDisk = async function(path: string): Promise<Object> {
-  const sizeInBytes = fs.statSync(path).size;
+/** @param emptyFileAsNoDiscs true to read a file with nothing in it as an empty metadata JSON (`[]`, i.e. a cold
+ *  storage that records no discs yet) instead of failing - see the same-named comment on readJSONfromDisk in
+ *  worker-communicator.ts for which caller wants that and why. */
+/** The plain-words reason a file could not be read, for the callers that show it as the end of "Could not read this
+ *  JSON file: " (see readJSONfromDisk and readAndValidateMetadataJSON). Windows' own fs errors and their messages
+ *  ("ENOENT: no such file or directory, stat 'C:\\...'") are not something to put in front of a user. The path is
+ *  named, since which file is the whole point, and an error this does not recognize keeps its own message rather
+ *  than being flattened into a vaguer one - a rarer failure is better described by what the system said about it. */
+function describeUnreadableFile(error: any, path: string): string {
+  switch (error && error.code) {
+    case 'ENOENT':
+      return `there is no file at ${path} any more - it may have been moved, renamed or deleted since you chose it.`;
+    case 'EACCES':
+    case 'EPERM':
+      return `${path} could not be opened - you may not have permission to read it, or another program may be using it.`;
+    case 'EISDIR':
+      return `${path} is a folder, not a file.`;
+    default:
+      return `${path} could not be read (${(error && error.message) || error}).`;
+  }
+}
+
+const readJSONfromDisk = async function(path: string, emptyFileAsNoDiscs: boolean = false): Promise<Object> {
+  // A file that is not there any more (moved, renamed, deleted, on a drive that is not connected) and one this app
+  // may not open are what goes wrong between the user choosing a file and it being read - both get a plain sentence
+  // naming the file, like the empty and not-JSON cases below. The raw fs error goes to the log instead.
+  //
+  // All three of these are logged with console.warn, NOT console.error: the caller turns each into a plain sentence
+  // of its own (see readAndValidateMetadataJSON), so console.error would interrupt the user with a SECOND dialog
+  // about the same file, worded in this file's internals. See logging.js on that distinction.
+  let sizeInBytes: number;
+  try {
+    sizeInBytes = fs.statSync(path).size;
+  } catch (statError) {
+    console.warn(`(worker) readJSONfromDisk: could not stat ${path}`, statError);
+    throw new Error(describeUnreadableFile(statError, path));
+  }
   if (sizeInBytes > MAX_READABLE_JSON_FILE_SIZE_BYTES) {
     const sizeInMiB = (sizeInBytes / (1024 * 1024)).toFixed(0);
     const limitInMiB = MAX_READABLE_JSON_FILE_SIZE_BYTES / (1024 * 1024);
@@ -1035,8 +1070,32 @@ const readJSONfromDisk = async function(path: string): Promise<Object> {
   }
   // Read directly as a string (rather than a Buffer later coerced to one) - one string allocation instead of a
   // Buffer plus a separate string built from it.
-  const file = fs.readFileSync(path, 'utf8');
-  const j: Object = JSON.parse(file);
+  let file: string;
+  try {
+    file = fs.readFileSync(path, 'utf8');
+  } catch (readError) {
+    console.warn(`(worker) readJSONfromDisk: could not read ${path}`, readError);
+    throw new Error(describeUnreadableFile(readError, path));
+  }
+  // The file being empty, or not JSON at all, are the two ways a picked file most often turns out to be unusable,
+  // and both are the user's to fix - so each gets its own plain sentence. Callers show the message as-is after
+  // "Could not read this JSON file: " (see readAndValidateMetadataJSON), so it has to read as the end of that
+  // sentence, and Node's own parser text ("Unexpected end of JSON input", "Unexpected token } in JSON at
+  // position 812") does not - it goes to the log instead.
+  if (file.trim() === '') {
+    // A JSON recording no discs is a legitimate thing for the "add already-burnt discs to an existing metadata
+    // JSON" flow to work with - it holds nothing to lose and the discs read are numbered from 1 - so that flow
+    // asks for an empty file to be read as exactly that, an empty metadata JSON, and carries on.
+    if (emptyFileAsNoDiscs) { return []; }
+    throw new Error('it is empty.');
+  }
+  let j: Object;
+  try {
+    j = JSON.parse(file);
+  } catch (parseError) {
+    console.warn(`(worker) readJSONfromDisk: ${path} is not usable JSON`, parseError);
+    throw new Error('it is not valid JSON - it may be damaged or only partly written.');
+  }
   return j;
 }
 
@@ -3758,7 +3817,7 @@ const init = function() : void
         break;
       case 'read-json-from-disk':
         console.log("(worker) in read-json-from-disk")
-        readJSONfromDisk(arg.params.path).then((d)=>{
+        readJSONfromDisk(arg.params.path, arg.params.emptyFileAsNoDiscs).then((d)=>{
           if(process.env._stop != "stop"){
             ipc.sendResponseToMain({ key: 'read-json-from-disk', res: d, status: "completed" });
           }else{

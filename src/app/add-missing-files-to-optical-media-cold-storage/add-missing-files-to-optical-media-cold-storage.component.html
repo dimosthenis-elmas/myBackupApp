@@ -1,11 +1,54 @@
 <div>
     <mat-card appearance="raised">
+        <!-- step_1: the task chooser. This wizard does three different jobs, and they need different things from the
+             user, so they are three panels here rather than three sets of fields on one screen - only the first one
+             has anything to fill in, and that is on its own screen (step_1_new_files) behind its button. -->
         <div style="display: flex; flex-direction: column;" *ngIf="step=='step_1'">
+            <div class="task-intro">
+                <h2>What do you want to do?</h2>
+            </div>
+
+            <div class="task-panel">
+                <mat-icon class="home-icons">storage</mat-icon>
+                <h3>Add new files to my cold storage</h3>
+                <div class="task-text">
+                    Your files are in a folder, and you have the metadata JSON of this cold storage. The app finds the
+                    files that are new since your last backup and burns only those onto new discs.
+                </div>
+                <button mat-flat-button color="primary" [disabled]="busyWithJson" (click)="goToNewFilesSetup()">Add new files</button>
+            </div>
+
+            <div class="task-panel">
+                <mat-icon class="home-icons">album</mat-icon>
+                <h3>Build the metadata JSON from my discs</h3>
+                <div class="task-text">
+                    You have the discs but not the metadata JSON. The app asks where to save a new one, then reads your
+                    existing discs one at a time and records what is on each of them. Nothing is burned, and no folder
+                    of your original files is needed.
+                </div>
+                <button mat-flat-button color="primary" [disabled]="busyWithJson" (click)="createMetadataJsonFromDiscs()">I do not have a json</button>
+            </div>
+
+            <div class="task-panel">
+                <mat-icon class="home-icons">playlist_add</mat-icon>
+                <h3>Update cold storage metadata with existing (already burnt) discs</h3>
+                <div class="task-text">
+                    You have the metadata JSON, but it does not cover every disc you have burned. The app asks for that
+                    JSON, then reads the discs it is missing, in order, and adds them to it. Nothing is burned, and no
+                    folder of your original files is needed.
+                </div>
+                <button mat-flat-button color="primary" [disabled]="busyWithJson" (click)="updateMetadataJSONWithExistingDiscs()">Update JSON</button>
+                <div *ngIf="loadingUpdateMetadataJSON">Reading and validating the JSON file...</div>
+            </div>
+        </div>
+
+        <!-- step_1_new_files: the first task's own screen - the only one with fields to fill in. -->
+        <div style="display: flex; flex-direction: column;" *ngIf="step=='step_1_new_files'">
                 <div style="display: flex; flex-direction: column; flex:1;">
                     <div style="align-self: center;">
                         <div style="display: flex; flex-direction: row; flex:1; justify-content: center;">
                             <mat-icon class="home-icons">storage</mat-icon>
-                        </div>                  
+                        </div>
                         <button mat-flat-button color="primary" class="file-chooser-btn" (click)="getDir()">Select the location of your files (Master)</button>
                         <mat-chip-set *ngIf="backup.targetPath">
                             <mat-chip>{{backup.targetPath}}</mat-chip>
@@ -28,50 +71,41 @@
                         </div>
                     </div>
                     <br>
-                    <div style="align-self: center;">
-                        <mat-checkbox [(ngModel)]="useExternalMetadata" class="example-margin">Provide cold storage files metadata by importing a JSON file.</mat-checkbox>
-                        <div *ngIf="useExternalMetadata">
-                            <button mat-flat-button color="primary" class="file-chooser-btn" (click)="getJSON()">Select JSON file</button>
+                    <div style="align-self: center; text-align: center;">
+                        <div style="display: flex; flex-direction: column; align-items: center;">
+                            <button mat-flat-button color="primary" class="file-chooser-btn" [disabled]="loadingExternalMetadataJSON" (click)="getJSON()">Select JSON file</button>
                             <mat-chip-set *ngIf="externalMetadataJSONpath">
-                            <mat-chip>{{externalMetadataJSONpath}}</mat-chip>
-                        </mat-chip-set>
-                        <div *ngIf="loadingExternalMetadataJSON">Reading and validating the JSON file...</div>
+                                <mat-chip>{{externalMetadataJSONpath}}</mat-chip>
+                            </mat-chip-set>
+                            <div *ngIf="loadingExternalMetadataJSON">Reading and validating the JSON file...</div>
                         </div>
-                        <div>
-                            Note for this checkbox: For this application to determine the new files, i.e. files missing from your cold storage but present in your 'master'
-                            (as in a cumulative backup fashion) we need to read all the metadata (path, file size etc.) for all the files in each one
-                            of the optical discs. When this checkbox is unchecked, you are asked to place all your optical discs (spaning the entire cold storage)
-                            one by one in the optical disc reader device in order to accumulate all the required metadata so that we can then determine what is missing from your cold storage.
-                            Since this is quite a tedious process, you can provide a JSON file containing said metadata. Now, how do I create this file you may ask.
-                            You simply run this process once by unsetting this checkbox and then the application will save this JSON file for you. You may then use
-                            this file for a future update of your cold storage. You have to be careful to make sure that the provided JSON file is up to date.
-                                                        
+                        <div class="task-text">
+                            The cold storage metadata JSON is the record of what every disc of this cold storage holds,
+                            with a SHA-256 checksum for each file. Keep it - it is what lets the app add missing files
+                            to this cold storage later, recover your data without inserting every disc, and check that
+                            your discs are still intact.
                         </div>
-                    </div> 
-                               
+                        <div style="margin-top: 16px;">
+                            <button mat-flat-button color="primary" [disabled]="busyWithJson" (click)="step1();">Next</button>
+                            <button mat-button color="primary" class="link-btn" (click)="goToTaskChooser()">Back</button>
+                        </div>
+                    </div>
                 </div>
                 <br>
                 <br>
-                <mat-divider></mat-divider>
-                <div style="align-self: center;">
-                    <mat-divider></mat-divider>
-                    <br>
-                    <mat-card-actions>
-                        <div>
-                            <button mat-flat-button color="primary" [disabled]="loadingExternalMetadataJSON" (click)="step1();">Next</button>
-                        </div>                    
-                    </mat-card-actions>
-                    <br>
-                    <br>
-                </div>
             </div>
     </mat-card>
     <optical-disc-backup-data-retriever *ngIf="step=='step_2'"></optical-disc-backup-data-retriever>
+    <div *ngIf="step=='step_2'" style="text-align: center; font-size: 12px; color: rgba(0, 0, 0, 0.6); max-width: 620px; margin: 12px auto 0; line-height: 1.4;">
+        Every disc is written into {{coldStorageMetadataJSONPathToSave}} as soon as it has been read, so nothing read
+        is lost if you stop here - including by leaving with the Home icon at the top of the window. Insert the discs
+        it is missing, in order, or press "All disks have been processed" when there are no more.
+    </div>
     <div style="display: flex; flex-direction: column; gap: 4vh;" *ngIf="step=='step_3'">
         <div class="flex-centered">
             <h2>Below you see the files missing from your cold storage.</h2>
             <h2>Select the files you want to burn to discs, then press 'Next'.</h2>
-        </div> 
+        </div>
         <div class="flex-centered">
             <mat-checkbox style="align-self: self-start" [checked]="allFilesSelected" (change)="selectAllFiles($event.checked);"
                 (click)="$event.stopPropagation()">
@@ -83,8 +117,7 @@
           <mat-form-field style="width: 350px;" subscriptSizing="dynamic">
             <mat-label>Cold storage collection name</mat-label>
             <input matInput [(ngModel)]="coldStorageCollectionName" name="coldStorageCollectionName" placeholder="e.g. My Backup">
-            <mat-hint *ngIf="useExternalMetadata">Burned onto each new disc's label as "{{coldStorageCollectionName || '...'}} Disc N" (continuing the numbering from your provided JSON) - use the same name as when this cold storage was first created.</mat-hint>
-            <mat-hint *ngIf="!useExternalMetadata">Burned onto each new disc's label as "{{coldStorageCollectionName || '...'}} Disc N" (continuing the numbering from however many discs you just inserted to reconstruct the existing cold storage) - use the same name as when this cold storage was first created.</mat-hint>
+            <mat-hint>Burned onto each new disc's label as "{{coldStorageCollectionName || '...'}} Disc N" (continuing the numbering from your provided JSON) - use the same name as when this cold storage was first created.</mat-hint>
           </mat-form-field>
         </div>
         <div class="flex-centered">
@@ -94,7 +127,7 @@
             <button mat-flat-button color="primary" (click)="partition();" [disabled]="isPartitioning">Next</button>
         </div>
         <br>
-        <br>           
+        <br>
     </div>
     <div *ngIf="step=='step_4'">
         Error

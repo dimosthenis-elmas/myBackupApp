@@ -42,6 +42,7 @@ import { OPTICAL_MEDIA, discContentBytes, mayBurnDisc } from '../shared/utils/op
 import { OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { backedUpPath, confirmDiscNameAndPathLimits, isOriginalNamesList, metadataEntriesForDisc } from '../shared/utils/shortened-names';
 import { metadataJsonFileName } from '../shared/utils/metadata-file-name';
+import { findFilePathsOnMoreThanOneDisc, trimTrailingEmptyDiscs } from '../shared/utils/cold-storage-metadata';
 const mySchema =require('../schemas/filesMetadata.schema.json');
 
 @Component({
@@ -84,17 +85,31 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
 
   optical_media_choices = OPTICAL_MEDIA;
 
-  useExternalMetadata = false;
   externalMetadataJSONpath!:string;
-  json_coldStorageFilesMetadata!: ColdStorageMetadata;
-  /** True from the moment a JSON file is picked (getJSON) until afterJSONpathIsGiven has actually finished
+  /** The JSON the "Next" button will diff the master folder against, once one has been read and schema-validated -
+   *  undefined until then, and undefined again the moment a pick turns out to be unusable, so a failed pick can
+   *  never leave a previously-loaded JSON silently in force (see getJSON). */
+  json_coldStorageFilesMetadata?: ColdStorageMetadata;
+  /** True from the moment a JSON file is picked (getJSON) until readAndValidateMetadataJSON has actually finished
    *  reading + schema-validating it and (on success) populated json_coldStorageFilesMetadata. externalMetadataJSONpath
-   *  is set synchronously, well before that finishes - so step1() used to be able to run while this was still in
-   *  flight, see json_coldStorageFilesMetadata as not-yet-set (even though a valid JSON WAS chosen), and silently
-   *  fall through to the no-JSON path (step_2, "waiting for optical medium to be inserted") instead of validating
-   *  against the JSON as the user actually asked. Bound to the "Next" button's [disabled] in the template, and
-   *  checked again in step1() itself as a second guard against anything that might invoke it directly. */
+   *  is set synchronously, well before that finishes - so step1() could otherwise run while the JSON was still in
+   *  flight, see json_coldStorageFilesMetadata as not-yet-set and show a misleading "choose a JSON first" dialog
+   *  for a JSON that WAS chosen. Bound to the "Next" button's [disabled] in the template, and checked again in
+   *  step1() itself as a second guard against anything that might invoke it directly. */
   loadingExternalMetadataJSON = false;
+  /** True while the "Update JSON" task's own read-and-validate of the metadata JSON it just asked for is
+   *  running - it shows the "Reading and validating the JSON file..." line and greys out step_1's task chooser
+   *  (see busyWithJson), so no other task can start a read of its own mid-validation. That flow keeps nothing about
+   *  the file afterwards: it asks for the JSON, validates it and goes straight on to the discs, so the path and
+   *  the parsed metadata only ever live inside updateMetadataJSONWithExistingDiscs. */
+  loadingUpdateMetadataJSON = false;
+  /** True while a JSON file is still being read and validated - what every task that reads a JSON waits for (the
+   *  "Next" button, "I do not have a json" and "Update JSON"), so none of them can start a read of its own
+   *  mid-validation. "I do not have a json" and "Update JSON" save nothing until their own read has finished, so
+   *  only "Next" can actually be waiting on another task's read. */
+  get busyWithJson(): boolean {
+    return this.loadingExternalMetadataJSON || this.loadingUpdateMetadataJSON;
+  }
   opticalDiscVolumeLetter!:string;
   selected_optical_medium = this.optical_media_choices[1];
   entireColdStorageMetadata!: ColdStorageMetadata;
@@ -122,6 +137,10 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    *  since each happens on the far side of its own separate await). Public so the template can bind to it. */
   public isPartitioning = false;
   isLinear = false;
+  /** Which screen the wizard is showing. 'step_1' is the task chooser (its three tasks are the three things this
+   *  wizard does); 'step_1_new_files' is the master-folder + metadata-JSON setup of the first of them; the rest are
+   *  the disc read (step_2), the missing-files diff (step_3), the out-of-sync dead end (step_4) and the burn
+   *  stepper (step_5). */
   step='step_1';
   odbr_ref!: OpticalDiscBackupDataRetriever;
   allFilesSelected = true;
@@ -252,13 +271,13 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    * to the exact original path, and a user who just clicks "Save" would unknowingly overwrite the file they loaded
    * from - even though they were technically asked. Without a loaded JSON (the discs were read), the collection's
    * name gives the file name, as for a new backup (see metadataJsonFileName). */
-  private suggestedUpdatedMetadataSavePath(): string {
-    if (!this.externalMetadataJSONpath) {
+  private suggestedUpdatedMetadataSavePath(originalPath: string): string {
+    if (!originalPath) {
       return metadataJsonFileName(this.coldStorageCollectionName, ' - updated');
     }
-    const lastSep = Math.max(this.externalMetadataJSONpath.lastIndexOf('\\'), this.externalMetadataJSONpath.lastIndexOf('/'));
-    const dir = lastSep >= 0 ? this.externalMetadataJSONpath.slice(0, lastSep + 1) : '';
-    const nameWithoutExt = (lastSep >= 0 ? this.externalMetadataJSONpath.slice(lastSep + 1) : this.externalMetadataJSONpath).replace(/\.json$/i, '');
+    const lastSep = Math.max(originalPath.lastIndexOf('\\'), originalPath.lastIndexOf('/'));
+    const dir = lastSep >= 0 ? originalPath.slice(0, lastSep + 1) : '';
+    const nameWithoutExt = (lastSep >= 0 ? originalPath.slice(lastSep + 1) : originalPath).replace(/\.json$/i, '');
     return `${dir}${nameWithoutExt} - updated.json`;
   }
 
@@ -268,8 +287,8 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    * unless the user really means to replace it. Recurses on "Retry"/"Choose a different location" so the
    * caller only has to handle "got a final path" vs "gave up entirely".
    * @return the confirmed full path, or undefined if the user gave up. */
-  private async promptForUpdatedMetadataSavePath(): Promise<string | undefined> {
-    const chosenPath = await this.chooseSaveFile(this.suggestedUpdatedMetadataSavePath());
+  private async promptForUpdatedMetadataSavePath(originalPath: string): Promise<string | undefined> {
+    const chosenPath = await this.chooseSaveFile(this.suggestedUpdatedMetadataSavePath(originalPath));
     if (!chosenPath) {
       return new Promise<string | undefined>((resolve) => {
         const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
@@ -281,7 +300,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         infoDialog.componentInstance.action2Label = "Cancel";
         infoDialog.componentInstance.action1Callback = () => {
           infoDialog.close();
-          resolve(this.promptForUpdatedMetadataSavePath());
+          resolve(this.promptForUpdatedMetadataSavePath(originalPath));
         }
         infoDialog.componentInstance.action2Callback = () => {
           infoDialog.close();
@@ -290,7 +309,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       });
     }
 
-    if (this.externalMetadataJSONpath && chosenPath.toLowerCase() === this.externalMetadataJSONpath.toLowerCase()) {
+    if (originalPath && chosenPath.toLowerCase() === originalPath.toLowerCase()) {
       return new Promise<string | undefined>((resolve) => {
         const warnDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
         warnDialog.disableClose = true;
@@ -305,7 +324,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         }
         warnDialog.componentInstance.action2Callback = () => {
           warnDialog.close();
-          resolve(this.promptForUpdatedMetadataSavePath());
+          resolve(this.promptForUpdatedMetadataSavePath(originalPath));
         }
       });
     }
@@ -321,49 +340,70 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     });
   }
 
+  /** step_1's first task ("Add new files to my cold storage"): the master folder and the existing metadata JSON are
+   *  both needed before anything can be compared, so they get a screen of their own - the only one of the three
+   *  tasks with fields to fill in. */
+  goToNewFilesSetup(): void {
+    this.step = 'step_1_new_files';
+  }
+
+  /** Back to step_1's task chooser, e.g. from that setup screen. Whatever has already been picked (the master
+   *  folder, a JSON) is kept, so returning to the setup screen finds it as it was. */
+  goToTaskChooser(): void {
+    this.step = 'step_1';
+  }
+
   async getJSON(){
     const path = await this.chooseFile();
     if(path != undefined){
       this.externalMetadataJSONpath = path;
       this.loadingExternalMetadataJSON = true;
       try{
-        await this.afterJSONpathIsGiven();
+        // Assigned even when it comes back undefined: a pick that turns out to be unusable has to clear whatever
+        // JSON was loaded before it. The chip and the path are gone by then (below), so leaving the old metadata
+        // in place would let "Next" quietly diff against the file the user just replaced - and lose the
+        // overwrite protection that names it (see promptForUpdatedMetadataSavePath).
+        this.json_coldStorageFilesMetadata = await this.readAndValidateMetadataJSON(path);
+        if (!this.json_coldStorageFilesMetadata) {
+          this.externalMetadataJSONpath = "";
+        }
       } finally {
         this.loadingExternalMetadataJSON = false;
       }
     }
   }
 
-  async afterJSONpathIsGiven(){
-    //read JSON file
+  /** Reads a cold storage metadata JSON and checks it against the schema, showing an explanatory dialog on either
+   *  failure. Both of this wizard's JSON files are read through it (getJSON for the master+JSON diff, and
+   *  updateMetadataJSONWithExistingDiscs for adding already-burnt discs to one) - they only differ in what they do
+   *  with the result.
+   * @param emptyFileAsNoDiscs passed through to the worker (see readJSONfromDisk in worker-communicator.ts): read
+   *  a file with nothing in it as an empty metadata JSON (`[]`) rather than failing to read it.
+   * @return the JSON's content, or undefined if it could not be read or is not a files-metadata JSON. */
+  private async readAndValidateMetadataJSON(path: string, emptyFileAsNoDiscs: boolean = false): Promise<ColdStorageMetadata | undefined>{
     let res: any;
     try {
-      res = (await ipc.readJSONfromDisk(this.externalMetadataJSONpath)).res;
+      res = (await ipc.readJSONfromDisk(path, emptyFileAsNoDiscs)).res;
     } catch (error) {
       // The file itself could not even be read/parsed (missing, unreadable, corrupted, or too large - see
       // readJSONfromDisk's own size guard in worker.ts) - previously this propagated out of getJSON() uncaught
       // (only a `finally` there, no `catch`), so the "Reading and validating..." text just silently vanished
       // with no explanation at all. Handled the same way as the recognized-but-wrong-schema case below.
-      this.externalMetadataJSONpath = "";
       this.showJsonSelectionErrorDialog("Error", `Could not read this JSON file: ${error}`);
-      return;
+      return undefined;
     }
     // check type
     const schemaNode = compileSchema(mySchema);
-    const jsonIsValid = schemaNode.validate(res);
-    if(jsonIsValid){
-      this.json_coldStorageFilesMetadata = res;
-      console.log(this.json_coldStorageFilesMetadata);
-    }else{
-      this.externalMetadataJSONpath = "";
-      this.showJsonSelectionErrorDialog("JSON selection", `This JSON is not recognised as a files metadata type.`);
+    if(schemaNode.validate(res)){
+      return res;
     }
+    this.showJsonSelectionErrorDialog("JSON selection", `This JSON is not recognised as a files metadata type.`);
+    return undefined;
   }
 
-  /** Both of afterJSONpathIsGiven()'s failure paths just need to show one dialog and stop - factored out rather
-   *  than throwing to unwind back to getJSON() (which only has a `finally`, not a `catch`, so a thrown error
-   *  used to become a silently-swallowed unhandled rejection with no dialog at all for the read/parse failure
-   *  case - see afterJSONpathIsGiven's own comment). */
+  /** Both of readAndValidateMetadataJSON()'s failure paths just need to show one dialog and stop - factored out
+   *  rather than throwing to unwind back to the caller (which would otherwise become a silently-swallowed
+   *  unhandled rejection with no dialog at all for the read/parse failure case). */
   private showJsonSelectionErrorDialog(title: string, message: string): void {
     const dialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '450px' });
     dialog.componentInstance.title = title;
@@ -439,49 +479,177 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
   }
 
   async step1(): Promise<void>{
-    // Second guard on top of the "Next" button's own [disabled]="loadingExternalMetadataJSON" - belt-and-braces
-    // against anything else that might invoke step1() while a JSON is still being read/validated (see
-    // loadingExternalMetadataJSON's own doc comment for the race this closes).
-    if(this.useExternalMetadata && this.loadingExternalMetadataJSON){
+    // Second guard on top of the "Next" button's own [disabled]="busyWithJson" - belt-and-braces against anything
+    // else that might invoke step1() while a JSON is still being read/validated (see loadingExternalMetadataJSON's
+    // own doc comment for the race this closes).
+    if(this.busyWithJson){
       return;
     }
-    if(
-      !this.backup.targetPath ||
-      (this.useExternalMetadata && !this.externalMetadataJSONpath)
-    ){
+    if(!this.backup.targetPath || !this.json_coldStorageFilesMetadata){
       const loadingDialogRef = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
       loadingDialogRef.componentInstance.title = "Missing fields";
-      loadingDialogRef.componentInstance.message = `You have not filled all of the required fields.`;
+      loadingDialogRef.componentInstance.message = !this.backup.targetPath
+        ? `Choose the location of your files (Master) first.`
+        : `Choose a metadata JSON file first.`;
     }else{
-      if(this.json_coldStorageFilesMetadata){
-        // Empty entries at the end are discs planned but never confirmed burned (the app was closed first): dropped, so
-        // new discs take their numbers. One before a burned disc stays - it keeps that disc's number.
-        const metadata = this.json_coldStorageFilesMetadata;
-        let discCount = metadata.length;
-        while (discCount > 0 && metadata[discCount - 1].length === 0) { discCount--; }
-        this.entireColdStorageMetadata = metadata.slice(0, discCount);
-        this.diff(this.entireColdStorageMetadata.flat(), await this.scanMasterDirectoryWithProgress());
-      }else{
-        this.step='step_2';
-        await this.holdOn(500);
-        // No JSON means the existing discs are read straight off the media - so also SHA-256 every file as each
-        // disc is read, or the JSON written later would carry integrity data for the NEW discs only (those are
-        // hashed in sendToImgBurn), not for the files already on the discs. See
-        // OpticalDiscBackupDataRetriever.computeSha256ForReadDiscs / attachSha256ToReadDisc.
-        this.odbr_ref.computeSha256ForReadDiscs = true;
-        this.odbr_ref.getCombinedFilePathsFromAllOpticalDiscs().then(async (x)=>{
-          this.entireColdStorageMetadata = JSON.parse(JSON.stringify(x.filesMetadata));
-          this.diff(x.filesMetadata.flat(), await this.scanMasterDirectoryWithProgress());
-        });
-      }
+      this.entireColdStorageMetadata = trimTrailingEmptyDiscs(this.json_coldStorageFilesMetadata);
+      this.diff(this.entireColdStorageMetadata.flat(), await this.scanMasterDirectoryWithProgress());
     }
+  }
+
+  /** step_1's second task, "I do not have a json": rebuilds the cold storage metadata JSON straight from the
+   *  physical discs - no master folder, no diff, no new discs burned. Asks where to save the new JSON, then reads
+   *  the discs one by one. */
+  async createMetadataJsonFromDiscs(): Promise<void>{
+    const savePath = await this.chooseSaveFile(metadataJsonFileName('My Backup'));
+    if (!savePath) { return; }
+    this.coldStorageMetadataJSONPathToSave = savePath;
+    // The JSON starts as the empty cold storage (nothing recorded yet) and grows as discs are read - see
+    // readDiscsIntoMetadataJSON. Written before the first disc so the chosen location is known to be writable,
+    // and so the file is there to look at from the start.
+    await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPathToSave, JSON.stringify([], null, 2));
+    // The retriever only exists once step_2 is rendered - set step_2 and let it appear before touching odbr_ref.
+    this.step = 'step_2';
+    await this.holdOn(500);
+    await this.readDiscsIntoMetadataJSON("Metadata JSON saved");
+  }
+
+  /** step_1's third task, "Update cold storage metadata with existing (already burnt) discs": the metadata JSON
+   *  exists but some discs that were burned are missing from it (burned before the JSON was last saved, or the JSON
+   *  was restored from an older copy). One button does the whole thing - it asks for that JSON, reads and validates
+   *  it, asks where to save the updated file, then reads those discs into it. Nothing is burned and no master folder
+   *  is involved, so there is nothing to confirm between the picks the way the first task's setup screen has.
+   *
+   *  The discs the JSON already records are seeded into the retriever first, so the read only adds: a disc already
+   *  recorded (or sharing files with one that is) is refused by the retriever's own checks, and the seeded entries
+   *  are what the new ones are appended to. */
+  async updateMetadataJSONWithExistingDiscs(): Promise<void>{
+    if (this.busyWithJson) { return; }
+    const originalPath = await this.chooseFile();
+    if (!originalPath) { return; }
+
+    this.loadingUpdateMetadataJSON = true;
+    let jsonToUpdate: ColdStorageMetadata | undefined;
+    try {
+      // A JSON that records no discs is legitimate here - it is a cold storage with nothing recorded yet, and the
+      // discs read into it are numbered from 1, which is exactly what "I do not have a json" does. So an empty
+      // metadata JSON, and a file with nothing in it at all, are both read as "no discs yet" and carried on with,
+      // rather than refused: there is nothing in such a file to lose. (A file holding something that is NOT valid
+      // JSON is still refused - that one may be a real metadata JSON that got damaged, and writing over it would
+      // lose it.)
+      jsonToUpdate = await this.readAndValidateMetadataJSON(originalPath, true);
+    } finally {
+      this.loadingUpdateMetadataJSON = false;
+    }
+    // readAndValidateMetadataJSON has already said what is wrong with the file.
+    if (!jsonToUpdate) { return; }
+
+    // A file the JSON records on two discs is checked for here rather than left to the disc read, which is where it
+    // would surface: that read refuses a disc holding files it has already seen, so a JSON that names one file twice
+    // would make EVERY disc inserted be refused ("This disc has files in common with a disc read before"), blaming
+    // the disc in the drive for something the JSON says. Nothing has been written at this point, so the user can
+    // just pick another JSON.
+    const pathsOnMoreThanOneDisc = findFilePathsOnMoreThanOneDisc(jsonToUpdate);
+    if (pathsOnMoreThanOneDisc.length > 0) {
+      const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '750px' });
+      errorDialog.disableClose = true;
+      errorDialog.componentInstance.title = "This JSON is malformed";
+      errorDialog.componentInstance.message = `It records the same file on more than one disc, so it does not describe ` +
+        `a valid cold storage - every disc of a cold storage holds different files. Correct the JSON, or choose a ` +
+        `different one.`;
+      errorDialog.componentInstance.lists = [
+        { label: `ON MORE THAN ONE DISC (${pathsOnMoreThanOneDisc.length})`, items: pathsOnMoreThanOneDisc }
+      ];
+      errorDialog.componentInstance.actionsNum = 1;
+      errorDialog.componentInstance.action1Label = "Ok";
+      errorDialog.componentInstance.action1Callback = () => { errorDialog.close(); }
+      return;
+    }
+
+    // Trailing empty discs are dropped first, exactly as the first task's step1() does before working with
+    // a loaded JSON, and the SAME trimmed array is both written and seeded. This matters because the retriever
+    // numbers each disc it reads by how many it was seeded with: an untrimmed seed holding a trailing empty entry
+    // would put the first newly-read disc one number too high, and that number is what the next physical disc is
+    // announced as and what the appended entry's position means.
+    const existingMetadata = trimTrailingEmptyDiscs(jsonToUpdate);
+
+    const savePath = await this.promptForUpdatedMetadataSavePath(originalPath);
+    if (!savePath) { return; }
+    this.coldStorageMetadataJSONPathToSave = savePath;
+    // The existing discs are written out first, unchanged, so the file being added to already holds them - even
+    // if the user stops after the first disc (each disc is written as it is read, see readDiscsIntoMetadataJSON).
+    await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPathToSave,
+      JSON.stringify(existingMetadata, null, 2));
+    // The retriever only exists once step_2 is rendered - set step_2 and let it appear before touching odbr_ref.
+    this.step = 'step_2';
+    await this.holdOn(500);
+    if (!this.odbr_ref.seedFromExternalMetadata(existingMetadata)) {
+      // seedFromExternalMetadata has already said what is wrong with the JSON; back to the task chooser to pick
+      // another one (this task's button asks for the JSON again, so nothing of the rejected file is kept).
+      this.step = 'step_1';
+      return;
+    }
+    await this.readDiscsIntoMetadataJSON("Metadata JSON updated");
+  }
+
+  /** Reads discs into coldStorageMetadataJSONPathToSave, which must already exist: hashes every file as its disc
+   *  is read (computeSha256ForReadDiscs - the JSON is what later integrity checks compare against), writes the
+   *  growing JSON after each disc, and writes it once more when the read ends so that the JSON the user is told
+   *  about is the one on disk. The retriever must be rendered already (step_2 set, see the callers) and, when
+   *  there is an existing JSON to add to, seeded with it (seedFromExternalMetadata) - reading appends to what it
+   *  was seeded with, so the discs already recorded are kept.
+   *
+   *  Shared by this wizard's two "read discs into a metadata JSON" tasks, which differ only in what the
+   *  JSON starts as and in the heading of the closing dialog. */
+  private async readDiscsIntoMetadataJSON(savedDialogTitle: string): Promise<void>{
+    this.odbr_ref.computeSha256ForReadDiscs = true;
+    this.odbr_ref.onDiscsUpdated = async (metadata) => {
+      await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPathToSave,
+        JSON.stringify(trimTrailingEmptyDiscs(metadata), null, 2));
+    };
+    this.odbr_ref.discReadErrorMessage = `The disc could not be read. Retry, or cancel - everything read so far ` +
+      `is kept in ${this.coldStorageMetadataJSONPathToSave}.`;
+    const read = await this.odbr_ref.getCombinedFilePathsFromAllOpticalDiscs();
+    // Final, authoritative write of how the read ended. Every disc already wrote itself (onDiscsUpdated above),
+    // but a write can fail there - a folder deleted mid-run, a full disk - and onDiscsUpdated runs before the
+    // disc is prompted for next, so a failure surfaces as a read error and the user can end up continuing with
+    // the last disc missing from the file. Writing here means the JSON named in the dialog below is the one on
+    // disk.
+    try {
+      await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPathToSave,
+        JSON.stringify(trimTrailingEmptyDiscs(read.filesMetadata), null, 2));
+    } catch (error) {
+      const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+      errorDialog.disableClose = true;
+      errorDialog.componentInstance.title = "The metadata JSON could not be saved";
+      errorDialog.componentInstance.message = `The discs were read, but the metadata JSON could not be written ` +
+        `to ${this.coldStorageMetadataJSONPathToSave}. ${error}`;
+      errorDialog.componentInstance.actionsNum = 1;
+      errorDialog.componentInstance.action1Label = "Ok";
+      errorDialog.componentInstance.action1Callback = () => {
+        errorDialog.close();
+        goToMainMenuAndReload(this.router);
+      };
+      return;
+    }
+    const infoDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
+    infoDialog.disableClose = true;
+    infoDialog.componentInstance.title = savedDialogTitle;
+    infoDialog.componentInstance.message = `Your cold storage metadata JSON is saved to ${this.coldStorageMetadataJSONPathToSave}. ` +
+      `Keep it for future updates and recoveries.`;
+    infoDialog.componentInstance.actionsNum = 1;
+    infoDialog.componentInstance.action1Label = "Ok";
+    infoDialog.componentInstance.action1Callback = () => {
+      infoDialog.close();
+      goToMainMenuAndReload(this.router);
+    };
   }
 
   /** Scans the master directory (ipc.getFilePathsWithStats) behind a LoadingDialogComponent that shows a real,
    *  live percentage (see get-file-paths-with-stats in worker.ts, which probes the real total upfront via
-   *  countAllFilesQuick before scanning - see its own doc comment) - this is the most time-consuming step of
-   *  this wizard's step_1, and previously ran with no visible feedback at all (the dialog diff() itself opens
-   *  only starts AFTER this already-finished scan is passed into it). */
+   *  countAllFilesQuick before scanning - see its own doc comment). This scan is the most time-consuming part of
+   *  the "Add new files" task, and it needs its own progress dialog because the one diff() opens only starts
+   *  after this already-finished scan is passed into it. */
   private async scanMasterDirectoryWithProgress(): Promise<filesMetadata[]> {
     const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
     loadingDialogRef.componentInstance.showCancelButton = false;
@@ -669,7 +837,7 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       // externalMetadataJSONpath, and confirms before letting the user overwrite it anyway - see
       // promptForUpdatedMetadataSavePath - so the original stays available (e.g. for testing) unless they really
       // mean to replace it.
-      const chosenPath = await this.promptForUpdatedMetadataSavePath();
+      const chosenPath = await this.promptForUpdatedMetadataSavePath(this.externalMetadataJSONpath);
       if (!chosenPath) {
         return;
       }
@@ -749,12 +917,11 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       this.effectiveMediaCapacityInBytes = (await ipc.getEffectiveOpticalMediumCapacity(this.selected_optical_medium.capacity, this.selected_optical_medium.maxRepletionRatio)).res;
       this.originalNumberOfDisksNeeded = this.partitions.length;
 
-      // Scaffold write: existing discs unchanged, plus one empty placeholder per new disc. Each new disc's real
-      // entry is filled in once it is confirmed burned (see recordConfirmedDisc) - mirrors
-      // backup-to-optical-media.component.ts's identical scaffold-then-incremental pattern.
-      const scaffold: ColdStorageMetadata = (JSON.parse(JSON.stringify(this.entireColdStorageMetadata)) as ColdStorageMetadata)
-        .concat(Array(this.partitions.length).fill([]));
-      await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPathToSave, JSON.stringify(scaffold, null, 2));
+      // Scaffold write: the existing discs unchanged. No empty placeholders for the new discs - each new disc's
+      // real entry is appended when it is confirmed burned (see recordConfirmedDisc), so a saved JSON never ends
+      // in empty entries (see trimTrailingEmptyDiscs).
+      await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPathToSave,
+        JSON.stringify(trimTrailingEmptyDiscs(this.entireColdStorageMetadata), null, 2));
 
       this._disks = [...Array(this.partitions.length).keys()]
       this.sentDiscs = Array(this.partitions.length).fill(false);
@@ -1174,12 +1341,14 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     try {
       await this.metadataUpdateQueue.enqueue(async () => {
         const metadataJSON: ColdStorageMetadata = (await ipc.readJSONfromDisk(this.coldStorageMetadataJSONPathToSave)).res;
-        // The scaffold written in partition() reserved index (existing disc count + i) for new disc i.
+        // Append new disc i's entry at the end (discs are confirmed in order, so this index is exactly the next
+        // one). No empty placeholders are ever written - see trimTrailingEmptyDiscs.
         metadataJSON[this.entireColdStorageMetadata.length + i] = this.discMetadataEntries[i] || [];
         // A disc appended for a sliver lies past the entries written when the discs were planned: no gaps (null) in
         // the array.
         for (let d = 0; d < metadataJSON.length; d++) { if (!Array.isArray(metadataJSON[d])) { metadataJSON[d] = []; } }
-        await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPathToSave, JSON.stringify(metadataJSON, null, 2));
+        await ipc.writeJSONtoDisk(this.coldStorageMetadataJSONPathToSave,
+          JSON.stringify(trimTrailingEmptyDiscs(metadataJSON), null, 2));
       });
     } catch (error) {
       const errorDialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
