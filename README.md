@@ -191,8 +191,8 @@ the page width, which can make the in-app dialog text hard to read at a glance):
 <sub><b>Synchronize directories</b> - previewing what will be copied and deleted before committing.</sub>
 </p>
 <p align="center">
-<a href="docs/screenshots/add-missing-files/02-diff-results.png"><img src="docs/screenshots/add-missing-files/02-diff-results.png" width="800"></a><br>
-<sub><b>Add missing files</b> - the wizard's own diff against an existing cold storage, showing only what's actually new.</sub>
+<a href="docs/screenshots/add-missing-files/00-choose-a-task.png"><img src="docs/screenshots/add-missing-files/00-choose-a-task.png" width="800"></a><br>
+<sub><b>Add missing files</b> - the wizard opens by asking which of its three jobs to do: add the files that are new since your last backup, build a metadata JSON from the discs you already have, or add discs you have burned to a JSON that does not record them.</sub>
 </p>
 <p align="center">
 <a href="docs/screenshots/verify-integrity/01-tally.png"><img src="docs/screenshots/verify-integrity/01-tally.png" width="800"></a><br>
