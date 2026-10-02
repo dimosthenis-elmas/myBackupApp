@@ -68,6 +68,7 @@ call :run "ui: test-backup-to-optical-media" "test-harness\ui\test-backup-to-opt
 call :run "ui: test-backup-to-optical-media-overflow-disc" "test-harness\ui\test-backup-to-optical-media-overflow-disc.js"
 call :run "ui: test-add-missing-files" "test-harness\ui\test-add-missing-files.js"
 call :run "ui: test-add-missing-files-split-resume" "test-harness\ui\test-add-missing-files-split-resume.js"
+call :run "ui: test-add-missing-files-no-json-sha256" "test-harness\ui\test-add-missing-files-no-json-sha256.js"
 call :run "ui: test-backup-to-optical-media-sha256" "test-harness\ui\test-backup-to-optical-media-sha256.js"
 call :run "ui: test-recover-integrity-detects-corruption" "test-harness\ui\test-recover-integrity-detects-corruption.js"
 call :run "ui: test-verify-cold-storage-integrity" "test-harness\ui\test-verify-cold-storage-integrity.js"

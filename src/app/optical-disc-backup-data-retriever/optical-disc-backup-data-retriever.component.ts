@@ -74,6 +74,12 @@ import { discsLabel } from '../shared/utils/split-files';
 
     completeBackupFilePaths :Array<string> = [];
     coldStorageMetadataForAllOpticalDiscs: ColdStorageMetadata = [];
+    /** Whether reading discs (via getCombinedFilePathsFromAllOpticalDiscs) should also SHA-256 every file as each
+     *  disc is read, so the cold storage metadata JSON later written from those entries carries integrity data for
+     *  the existing discs too. Set by add-missing-files-to-optical-media-cold-storage.component.ts before its "no
+     *  metadata JSON" read; recovery leaves it false (it only lists discs, and verifies each file separately right
+     *  after it is copied). */
+    computeSha256ForReadDiscs = false;
 
     /** Shown under the files tree: how many files the whole cold storage holds (each piece of a split large file
      *  counts, as that is what is on the discs) and their total size, as "n MB (m bytes)" (see formatMegabytes).
@@ -348,7 +354,77 @@ import { discsLabel } from '../shared/utils/split-files';
         confirmDialog.close();
         this.step = 'step_2';
         this.readAllDiscsToReconstructTheCompleteBackupFilePaths();
-        
+
+      }
+    }
+
+    /** SHA-256s every file on the disc just read and attaches each hash to its entry's stats.sha256, mutating
+     *  `discEntries` in place - but only when this read is the "no metadata JSON" add-missing-files flow
+     *  (computeSha256ForReadDiscs, set by that wizard before it calls getCombinedFilePathsFromAllOpticalDiscs):
+     *  the JSON later written from these entries must carry integrity data for the existing discs, exactly as
+     *  every NEW disc's files do (see attachSha256HashesToDiscFiles in add-missing-files-to-optical-media-cold-
+     *  storage.component.ts). Recovery never sets the flag - hashing files it is about to copy would waste time,
+     *  and it verifies them separately right after copying.
+     *
+     *  Called while the disc is still mounted (from readAllDiscsToReconstructTheCompleteBackupFilePaths, before
+     *  the "insert the next disc" prompt), so each path is hashed straight off the disc. Reuses the SAME
+     *  verify-file-hashes worker primitive the standalone verify wizard uses to hash files still sitting on a
+     *  disc, with no expectedSha256 - hash only, no comparison. A file that cannot be read comes back with an
+     *  empty hash, is left without one, and is reported to the user in a dialog naming it and the read error -
+     *  a damaged disc sector is the usual cause - rather than aborting every other file on the disc. */
+    private async attachSha256ToReadDisc(discEntries: filesMetadata[], mountedRoot: string): Promise<void> {
+      const hashableEntries = discEntries.filter(e => !e.stats.isDirectory);
+      if (hashableEntries.length === 0) { return; }
+
+      const loadingDialogRef = this.dialog.open(LoadingDialogComponent, { disableClose: true });
+      loadingDialogRef.componentInstance.showCancelButton = false;
+      loadingDialogRef.componentInstance.message = "Calculating SHA-256 hashes";      let hashedCount = 0;
+      const listener = ipc.onResponseFromWorker((event, response) => {
+        this.ngZone.run(() => {
+          if (response.key === 'verify-file-hashes' && response.status === 'running') {
+            const newLines = response.res as string[];
+            hashedCount += newLines.length;
+            loadingDialogRef.componentInstance.percent = Math.round((hashedCount / hashableEntries.length) * 100);
+          }
+        });
+      });
+      let results: Array<{ path: string, sha256: string, matched?: boolean, error?: string }> = [];
+      try {
+        results = (await ipc.verifyFileHashes(hashableEntries.map(e => ({
+          absolutePath: e.path.replace(OPTICAL_DRIVE_LETTER_CONVENTION, mountedRoot),
+        })))).res;
+      } finally {
+        listener.removeListener();
+        loadingDialogRef.close();
+      }
+
+      const hashByAbsolutePath = new Map<string, string>();
+      const unreadable: string[] = [];
+      for (const r of results) {
+        if (r.sha256) { hashByAbsolutePath.set(r.path, r.sha256); }
+        else { unreadable.push(r.error ? `${r.path}  -  ${r.error.replace(/\s+/g, ' ').trim()}` : r.path); }
+      }
+      hashableEntries.forEach(e => {
+        const hash = hashByAbsolutePath.get(e.path.replace(OPTICAL_DRIVE_LETTER_CONVENTION, mountedRoot));
+        if (hash) { e.stats.sha256 = hash; }
+      });
+
+      // A file whose bytes cannot be read off the disc is still recorded (its name and size were read fine), but
+      // it gets no SHA-256, so it could never be integrity-checked. Tell the user, naming each such file, rather
+      // than silently leaving the hash absent.
+      if (unreadable.length > 0) {
+        await new Promise<void>((resolve) => {
+          const dialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
+          dialog.disableClose = true;
+          dialog.componentInstance.title = "Some files could not be read";
+          dialog.componentInstance.message = `${unreadable.length === 1 ? 'One file' : `${unreadable.length} files`} on this disc ` +
+            `could not be read, so no SHA-256 was recorded for ${unreadable.length === 1 ? 'it' : 'them'}. ` +
+            `A damaged disc sector is the usual cause.`;
+          dialog.componentInstance.lists = [{ label: `Could not be read (${unreadable.length}):`, items: unreadable }];
+          dialog.componentInstance.actionsNum = 1;
+          dialog.componentInstance.action1Label = "Ok";
+          dialog.componentInstance.action1Callback = () => { dialog.close(); resolve(); };
+        });
       }
     }
 
@@ -473,6 +549,12 @@ import { discsLabel } from '../shared/utils/split-files';
 
         }else{
           //Ok the disk provided meets the specs.
+          // Before the disc is ejected (the "insert the next disc" prompt comes right after): SHA-256 every file
+          // on it, when this read is the no-JSON add-missing-files flow - the JSON written later must carry
+          // integrity data for the existing discs too. See computeSha256ForReadDiscs / attachSha256ToReadDisc.
+          if (this.computeSha256ForReadDiscs) {
+            await this.attachSha256ToReadDisc(normalizedFilePathsWithStats, mountedRoot);
+          }
           //Add an id for the disk. Please read the comment before the this.opticalDiskIds declaration.
           this.opticalDiskIds.push(currentDiskId);
           //Add the paths to the complete backup.

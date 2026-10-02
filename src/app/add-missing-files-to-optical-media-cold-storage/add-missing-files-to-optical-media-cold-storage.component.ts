@@ -464,6 +464,11 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       }else{
         this.step='step_2';
         await this.holdOn(500);
+        // No JSON means the existing discs are read straight off the media - so also SHA-256 every file as each
+        // disc is read, or the JSON written later would carry integrity data for the NEW discs only (those are
+        // hashed in sendToImgBurn), not for the files already on the discs. See
+        // OpticalDiscBackupDataRetriever.computeSha256ForReadDiscs / attachSha256ToReadDisc.
+        this.odbr_ref.computeSha256ForReadDiscs = true;
         this.odbr_ref.getCombinedFilePathsFromAllOpticalDiscs().then(async (x)=>{
           this.entireColdStorageMetadata = JSON.parse(JSON.stringify(x.filesMetadata));
           this.diff(x.filesMetadata.flat(), await this.scanMasterDirectoryWithProgress());
