@@ -722,6 +722,17 @@ import { discsLabel } from '../shared/utils/split-files';
     }
 
     async recoverAllFilesFromAllDiscs(){
+      // Drop the listener a PREVIOUS pass left registered (undefined until this pass registers its own below -
+      // hence the optional call; this pass removes its own again once its copy is done). It must not react to
+      // anything this pass does: this pass starts by waiting for a disc and reading its file list, and that
+      // listener would report both responses as unexpected internal messages (its own default branch), then treat
+      // THIS pass's copy completion as its own - pushing the PREVIOUS disc's id a second time, so the "all discs
+      // recovered" check never matches and the wizard stops one step short of its final summary. This used to be
+      // wiped by accident: every request's completion called ipcRenderer_removeAllListeners('message-from-worker'),
+      // tearing this listener down along with it - see worker-communicator.ts's sendAndAwaitResponse/onDestroy,
+      // which now remove only their own listeners.
+      this.workerListener?.removeListener();
+
       this.finishedCopyingFiles = false;
       this.percentComplete = 0;
       ipc.stop();
@@ -844,6 +855,12 @@ import { discsLabel } from '../shared/utils/split-files';
                 });
                 if (visibleLines.length > 0) { this.backup.previewLogsStream.next(visibleLines); }
               }else if(response.status == 'completed' || response.status == 'stopped'){
+                // This pass's copy is over, so this listener has nothing left to report. Everything that follows
+                // (verifyRecoveredFileIntegrity, the merge offer, ...) sends its OWN requests, whose responses
+                // would otherwise land in this switch's default branch and pop an "unexpected internal message"
+                // dialog right on top of the recovery summary. The next disc's pass registers its own listener -
+                // see the removal at the top of recoverAllFilesFromAllDiscs.
+                this.workerListener.removeListener();
                 this.backup.previewLogsStream.complete();
                 this.discIdsWhoseFilesAreAlreadyRecovered.push(currentDiskId);
                 if(this.arrayCompare(this.discIdsNeededForTheRecoveryOfSelectedFiles, this.discIdsWhoseFilesAreAlreadyRecovered)){
