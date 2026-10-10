@@ -368,8 +368,9 @@ import { discsLabel } from '../shared/utils/split-files';
     }
 
     /** SHA-256s every file on the disc just read and attaches each hash to its entry's stats.sha256, mutating
-     *  `discEntries` in place - but only when this read is the "I do not have a json" add-missing-files flow
-     *  (computeSha256ForReadDiscs, set by that wizard before it calls getCombinedFilePathsFromAllOpticalDiscs):
+     *  `discEntries` in place - but only in the add-missing-files flows that write a JSON out of these discs (the
+     *  "I do not have a json" and the "update an existing JSON" tasks; computeSha256ForReadDiscs is set by that
+     *  wizard before it calls getCombinedFilePathsFromAllOpticalDiscs):
      *  the JSON later written from these entries must carry integrity data for the existing discs, exactly as
      *  every NEW disc's files do (see attachSha256HashesToDiscFiles in add-missing-files-to-optical-media-cold-
      *  storage.component.ts). Recovery never sets the flag - hashing files it is about to copy would waste time,
@@ -379,8 +380,10 @@ import { discsLabel } from '../shared/utils/split-files';
      *  the "insert the next disc" prompt), so each path is hashed straight off the disc. Reuses the SAME
      *  verify-file-hashes worker primitive the standalone verify wizard uses to hash files still sitting on a
      *  disc, with no expectedSha256 - hash only, no comparison. A file that cannot be read comes back with an
-     *  empty hash, is left without one, and is reported to the user in a dialog naming it and the read error -
-     *  a damaged disc sector is the usual cause - rather than aborting every other file on the disc. */
+     *  empty hash and aborts the whole disc: the user is told, in a dialog naming every such file and the read
+     *  error (a damaged disc sector is the usual cause), and then a read error is thrown, so the caller never
+     *  appends this disc (see readAllDiscsToReconstructTheCompleteBackupFilePaths) and the metadata JSON is never
+     *  updated with entries that carry filenames only, no SHA-256. */
     private async attachSha256ToReadDisc(discEntries: filesMetadata[], mountedRoot: string): Promise<void> {
       const hashableEntries = discEntries.filter(e => !e.stats.isDirectory);
       if (hashableEntries.length === 0) { return; }
@@ -418,22 +421,27 @@ import { discsLabel } from '../shared/utils/split-files';
         if (hash) { e.stats.sha256 = hash; }
       });
 
-      // A file whose bytes cannot be read off the disc is still recorded (its name and size were read fine), but
-      // it gets no SHA-256, so it could never be integrity-checked. Tell the user, naming each such file, rather
-      // than silently leaving the hash absent.
+      // A file whose bytes cannot be read off the disc means this disc cannot be recorded faithfully: an entry
+      // holding its name and size but no SHA-256 could never be integrity-checked. Tell the user, naming each such
+      // file, then abort this disc by throwing, so the caller (readAllDiscsToReconstructTheCompleteBackupFilePaths)
+      // never appends it and never writes it into the metadata JSON - the JSON must never be updated with entries
+      // that carry filenames only. The throw lands in that method's catch, which shows the standard retry/cancel
+      // "Error reading disk" dialog (discReadErrorMessage), so the user can clean the disc and retry.
       if (unreadable.length > 0) {
         await new Promise<void>((resolve) => {
           const dialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '700px' });
           dialog.disableClose = true;
           dialog.componentInstance.title = "Some files could not be read";
           dialog.componentInstance.message = `${unreadable.length === 1 ? 'One file' : `${unreadable.length} files`} on this disc ` +
-            `could not be read, so no SHA-256 was recorded for ${unreadable.length === 1 ? 'it' : 'them'}. ` +
-            `A damaged disc sector is the usual cause.`;
+            `could not be read, so this disc cannot be recorded in the metadata JSON - no SHA-256 could be computed for ` +
+            `${unreadable.length === 1 ? 'it' : 'them'}. A damaged disc sector is the usual cause.`;
           dialog.componentInstance.lists = [{ label: `Could not be read (${unreadable.length}):`, items: unreadable }];
           dialog.componentInstance.actionsNum = 1;
           dialog.componentInstance.action1Label = "Ok";
           dialog.componentInstance.action1Callback = () => { dialog.close(); resolve(); };
         });
+        throw new Error(`${unreadable.length} file(s) on this disc could not be read, so the disc is not recorded ` +
+          `in the metadata JSON: ${unreadable.join('; ')}`);
       }
     }
 
@@ -559,9 +567,9 @@ import { discsLabel } from '../shared/utils/split-files';
         }else{
           //Ok the disk provided meets the specs.
           // Before the disc is ejected (the "insert the next disc" prompt comes right after): SHA-256 every file
-          // on it, when this read is the "I do not have a json" add-missing-files flow - the JSON written later
-          // must carry integrity data for the existing discs too. See computeSha256ForReadDiscs /
-          // attachSha256ToReadDisc.
+          // on it, in the add-missing-files flows that write a metadata JSON out of these discs (see
+          // computeSha256ForReadDiscs / attachSha256ToReadDisc) - the JSON written later must carry integrity
+          // data for the existing discs too.
           if (this.computeSha256ForReadDiscs) {
             await this.attachSha256ToReadDisc(normalizedFilePathsWithStats, mountedRoot);
           }
