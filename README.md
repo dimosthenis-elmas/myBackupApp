@@ -140,9 +140,10 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
   discs are being read, everything read so far is written into the metadata JSON as it goes, so stopping part way
   (even by leaving for the main menu) keeps it.
 
-  Split files are recognized by a naming convention (`largeFile.data` becomes `largeFile.data.outOf.3.part.001`,
-  etc.), which can misfire if you happen
-  to have unrelated files matching that same pattern. A large file only some of whose pieces are on your discs -
+  A split large file's pieces are named so each says which piece it is and how many there are (`largeFile.data`
+  becomes `largeFile.data.outOf.3.part.001`, etc.), and the metadata JSON records which of its entries are such
+  pieces (`isPartial`) instead of deciding that from a name - so an unrelated file that merely looks like a piece is
+  never mistaken for one. A large file only some of whose pieces are on your discs -
   the app was closed before the rest were burned - is listed as missing, and only its missing pieces are burned.
   Before they are, the app checks that splitting the file again gives back the very pieces already on your discs
   (by their SHA-256 checksums); if the file has changed since, the disc with its missing pieces is refused - your
