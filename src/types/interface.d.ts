@@ -1,9 +1,13 @@
 
 export interface IElectronAPI {
   openDialog: (method: any, config: any) => Promise<any>,
-  ipcRenderer_on: (channel: string, listener: (event: Electron.IpcRendererEvent, ...args: any) => void) => void,
+  /** Registers `listener` on `channel` and returns the handle that removes it again via ipcRenderer_off. Removal
+   *  deliberately does not go through the listener function itself: contextBridge hands the preload a fresh proxy
+   *  for every crossing, so a function can never be matched back to what was registered (see contextBridge_api.js). */
+  ipcRenderer_on: (channel: string, listener: (event: Electron.IpcRendererEvent, ...args: any) => void) => number,
   ipcRenderer_send: (channel: string, ...arg: any) => void,
-  ipcRenderer_removeListener: (channel: string, listener: (event: any, ...arg: any) => void) => void;
+  /** Removes the listener whose ipcRenderer_on call returned this handle. True if it removed one. */
+  ipcRenderer_off: (handle: number) => boolean;
   ipcRenderer_removeAllListeners: (channel?: string) => void;
   quitApp: () => void;
 

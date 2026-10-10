@@ -34,8 +34,12 @@ electron.contextBridge.exposeInMainWorld('electronAPI', {
   ipcRenderer_send: (channel, ...arg) => {
     electron.ipcRenderer.send(channel, arg);
   },
-  ipcRenderer_removeListener: (channel, listener) => {
-    electron.ipcRenderer.removeListener(channel, listener);
+  //The real API hands back a numeric handle from ipcRenderer_on and removes by that handle (see
+  //contextBridge_api.js): a listener function can't be removed by identity, contextBridge gives the preload a
+  //fresh proxy for every crossing, so electron.ipcRenderer.removeListener(channel, func) never matched what was
+  //registered.
+  ipcRenderer_off: (handle) => {
+    electron.ipcRenderer.removeListener(handle);
   },
   ipcRenderer_removeAllListeners: (channel) => {
     electron.ipcRenderer.removeAllListeners(channel);

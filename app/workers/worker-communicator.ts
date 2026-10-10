@@ -47,16 +47,35 @@ export class WorkerCommunicator {
     /** Must be called inside "ngAfterViewInit()"
      * Don't forget to call onDestroy to remove all listeners.
     */
+    /** Every listener this class itself registered via onResponseFromWorker, by the handle its ipcRenderer_on call
+     *  returned (see ipcRenderer_off / contextBridge_api.js - a listener can't be removed by identity) - so
+     *  onDestroy removes exactly those (see its own comment) instead of every listener the renderer process has. */
+    private static registeredResponseListenerHandles: number[] = [];
+
     static onResponseFromWorker(fun: (event: Electron.IpcRendererEvent, response: WorkerResponse) => void): WorkerListener {
-        let listener;
-        window.electronAPI.ipcRenderer_on('message-from-worker', listener = (event: Electron.IpcRendererEvent, arg: WorkerResponse) => {
+        const handle = window.electronAPI.ipcRenderer_on('message-from-worker', (event: Electron.IpcRendererEvent, arg: WorkerResponse) => {
             fun(event, arg);
         });
-        return { removeListener: () => { window.electronAPI.ipcRenderer_removeListener('message-from-worker', listener); } };
+        WorkerCommunicator.registeredResponseListenerHandles.push(handle);
+        return { removeListener: () => {
+            const index = WorkerCommunicator.registeredResponseListenerHandles.indexOf(handle);
+            if (index !== -1) { WorkerCommunicator.registeredResponseListenerHandles.splice(index, 1); }
+            window.electronAPI.ipcRenderer_off(handle);
+        } };
     }
 
+    /** Removes the listeners THIS class registered (see registeredResponseListenerHandles). Deliberately no longer
+     *  the old `ipcRenderer_removeAllListeners()` with no channel argument at all: that tore down every
+     *  listener in the renderer process, on every channel - including ErrorReporterService's own 'app-error'
+     *  one (so the app silently stopped showing error dialogs after any component below was destroyed), and
+     *  any other listener on 'message-from-worker' that this class never added, e.g. a test-harness script's
+     *  own in-flight one (see sendAndAwaitResponse's identical fix, which is what actually made the
+     *  test-harness worker-ipc tests hang intermittently). */
     static onDestroy() {
-        window.electronAPI.ipcRenderer_removeAllListeners();
+        for (const handle of WorkerCommunicator.registeredResponseListenerHandles) {
+            window.electronAPI.ipcRenderer_off(handle);
+        }
+        WorkerCommunicator.registeredResponseListenerHandles = [];
     }
 
     // ========================================================================
@@ -180,14 +199,18 @@ export class WorkerCommunicator {
 
             this.sendRequestToWorker({ key, params });
             return new Promise<void>((resolveTurn) => {
+                // Handle of THIS request's own listener (see ipcRenderer_on/ipcRenderer_off and contextBridge_api.js):
+                // removal goes through it rather than through the function, which the contextBridge would have
+                // re-proxied into a different object on the way in.
+                let listenerHandle = 0;
                 const listener = (event: Electron.IpcRendererEvent, response: WorkerResponse) => {
                     if (response.key === key) {
                         if (response.status === 'completed' || response.status === 'stopped') {
-                            window.electronAPI.ipcRenderer_removeAllListeners('message-from-worker');
+                            window.electronAPI.ipcRenderer_off(listenerHandle);
                             resolveCaller(response as unknown as T);
                             resolveTurn();
                         } else if (response.status === 'error') {
-                            window.electronAPI.ipcRenderer_removeAllListeners('message-from-worker');
+                            window.electronAPI.ipcRenderer_off(listenerHandle);
                             rejectCaller(rejectPayload === 'response.res' ? response.res : withReadableToString(response));
                             resolveTurn();
                         }
@@ -197,7 +220,7 @@ export class WorkerCommunicator {
                         console.warn(`Ignored a "${response.key}" message from the worker while waiting for "${key}" - left over from before the app reloaded.`);
                     }
                 };
-                window.electronAPI.ipcRenderer_on('message-from-worker', listener);
+                listenerHandle = window.electronAPI.ipcRenderer_on('message-from-worker', listener);
             });
         };
 

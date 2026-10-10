@@ -119,12 +119,20 @@ async function callWorkerInner(win, key, params, timeoutMs, collectProgress) {
   return win.evaluate(({ key, params, timeoutMs, collectProgress }) => {
     return new Promise((resolve, reject) => {
       const progressLines = [];
+      // Handle of this call's own listener (see ipcRenderer_on/ipcRenderer_off): removal has to go through it, not
+      // through the function - contextBridge re-proxies a function on every crossing into the preload, so
+      // removeListener(channel, listener) silently removed nothing at all (see contextBridge_api.js).
+      let listenerHandle = 0;
       const timer = setTimeout(() => {
-        window.electronAPI.ipcRenderer_removeAllListeners('message-from-worker');
+        window.electronAPI.ipcRenderer_off(listenerHandle);
         reject(new Error(`Timed out after ${timeoutMs}ms waiting for a response to "${key}"`));
       }, timeoutMs);
 
-      window.electronAPI.ipcRenderer_on('message-from-worker', (event, response) => {
+      // Named (rather than an inline arrow) for readability only - it is removed through listenerHandle on the way
+      // out, both here and in the timeout above. Deliberately not ipcRenderer_removeAllListeners('message-from-worker'),
+      // which also tore down every OTHER listener on that channel, including the app's own in-flight
+      // WorkerCommunicator.sendAndAwaitResponse one - the mirror image of the fix made there.
+      const listener = (event, response) => {
         if (response.key !== key) { return; } // not our response (e.g. a stray 'stop' ack) - keep waiting
         // 'running' means this key's operation is still going (a progress update - see logsBuffer in worker.ts,
         // e.g. diff()/createTree() report progress this way) - keep waiting for its real 'completed'/'stopped'/
@@ -137,7 +145,7 @@ async function callWorkerInner(win, key, params, timeoutMs, collectProgress) {
           return;
         }
         clearTimeout(timer);
-        window.electronAPI.ipcRenderer_removeAllListeners('message-from-worker');
+        window.electronAPI.ipcRenderer_off(listenerHandle);
         if (response.status === 'error') {
           // Reject with a real Error carrying the full response JSON in its message - Playwright's own
           // page.evaluate error reporting can't usefully stringify a plain rejected object (that's the
@@ -155,7 +163,8 @@ async function callWorkerInner(win, key, params, timeoutMs, collectProgress) {
         } else {
           resolve(collectProgress ? { response, progressLines } : response);
         }
-      });
+      };
+      listenerHandle = window.electronAPI.ipcRenderer_on('message-from-worker', listener);
 
       window.electronAPI.ipcRenderer_send('message-to-worker', { key, params });
     });
