@@ -32,6 +32,25 @@ const { assertRealTempDataDirectoryIsSafeToUse } = require('./temp-dir-guard');
 const { printTree } = require('../lib/print-tree');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
 
+/** The one fixtures folder and the files THIS script itself creates (assigned as main() goes) - see
+ *  cleanupScratch. */
+let scratchRoot = null;
+let reassembledPath = null;
+let partFilePaths = [];
+
+/** Removes only what this script itself created - never a directory-wide clear. Called on the way out whether
+ *  the run passed, failed, or threw part-way. This is not just tidiness: anything left in the app's REAL
+ *  temp/cache directory (the reassembled file, stray split parts) makes every LATER test that guards that
+ *  directory (see worker-ipc/temp-dir-guard.js) refuse to run at all - so one failure here used to turn into
+ *  a whole cascade of unrelated failures further down the suite. */
+function cleanupScratch() {
+  for (const p of [scratchRoot, reassembledPath, ...partFilePaths]) {
+    if (!p) { continue; }
+    try { fs.rmSync(p, { recursive: true, force: true }); }
+    catch (error) { console.log(`  (cleanup: could not remove "${p}": ${error.message})`); }
+  }
+}
+
 function sha256(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
@@ -54,7 +73,7 @@ async function main() {
   if (!process.env.USERNAME) {
     throw new Error('USERNAME is not set - the file name below would then test nothing.');
   }
-  const scratchRoot = path.join(FIXTURES_ROOT, `merge-test-${Date.now()}`);
+  scratchRoot = path.join(FIXTURES_ROOT, `merge-test-${Date.now()}`);
   fs.mkdirSync(scratchRoot, { recursive: true });
   const originalFileName = 'merge %USERNAME% source.bin';
   const originalPath = path.join(scratchRoot, originalFileName);
@@ -71,7 +90,7 @@ async function main() {
   const partFileNames = fs.readdirSync(tempDir)
     .filter((f) => f.startsWith(`${originalFileName}.part`))
     .sort();
-  const partFilePaths = partFileNames.map((f) => path.join(tempDir, f));
+  partFilePaths = partFileNames.map((f) => path.join(tempDir, f));
   console.log(`Created ${partFilePaths.length} part file(s): ${partFileNames.join(', ')}`);
   if (partFilePaths.length < 2) {
     throw new Error('Expected at least 2 part files from a 50KB file split into 10KB volumes - something is off with the 7-Zip invocation.');
@@ -97,7 +116,7 @@ async function main() {
 
   // 4. Verify: merged flag true, reassembled file present with the correct hash, part files cleaned up by the
   //    app itself (mergeFileParts deletes them on success - see app/workers/worker.ts).
-  const reassembledPath = path.join(tempDir, originalFileName);
+  reassembledPath = path.join(tempDir, originalFileName);
   const reassembledExists = fs.existsSync(reassembledPath);
   const reassembledHash = reassembledExists ? sha256(reassembledPath) : null;
   const hashMatches = reassembledHash === originalHash;
@@ -111,10 +130,8 @@ async function main() {
   const pass = response.res.merged === true && reassembledExists && hashMatches && partsWereCleanedUp;
 
   // Clean up our own scratch/temp output regardless of pass/fail (only files this script itself created/knows
-  // about - never a directory-wide clear).
-  fs.rmSync(scratchRoot, { recursive: true, force: true });
-  if (reassembledExists) { fs.rmSync(reassembledPath, { force: true }); }
-  partFilePaths.forEach((p) => { if (fs.existsSync(p)) { fs.rmSync(p, { force: true }); } });
+  // about - never a directory-wide clear). Same call main()'s own error handler makes - see cleanupScratch.
+  cleanupScratch();
 
   console.log(`\n${pass ? 'PASS' : 'FAIL'} - merge-file-parts ${pass ? 'correctly reassembled the split file with matching content.' : 'did not behave as expected, see above.'}`);
   process.exitCode = pass ? 0 : 1;
@@ -122,5 +139,9 @@ async function main() {
 
 main().catch((e) => {
   console.error('\nTEST ERRORED:', e && e.stack ? e.stack : e);
+  // Also runs when something above threw (e.g. the worker call timing out). Without this, that used to leave
+  // this script's own merged file and split parts sitting in the app's REAL temp/cache directory, which then
+  // made every later temp-dir-guarded test refuse to run - see cleanupScratch's own comment.
+  cleanupScratch();
   process.exitCode = 1;
 });
