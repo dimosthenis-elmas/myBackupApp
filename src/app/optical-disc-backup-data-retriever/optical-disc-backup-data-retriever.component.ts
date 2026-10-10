@@ -527,7 +527,7 @@ import { discsLabel } from '../shared/utils/split-files';
           const confirmDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
           confirmDialog.disableClose = true;
           confirmDialog.componentInstance.message = `This disc was already read: it is disc ${currentDiskIndex + 1}.`;
-          confirmDialog.componentInstance.title = "Error"
+          confirmDialog.componentInstance.title = "Warning"
           confirmDialog.componentInstance.actionsNum = 1;
           confirmDialog.componentInstance.action1Label = "Ok";
           confirmDialog.componentInstance.action1Callback = () => { 
@@ -547,7 +547,7 @@ import { discsLabel } from '../shared/utils/split-files';
           confirmDialog.disableClose = true;
           confirmDialog.componentInstance.message = `This disc has files in common with a disc read before, so it is ` +
             `skipped - every disc of a backup holds different files.`;
-          confirmDialog.componentInstance.title = "Error"
+          confirmDialog.componentInstance.title = "Warning"
           confirmDialog.componentInstance.actionsNum = 1;
           confirmDialog.componentInstance.action1Label = "Ok";
           confirmDialog.componentInstance.action1Callback = () => { 
@@ -782,7 +782,7 @@ import { discsLabel } from '../shared/utils/split-files';
         this.dialogClosed=false;
         const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
         infoDialog.disableClose = true;
-        infoDialog.componentInstance.title = `Error`;
+        infoDialog.componentInstance.title = `Warning`;
         infoDialog.componentInstance.message = `This disc holds none of the files you selected. Insert ${this.discsStillNeededLabel()}.`;
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Retry";
@@ -801,7 +801,7 @@ import { discsLabel } from '../shared/utils/split-files';
         this.dialogClosed=false;
         const infoDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '550px'});
         infoDialog.disableClose = true;
-        infoDialog.componentInstance.title = `Error`;
+        infoDialog.componentInstance.title = `Warning`;
         infoDialog.componentInstance.message = `The files of this disc are already recovered. Insert ${this.discsStillNeededLabel()}.`;
         infoDialog.componentInstance.actionsNum = 1;
         infoDialog.componentInstance.action1Label = "Retry";

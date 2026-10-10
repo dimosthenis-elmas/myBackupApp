@@ -185,7 +185,7 @@ export class VerifyColdStorageIntegrityComponent implements OnInit, OnDestroy {
   private askRetryOrFinish(message: string): void {
     const dialog = this.dialog.open(ConfirmationDialogComponent, { maxWidth: '550px' });
     dialog.disableClose = true;
-    dialog.componentInstance.title = "Error";
+    dialog.componentInstance.title = "Warning";
     dialog.componentInstance.message = message;
     dialog.componentInstance.actionsNum = 2;
     dialog.componentInstance.action1Label = "Retry";
