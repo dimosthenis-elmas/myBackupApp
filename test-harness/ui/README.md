@@ -60,7 +60,7 @@ that merely *covers* a button gives a long log ("locator resolved to...", "subtr
 hidden subtree gives one line, `- waiting for getByRole(...)`. A step that reads a dialog's text therefore has to
 dismiss it (click its button) before the next step locates anything on the page behind it.
 
-**A dialog's `innerText` is its title and its buttons too** - `"Error This disc was already read: it is disc 1. Ok"`,
+**A dialog's `innerText` is its title and its buttons too** - `"Warning This disc was already read: it is disc 1. Ok"`,
 not just the message - so compare it with `includes()` or a regex, never `===`, and take the sentence being matched
 from the component that sets it (each wizard's `.component.ts`) rather than from memory.
 
