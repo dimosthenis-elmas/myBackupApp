@@ -609,6 +609,32 @@ lists of original names, the opposite: the flow carries on, and both discs and b
 wrote. For the replaced JSON, that "Next" shows the "Missing fields" dialog asking for a metadata JSON file rather
 than starting the diff.
 
+## `test-add-missing-files-modified.js`
+
+```
+node test-harness/ui/test-add-missing-files-modified.js
+```
+
+The "Add new files" task, handed a master folder in which a file that is *already* on the discs has changed since it
+was burned. Adding files cannot repair that, so the wizard must stop and say so - and it must name every such file,
+not just the first one it happens to meet: the error dialog ("Error" / "Some files already on your discs have changed
+in the master folder since they were burned. Adding files cannot fix that - burn a new backup instead.") lists them in
+the shared dialog's own scrollable list, a real `cdk-virtual-scroll-viewport` (the `lists` input of
+`ConfirmationDialogComponent`), labelled "Modified files (N):" and holding each file's path in the master. Clicking
+"Ok" leaves for the main menu; the "select files to burn" tree is never built underneath.
+
+**How it runs:** one app, no discs. A three-file master folder is built (`kept.txt` unchanged and already backed up,
+`changed.txt` already backed up and then appended to, `brand-new.txt` never backed up), and an "existing cold
+storage" metadata JSON is produced from a real listing of a folder holding the first two, through the app's own
+`get-file-paths-with-stats` IPC (the same technique as `test-add-missing-files.js`). `changed.txt` is appended to
+*after* that JSON is written, so its size no longer matches what the disc recorded - comparing sizes rather than only
+mtimes makes the case independent of filesystem timestamp resolution. The wizard is then clicked through to "Next".
+
+**What it actually checks:** that the dialog appears and says why in words; that its list is a real virtual-scroll
+viewport, labelled "Modified files (1):", holding exactly `changed.txt` by its master path; that the unchanged
+already-backed-up file and the genuinely missing file are *not* in it; and that the missing-files tree was never
+rendered behind the dialog.
+
 ## `test-backup-to-optical-media-sha256.js`
 
 ```

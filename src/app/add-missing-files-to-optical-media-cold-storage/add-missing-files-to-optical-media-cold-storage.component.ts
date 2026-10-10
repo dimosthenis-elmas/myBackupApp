@@ -706,10 +706,12 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
 
     // Deep copy because this will mutate the values;
     let masterPathsWithStats_ : filesMetadata[]= JSON.parse(JSON.stringify(this.masterPathsWithStats))
-    // Set when a modified/out-of-sync file is found below - used after the loop to actually stop diff() from
-    // continuing on to build and display a (truncated) missing-files tree, which it previously did regardless,
-    // right after telling the user the operation could not proceed and was being cancelled.
-    let outOfSync = false;
+    // Every file that exists both in the master and in the cold storage but has changed since it was burned (mtime
+    // or size). Collected across the whole loop rather than stopping at the first one, so the dialog below can list
+    // all of them - and used after the loop to stop diff() from continuing on to build and display a (truncated)
+    // missing-files tree, which it previously did regardless, right after telling the user the operation could not
+    // proceed and was being cancelled.
+    const modifiedFiles: filesMetadata[] = [];
     // An explicit loop (rather than the plain .filter() this used to be) so this comparison - potentially over
     // tens of thousands of files - can report a real "i of N" percentage (the total, masterPathsWithStats_.length,
     // is already known upfront, unlike a disk scan) instead of running behind a plain indeterminate spinner, and
@@ -742,19 +744,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
         // size-mismatch half still worked) for exactly the "load an existing metadata JSON" path this check
         // exists to protect. new Date(x) parses an ISO string correctly, and passing an existing Date through
         // it is a harmless no-op, so this works for both sources.
-        // modified. This would be an problem. Show some kind of warning and cancel the operation.
-        // Stop the loop
-        outOfSync = true;
-        this.step = "step_4";
-        const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '450px'});
-        errorDialog.componentInstance.title = "Error";
-        errorDialog.componentInstance.message = `Some files already on your discs have changed in the master folder since ` +
-          `they were burned. Adding files cannot fix that - burn a new backup instead.`;
-        errorDialog.afterClosed().subscribe(()=>{
-          // Exit to main menu.
-          goToMainMenuAndReload(this.router);
-        });
-        break;
+        // modified. This would be a problem. Remember it and keep going: the warning dialog after the loop
+        // lists every modified file, so stopping at the first one would hide the rest.
+        modifiedFiles.push(file);
       } // else: backed up - not included
 
       // Progress shown, and the window let redraw, about every 50 ms - and on the very last item, so the bar reaches
@@ -767,13 +759,28 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       }
     }
 
-    if (outOfSync) {
+    if (modifiedFiles.length > 0) {
+      // Stop here: the operation cannot proceed, so do not go on to build and display a (truncated)
+      // missing-files tree. step_4 (the "Error" placeholder) is set before closing the loading dialog so
+      // step_3's "select files to burn" tree never flashes underneath this dialog.
+      this.step = "step_4";
       loadingDialogRef.close();
+      const errorDialog = this.dialog.open(ConfirmationDialogComponent, {maxWidth: '750px'});
+      errorDialog.componentInstance.title = "Error";
+      errorDialog.componentInstance.message = `Some files already on your discs have changed in the master folder since ` +
+        `they were burned. Adding files cannot fix that - burn a new backup instead.`;
+      // Every modified file, by its path in the master - a real virtualized scrolling list (see
+      // ConfirmationDialogComponent's `lists`), so even a large number of them stays usable.
+      errorDialog.componentInstance.lists = [{ label: `Modified files (${modifiedFiles.length}):`, items: modifiedFiles.map((f) => f.path) }];
+      errorDialog.afterClosed().subscribe(()=>{
+        // Exit to main menu.
+        goToMainMenuAndReload(this.router);
+      });
       return;
     }
 
     if(missingFiles.length == 0){
-        // Stop here, same as the outOfSync case above - otherwise this fell through to building and briefly
+        // Stop here, same as the modified-files case above - otherwise this fell through to building and briefly
         // showing an empty step_3 "select files to burn" tree underneath this dialog before the navigate-away
         // actually happened. Named infoDialog (not loadingDialogRef) so it doesn't shadow the outer
         // LoadingDialogComponent reference, which still needs closing on its own right here.
