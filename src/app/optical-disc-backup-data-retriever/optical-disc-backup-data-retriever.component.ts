@@ -1135,8 +1135,13 @@ import { discsLabel } from '../shared/utils/split-files';
     }
 
     /** Groups the recovered/selected file paths (this.selectedFilePathsWithExtraInfo) by the large file they
-     *  are a partial of. Only paths named as the pieces of a split large file are considered (see split-pieces.ts),
-     *  and only groups of 2 or more are returned - a lone ".part.001" with no siblings selected is not a usable set
+     *  are a partial of. ONLY paths whose entry in the cold storage metadata is flagged `isPartial: true` are
+     *  considered - that flag is the sole authority (see ipc.interfaces.ts's ColdStorageMetadata), written when the
+     *  app itself split a large file for discs (createOpticalMediaDiscPartials in worker.ts) or by
+     *  scripts/repair-metadata-json.js for a legacy JSON. A file's NAME is never used to decide this, so a plain
+     *  file that merely looks like a piece ("report.part.001") is never mistaken for one; a path read straight off
+     *  a disc (no metadata JSON at all) is likewise never flagged, so its pieces are left as plain files.
+     *  Only groups of 2 or more are returned - a lone ".part.001" with no siblings selected is not a usable set
      *  to reassemble from anyway, and mergeFileParts itself also refuses fewer than 2 parts as a second line of
      *  defense - except a group whose names say how many pieces there are, so that pieces missing from it are named
      *  (mergeFileParts checks that first).
@@ -1147,10 +1152,23 @@ import { discsLabel } from '../shared/utils/split-files';
     private groupSelectedPartialFiles(): Array<{ originalFileName: string; partFilePaths: string[] }> {
       const groups = new Map<string, { originalFileName: string; partFilePaths: string[], total?: number }>();
 
+      // The backed-up path of every metadata entry flagged isPartial, drive letter stripped - the exact form every
+      // path in this component's tree has (see createFilesTreeForReconstructedBackupPaths's map, and
+      // recoverAllFilesFromAllDiscs's own onDiscByBackedUpPath). Only a selected path in this set is a split piece;
+      // for a disc read directly there is no such entry at all, so nothing is flagged (run
+      // scripts/repair-metadata-json.js on a saved JSON to flag its real pieces).
+      const partialPaths = new Set<string>();
+      (this.coldStorageMetadataForAllOpticalDiscs || []).forEach((discEntries) => {
+        discEntries.forEach((e) => {
+          if (e.isPartial === true) { partialPaths.add(backedUpPath(e).replace(/^\w+:\\/, '')); }
+        });
+      });
+
       let target = this.backup.targetPath;
       if (target[target.length - 1] != '\\') { target += '\\'; }
 
       (this.selectedFilePathsWithExtraInfo || []).forEach((entry) => {
+        if (!partialPaths.has(entry.path)) { return; }
         const lastSlash = entry.path.lastIndexOf('\\');
         const dir = lastSlash >= 0 ? entry.path.substring(0, lastSlash + 1) : '';
         const fileName = lastSlash >= 0 ? entry.path.substring(lastSlash + 1) : entry.path;

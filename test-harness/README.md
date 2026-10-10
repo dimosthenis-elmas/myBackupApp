@@ -361,7 +361,11 @@ what each one does, since you'll see them imported (`require('../lib/...')`) at 
 - **`cold-storage-metadata.js`** — builds a cold-storage metadata JSON fixture from a real disc folder's real
   listing (via the app's own `get-file-paths-with-stats` IPC), matching exactly how the real app itself would
   have saved one - used wherever a test needs to simulate "here's a JSON describing an already-backed-up disc"
-  without actually burning one.
+  without actually burning one. Pass `{ partialPiecePaths: [...] }` to flag a large file's split pieces with
+  `isPartial: true`, exactly as a real burn writes them: the recovery wizard reassembles a file ONLY when its
+  metadata entry carries that flag (never from its name), so a fixture that wants the "Partial files detected"
+  merge offer has to flag its pieces - and one that doesn't gets what a physical disc read gets: nothing flagged,
+  nothing merged, pieces copied back as the plain files they are.
 - **`fixture-tree-source.js`** — `generateFixtureTree(...)`, the shared random-vs-JSON switch every `ui/`
   script's own source-tree generation step goes through - see `ui/README.md`'s "Switching between random and
   JSON-driven source trees" section for the `--random-tree`/`--json-tree` flags this gives every one of those

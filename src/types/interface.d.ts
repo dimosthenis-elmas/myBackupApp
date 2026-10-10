@@ -28,6 +28,12 @@ export interface filesMetadata {
   // Only in a cold storage metadata JSON entry - see ColdStorageMetadata (app/workers/ipc.interfaces.ts).
   "originalPath"?: string;
   "originalNamesList"?: boolean;
+  // True only for a piece of a large file the app itself split across discs (see split-pieces.ts and
+  // createOpticalMediaDiscPartials in worker.ts), or that scripts/repair-metadata-json.js has flagged in a legacy
+  // JSON. This flag is the SOLE authority for "this entry is a split piece": nothing ever infers it from the
+  // entry's name, so a plain file that merely looks like a piece ("report.part.001") is never mistaken for one.
+  // Absent (never written false) on every other entry - an ordinary file, a directory, the list of original names.
+  "isPartial"?: boolean;
 }
 
 declare global {

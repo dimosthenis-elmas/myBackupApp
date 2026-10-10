@@ -37,7 +37,7 @@ import { compileSchema, JsonSchema, SchemaNode } from "json-schema-library";
 import { ColdStorageMetadata } from '../../../app/workers/ipc.interfaces';
 import { SerialQueue } from '../shared/utils/serial-queue';
 import { withLinksLeftOutNote } from '../shared/utils/links-note';
-import { PIECE_ENDING, parsePiece, missingPieceNumbers, withoutPieceTotal, Piece } from '../../../app/workers/split-pieces';
+import { parsePiece, missingPieceNumbers, withoutPieceTotal, Piece } from '../../../app/workers/split-pieces';
 import { OPTICAL_MEDIA, discContentBytes, mayBurnDisc } from '../shared/utils/optical-media';
 import { OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { backedUpPath, confirmDiscNameAndPathLimits, isOriginalNamesList, metadataEntriesForDisc } from '../shared/utils/shortened-names';
@@ -438,7 +438,12 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
    *  only some of whose pieces are there (each piece's name says how many there are - see split-pieces.ts) is left
    *  out instead, so it is listed as missing, and noted in incompleteSplitFiles with the pieces it has: planning then
    *  burns only the others. Pieces named without their total (discs burned before it was added) count as all there;
-   *  pieces of a file no longer in the master stay as they are. */
+   *  pieces of a file no longer in the master stay as they are.
+   *
+   *  An entry is a piece ONLY when it is flagged `isPartial: true` (see ipc.interfaces.ts's ColdStorageMetadata and
+   *  createOpticalMediaDiscPartials in worker.ts) - its name is never used to decide that, so a plain file that
+   *  merely looks like a piece is never mistaken for one. A legacy JSON (written before this flag existed) has no
+   *  such entry: run scripts/repair-metadata-json.js on it first, which flags its real pieces. */
   private replacePartialFileSplits(coldStoragePaths: filesMetadata[], masterPaths: filesMetadata[]): filesMetadata[] {
     // Every recorded path starts with OPTICAL_DRIVE_LETTER_CONVENTION ("D:\"); a JSON with no disc recorded yet (none
     // confirmed burned) has no path to read it from.
@@ -450,6 +455,9 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
     let r: filesMetadata[] = [];
     const piecesByFile = new Map<string, Array<{ entry: filesMetadata, piece: Piece }>>();
     for (const itm of coldStoragePaths) {
+      // ONLY an entry flagged isPartial is a split piece - never a name that merely looks like one. The name is read
+      // only after that, to find which large file this piece belongs to and how many pieces it has (split-pieces.ts).
+      if (itm.isPartial !== true) { r.push(itm); continue; }
       const piece = parsePiece(itm.path.replace(this.opticalDiscVolumeLetter, ""));
       if (piece === null) { r.push(itm); continue; }
       (piecesByFile.get(piece.file) ?? piecesByFile.set(piece.file, []).get(piece.file)!).push({ entry: itm, piece });
@@ -1193,8 +1201,10 @@ export class AddMissigFilesToOpticalMediaColdStorageComponent implements OnInit,
       loadingDialogRef.componentInstance.message = "Preparing ImgBurn project";
 
       // What this disc needed created in the temp folder - split partials - deleted again once the disc is confirmed
-      // burned (confirmDiscBurned).
-      this.sentDiscPartPaths[i] = finalStats.filter(e => PIECE_ENDING.test(e.path)).map(e => e.path);
+      // burned (confirmDiscBurned). Taken from createOpticalMediaDiscPartials's own output (isPartial: true on the
+      // pieces it really split), never from a name that merely looks like a piece - an ordinary file named
+      // "...part.001" must not be treated as a temp partial to delete.
+      this.sentDiscPartPaths[i] = finalStats.filter(e => e.isPartial === true).map(e => e.path);
 
       // Awaited (previously fired-and-forgotten): see sendingDiscs's own doc comment for why this guard needs
       // this chain's real completion, not just its start, to reset on.

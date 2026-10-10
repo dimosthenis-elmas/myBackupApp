@@ -64,8 +64,13 @@ export type ColdStorageMetadata =
   // was in the folder backed up - its name, or a folder's on its way, was too long for a disc (see disc-names.ts).
   // "originalNamesList" marks the disc's own list of those original names (ORIGINAL_NAMES_FILE_NAME), not a file
   // of the user's.
+  // "isPartial" is true only for a piece of a large file the app itself split across discs (see split-pieces.ts and
+  // createOpticalMediaDiscPartials in worker.ts) or that scripts/repair-metadata-json.js has flagged in a legacy
+  // JSON. It is the sole authority for "this entry is a split piece": no reader ever infers it from the entry's
+  // name, so a plain file that merely looks like a piece ("report.part.001") is never mistaken for one. Absent
+  // (never written false) on every other entry.
   Array<Array<{"path": string, "stats": {"size": number, "mtime": Date, "isDirectory": boolean, "sha256"?: string},
-    "originalPath"?: string, "originalNamesList"?: boolean}>>
+    "originalPath"?: string, "originalNamesList"?: boolean, "isPartial"?: boolean}>>
 
 /** What the worker's create-IBB-file made (createIBB_file in worker.ts): the .ibb project's F|/D| lines; for each
  *  of the requested paths whose name (or a folder's on its way) was too long for a disc, its path on the disc; and,

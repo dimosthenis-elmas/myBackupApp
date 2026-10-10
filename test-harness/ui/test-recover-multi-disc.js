@@ -32,25 +32,33 @@
  * A shared parent directory legitimately ending up split across two different physical discs is normal for how
  * real large backups get spread across media.
  *
- * IT ALSO covers a large file's split pieces spread across DIFFERENT discs, reassembled during recovery - a
- * genuinely different code path from every other test here (worker-ipc/test-large-file-split.js proves the raw
- * split+merge mechanism directly over IPC; this proves the recovery WIZARD's own "you selected some .part.NNN
- * files - want me to reassemble them?" flow, which only exists in the UI, never tested before). That's the thing
- * THIS script actually needs to prove - not that the app can split a file live, which is already proven
- * elsewhere - so the real split pieces can come from either of two places:
+ * IT ALSO covers a large file's real split pieces spread across DIFFERENT discs - but NOT reassembled: the pieces
+ * come back exactly as the plain files they are, because this is the physical-disc-read path and a disc read
+ * carries NO cold storage metadata at all. The wizard reassembles a file ONLY when its metadata entry says
+ * `isPartial: true` (see ipc.interfaces.ts's ColdStorageMetadata - the flag a real burn writes via
+ * createOpticalMediaDiscPartials, and the sole authority for "this is a piece": a name is never consulted), so a
+ * disc read never flags anything, "Partial files detected" must never appear here, and nothing is ever merged or
+ * deleted. That is the assertion this script exists to make, and it's why the pieces are deliberately placed on
+ * two DIFFERENT discs: each must be recovered, from its own disc, as a byte-identical copy of the piece that was
+ * burned. The merge-offer flow itself (which needs metadata) is covered by ui/test-recover-from-json-metadata.js
+ * and ui/test-long-names-split-file.js, both seeded from a JSON whose piece entries carry that flag. The real
+ * split pieces can come from either of two places:
  *   - Random mode (default) / --json-tree with no split-plan.json: the tree gets ONE WHOLE large file, and this
  *     script splits it directly via real 7-Zip (lib/seven-zip.js's splitFileIntoRealParts - the same helper
  *     generate-tree-from-json.js's own --split-plan option uses, same 500 MiB volumes as
  *     test-large-file-split.js). Deliberately bypasses the app's own partitioning IPC entirely - this script
- *     needs to prove the recovery WIZARD's reassembly flow, not that the app can plan/split a file (already
+ *     needs to prove the recovery WIZARD's own handling of pieces, not that the app can plan/split a file (already
  *     proven directly by worker-ipc/test-large-file-split.js), so there's no reason to couple this fixture-
  *     building step to that machinery.
  *   - --json-tree with a split-plan.json marking the large file: generate-tree-from-json.js already produced the
  *     real split pieces sitting in the tree by the time this script even looks - see tree-specs/
  *     test-recover-multi-disc/split-plan.json - so this script detects that (the whole file is simply absent,
  *     only its "<name>.part.NNN" siblings exist) and skips the live 7-Zip call entirely.
- * Either way, one piece goes on each disc, deliberately, to prove reassembly works when the pieces didn't even
- * come from the same disc.
+ * Either way, one piece goes on each disc, deliberately, so recovering them proves a piece is copied correctly
+ * even when it didn't come from the same disc as its sibling.
+ *
+ * It never touches the app's real temp/cache folder: nothing here is ever merged (see above), and a merge is the
+ * only thing in this wizard that uses it.
  *
  * NOTE: needs a real Windows desktop/window session (see worker-ipc/call-worker.js's top comment) - run from
  * your own interactive terminal.
@@ -65,9 +73,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const { launchApp } = require('../worker-ipc/call-worker');
-const { assertRealTempDataDirectoryIsSafeToUse } = require('../worker-ipc/temp-dir-guard');
 const { assertNoOpticalMediaAlreadyMounted, buildIso, mountIso, dismountIso } = require('./iso-disc');
 const { printTree } = require('../lib/print-tree');
 const { FIXTURES_ROOT } = require('../lib/fixtures-root');
@@ -79,7 +87,8 @@ const SPEC_DIR = path.join(__dirname, 'tree-specs', 'test-recover-multi-disc');
 // Same proven-safe constant as worker-ipc/test-large-file-split.js - LARGE_FILE_BYTES must exceed one real 500
 // MiB volume so a genuine multi-piece split happens. This script's own fixture-building split (below) calls
 // 7-Zip directly, bypassing the app's partitioning logic entirely - what this script needs to prove is the
-// recovery WIZARD's own reassembly flow, not that the app can plan/split a file, which is proven elsewhere
+// recovery WIZARD's own handling of pieces read straight off a disc, not that the app can plan/split a file,
+// which is proven elsewhere
 // (worker-ipc/test-large-file-split.js) - so there's no app-side capacity constant to worry about here any more.
 const LARGE_FILE_BYTES = 700_000_000;
 const LARGE_FILE_SPLIT_VOLUME_SIZE_MIB = 500; // must match LARGE_FILE_SPLIT_VOLUME_SIZE_MIB in app/workers/worker.ts
@@ -88,6 +97,12 @@ async function clickMainMenuButton(win, labelText) {
   const container = win.locator('.grid-container > div').filter({ has: win.locator('h2', { hasText: labelText }) });
   await container.locator('button').click();
 }
+
+/** Streamed, not a whole buffer in memory - each piece is a real 500 MiB-based volume. */
+const sha256Streamed = (filePath) => new Promise((resolve, reject) => {
+  const hash = crypto.createHash('sha256');
+  fs.createReadStream(filePath).on('error', reject).on('data', (chunk) => hash.update(chunk)).on('end', () => resolve(hash.digest('hex')));
+});
 
 async function main() {
   const runId = Date.now();
@@ -167,14 +182,18 @@ async function main() {
   console.log('\nChecking no optical media is already mounted...');
   assertNoOpticalMediaAlreadyMounted();
 
-  // Same guard worker-ipc/test-large-file-split.js uses before touching the app's real temp/cache directory -
-  // the recovery wizard's own reassembly step (Phase C below, "Yes, reassemble") may use it - so this refuses to
-  // run unless that directory is currently empty (besides the app's own ownership marker), protecting any real,
-  // in-progress backup work you might have sitting there.
-  console.log('Checking the app\'s real temp/cache directory is safe to use...');
-  assertRealTempDataDirectoryIsSafeToUse();
+  // NOTE: no assertRealTempDataDirectoryIsSafeToUse() here any more, unlike test-recover-from-json-metadata.js and
+  // test-add-missing-files-split-resume.js: nothing in this run is ever merged (a physical disc read flags no
+  // pieces at all - see this script's header), and merging is the only thing in this wizard that touches the app's
+  // real temp/cache directory.
 
   let app, win, tempPartDir, mountedIsoPath;
+  // The real split pieces themselves (their on-disk source paths, so their exact content can be re-hashed later)
+  // and the path each one must come back at, relative to the recovery folder. Filled in below, then read again by
+  // the verification step that runs AFTER the app has closed - which is why both are declared out here rather
+  // than inside the try block.
+  let partEntries = [];
+  let recoveredPieceRelPaths = [];
   try {
     // 2. Launch the app EARLY - before building either .iso - since the large file's real split pieces have to
     //    come from the app's own real partitioning logic (over worker IPC, same as test-large-file-split.js),
@@ -186,7 +205,6 @@ async function main() {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dir] });
     }, outputRoot);
 
-    let partEntries;
     if (alreadySplitPartPaths) {
       // Already split via this spec's own split-plan.json - the real pieces are sitting right in the source
       // tree since generate-tree-from-json.js produced them. No need to ask the app to split anything: that's
@@ -209,8 +227,9 @@ async function main() {
       throw new Error(`Expected exactly 2 real split pieces, got ${partEntries.length}. Something about the size constants (or your own split-plan.json's volumeSizeMiB) no longer holds.`);
     }
 
-    // Distribute the pieces - one per disc, deliberately, so reassembly is proven to work even when the pieces
-    // didn't come from the same disc.
+    // Distribute the pieces - one per disc, deliberately, so each one is recovered from a disc the other piece
+    // never touched. Nothing is flagged anywhere (this is a plain disc read - no metadata), so the wizard must
+    // copy them back as the two plain files they are and never offer to reassemble them.
     const originalFileName = largeFileName;
     console.log(`Got ${partEntries.length} real split pieces for "${originalFileName}" - placing one on each disc...`);
     const disc1PartDest = path.join(disc1Dir, 'large-files', path.basename(partEntries[0].path));
@@ -219,6 +238,10 @@ async function main() {
     fs.copyFileSync(partEntries[0].path, disc1PartDest);
     fs.mkdirSync(path.dirname(disc2PartDest), { recursive: true });
     fs.copyFileSync(partEntries[1].path, disc2PartDest);
+    // Where each piece must come back: recovery preserves a file's path relative to the disc it was read from, and
+    // both pieces sit under the large file's own folder on their disc - so the same folder, under the output root.
+    const pieceRelDirPosix = path.posix.dirname(largeFileEntry.relativePath);
+    recoveredPieceRelPaths = [disc1PartDest, disc2PartDest].map((p) => `${pieceRelDirPosix}/${path.basename(p)}`);
     console.log(`  disc 1: ${path.basename(disc1PartDest)} (${partEntries[0].stats.size.toLocaleString()} bytes)`);
     console.log(`  disc 2: ${path.basename(disc2PartDest)} (${partEntries[1].stats.size.toLocaleString()} bytes)`);
 
@@ -331,22 +354,21 @@ async function main() {
     await step('click "Continue with the next disc"', () =>
       win.getByRole('button', { name: 'Continue with the next disc' }).click({ timeout: 15_000 }));
 
-    // --- Phase C: the large file's two pieces (one from each disc) were both selected and just got copied - the
-    //     wizard now offers to reassemble them, a code path never exercised by any other test here. ---
+    // --- Phase C: disc 1's files were just copied - that was the LAST disc, so the wizard goes straight to its
+    //     final summary. There is deliberately NO merge offer here: a physical disc read carries no cold storage
+    //     metadata, so no entry is flagged `isPartial` and the two pieces were copied as the plain files they are.
+    //     The merge-offer flow needs metadata and is covered by ui/test-recover-from-json-metadata.js and
+    //     ui/test-long-names-split-file.js. ---
 
-    // Both merge dialogs list the reassembled file by its full path (scrollable lists - there can be many files).
-    const expectedReassembledPath = path.join(outputRoot, largeFileRelDirOs, largeFileName);
-    await step('wait for disc 1\'s files to be recovered - "Partial files detected" lists the file to reassemble by its full path (up to 60s)', () =>
-      win.getByRole('dialog').filter({ hasText: 'Partial files detected' }).getByText(expectedReassembledPath).first().waitFor({ timeout: 60_000 }));
-
-    await step('click "Yes, reassemble"', () =>
-      win.getByRole('button', { name: 'Yes, reassemble', exact: true }).click({ timeout: 15_000 }));
-
-    await step('wait for the merge to finish - "Reassembly successful" lists the reassembled file by its full path (up to 60s)', () =>
-      win.getByRole('dialog').filter({ hasText: 'Reassembly successful' }).getByText(expectedReassembledPath).first().waitFor({ timeout: 60_000 }));
-
-    await step('click "Ok" on "Reassembly successful"', () =>
-      win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
+    await step('wait for the final summary - no merge offer at all, straight to "Data recovery successful" (up to 60s)', async () => {
+      const summary = win.getByRole('dialog').filter({ hasText: 'Data recovery successful' });
+      await summary.waitFor({ timeout: 60_000 });
+      // Fails loudly (rather than silently passing) if the wizard ever starts offering a merge on this path again -
+      // that would mean a disc read had somehow flagged a piece.
+      if (await win.getByRole('dialog').filter({ hasText: 'Partial files detected' }).count() > 0) {
+        throw new Error('The wizard offered to reassemble files read straight off a disc - nothing on this path is flagged isPartial, so it must not.');
+      }
+    });
 
     await step('click "Ok" on "Data recovery successful"', () =>
       win.getByRole('button', { name: 'Ok', exact: true }).click({ timeout: 15_000 }));
@@ -363,18 +385,33 @@ async function main() {
     // inspection alongside everything else when something goes wrong.
   }
 
-  // 4. Verify: the recovered folder should contain every normal file from both discs, PLUS the large file
-  //    reassembled from its two cross-disc pieces (not the .part.NNN pieces themselves, which the app deletes
-  //    after a successful merge) - all matching the one manifest generated up front (the large file's entry in
-  //    it already has the correct original hash/size, computed while it was written - no manual reconstruction
-  //    needed here, unlike worker-ipc/test-large-file-split.js).
+  // 4. Verify: the recovered folder must hold every normal file from both discs, PLUS the two pieces exactly as
+  //    they were burned - one per disc, byte for byte - and must NOT hold the whole large file: nothing was
+  //    reassembled, because a physical disc read carries no metadata to reassemble from (the point of this run).
+  //    verify-manifest.js is pointed at a manifest derived from the generated one: the large file's own entry
+  //    (which describes the WHOLE file, and was never written to any disc) is dropped, and one entry per recovered
+  //    piece is added, hashed from the very piece this script placed on that disc.
   printTree(outputRoot, 'Recovered tree (after)');
-  console.log('\nVerifying recovered files against the manifest...');
+  const verificationManifestPath = path.join(scratchRoot, 'manifest-for-verification.json');
+  const pieceEntries = [];
+  for (let i = 0; i < partEntries.length; i++) {
+    pieceEntries.push({
+      relativePath: recoveredPieceRelPaths[i],
+      sizeBytes: partEntries[i].stats.size,
+      sha256: await sha256Streamed(partEntries[i].path),
+    });
+  }
+  fs.writeFileSync(verificationManifestPath, JSON.stringify({
+    ...manifest,
+    fileCount: normalFiles.length + pieceEntries.length,
+    files: [...normalFiles, ...pieceEntries],
+  }, null, 2));
+  console.log(`\nVerifying the recovered files (the large file's own manifest entry replaced by its ${pieceEntries.length} pieces)...`);
   let verifyPassed = false;
   try {
     execFileSync(process.execPath, [
       path.join(__dirname, '../verify-manifest.js'),
-      '--manifest', manifestPath,
+      '--manifest', verificationManifestPath,
       '--dir', outputRoot,
     ], { stdio: 'inherit' });
     verifyPassed = true;
@@ -388,7 +425,7 @@ async function main() {
     console.log(`\nLeaving scratch files in place for inspection: ${scratchRoot}`);
   }
 
-  console.log(`\n${verifyPassed ? 'PASS' : 'FAIL'} - multi-disc recovery ${verifyPassed ? 'correctly recovered every file from both discs (including the reassembled large file) with matching content.' : 'did not produce a correct result, see verify-manifest output above.'}`);
+  console.log(`\n${verifyPassed ? 'PASS' : 'FAIL'} - multi-disc recovery ${verifyPassed ? "correctly recovered every file from both discs - the large file's two cross-disc pieces came back as the plain files they are, byte for byte, with nothing merged and nothing deleted (a disc read has no metadata to reassemble from)." : 'did not produce a correct result, see verify-manifest output above.'}`);
   process.exitCode = verifyPassed ? 0 : 1;
 }
 

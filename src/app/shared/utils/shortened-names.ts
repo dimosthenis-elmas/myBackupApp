@@ -85,9 +85,15 @@ export async function confirmRecoveredPathLengths(dialog: MatDialog, relativePat
  *  that differs - both as `project` (what createIBB_file made) has them - plus the disc's list of original names, if
  *  it has one. */
 export function metadataEntriesForDisc(files: filesMetadata[], project: CreatedIbbProject, drive: string): filesMetadata[] {
-  const entries: filesMetadata[] = files.map((e) => Object.prototype.hasOwnProperty.call(project.discPaths, e.path)
-    ? { path: drive + project.discPaths[e.path], stats: e.stats, originalPath: drive + e.path }
-    : { path: drive + e.path, stats: e.stats });
+  // `e.isPartial` (a split large file's real piece - see createOpticalMediaDiscPartials in worker.ts) is carried
+  // through as-is; every other entry leaves it absent. This flag is the sole authority for "this entry is a split
+  // piece" (see ipc.interfaces.ts's ColdStorageMetadata), never the entry's name.
+  const entries: filesMetadata[] = files.map((e) => ({
+    ...(Object.prototype.hasOwnProperty.call(project.discPaths, e.path)
+      ? { path: drive + project.discPaths[e.path], stats: e.stats, originalPath: drive + e.path }
+      : { path: drive + e.path, stats: e.stats }),
+    ...(e.isPartial === true ? { isPartial: true } : {}),
+  }));
   if (project.originalNamesFile) {
     const { size, mtime, sha256 } = project.originalNamesFile;
     entries.push({ path: drive + ORIGINAL_NAMES_FILE_NAME, stats: { size, mtime, isDirectory: false, sha256 }, originalNamesList: true });

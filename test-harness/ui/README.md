@@ -119,13 +119,15 @@ generated tree - not just "some files exist":
   file has to arrive whole, because the real thing each of those two tests exists to prove is that **the app
   itself** correctly splits it live (`splitLargeFiles: true`). Pre-splitting it would skip that entirely.
 - `test-recover-multi-disc.js` and `test-recover-from-json-metadata.js` are the opposite: they DO ship a
-  `split-plan.json` (same large file, same 500 MiB volume size). What those two exist to prove is the
-  **recovery wizard's own "reassemble these `.part.NNN` files?" merge flow** - not that the app can split a
-  file live, which is already proven by the two scripts above (and by `worker-ipc/test-large-file-split.js`).
-  So both scripts check whether the pieces already exist on disk right after generation (the whole file is
-  simply absent) and, if so, skip the live `partition-backup-to-optical-media` IPC call entirely and just
-  distribute the already-made pieces across the two discs. This also means editing either of these two specs
-  to use a *different* large file only requires updating `tree-spec.json`'s size and `split-plan.json`'s
+  `split-plan.json` (same large file, same 500 MiB volume size). Neither exists to prove the app can split a file
+  live - that is already proven by the two scripts above (and by `worker-ipc/test-large-file-split.js`) - so both
+  check whether the pieces already exist on disk right after generation (the whole file is simply absent) and, if
+  so, skip the live `partition-backup-to-optical-media` IPC call entirely and just distribute the already-made
+  pieces across the two discs. What each proves about *recovery* differs: `test-recover-multi-disc.js` reads the
+  discs directly (no metadata at all, so nothing is flagged `isPartial` and nothing is ever merged), while
+  `test-recover-from-json-metadata.js` seeds the wizard from a JSON that flags the pieces - which is exactly what
+  the wizard's own "reassemble these `.part.NNN` files?" merge flow needs. This also means editing either of these
+  two specs to use a *different* large file only requires updating `tree-spec.json`'s size and `split-plan.json`'s
   `volumeSizeMiB` together (both scripts still expect exactly 2 pieces out of it - see the size math in each
   script's own header comment).
 
@@ -259,11 +261,16 @@ it covers, all at once, on a single run:
   directory) plus two MORE empty directories this script plants itself, split evenly between the two discs while
   preserving each file's relative subdirectory - a shared parent directory legitimately ending up split across
   two different physical discs, which is normal for how real large backups get spread across media.
-- A large file's REAL split pieces (via the app's own `partition-backup-to-optical-media`, same as
-  `worker-ipc/test-large-file-split.js` and its proven-safe size constants) spread across the two DIFFERENT
-  discs, reassembled during recovery via the wizard's own "Partial files detected - want me to reassemble them?"
-  flow (both it and the following "Reassembly successful" dialog must list the file by its full path) - a code path no other test here exercises (the worker-ipc large-file test proves the raw split+merge
-  mechanism directly over IPC; this proves the recovery UI's own merge-offer screen, which only exists there).
+- A large file's REAL split pieces (split directly by real 7-Zip - `lib/seven-zip.js`'s `splitFileIntoRealParts`,
+  the same 500 MiB volumes `worker-ipc/test-large-file-split.js` uses), one placed on each of the two DIFFERENT
+  discs. Recovery must bring them back as **the plain files they are, byte for byte, one per disc - never merged,
+  never deleted**: a physical disc read carries no cold storage metadata at all, and the wizard reassembles a file
+  only when its metadata entry is flagged `isPartial: true` (the flag a real burn writes - see
+  `lib/cold-storage-metadata.js`), so nothing on this path is ever flagged and "Partial files detected" must not
+  appear at all. That negative assertion is this test's point; the merge-offer flow itself (which needs metadata)
+  is covered by `test-recover-from-json-metadata.js` and `test-long-names-split-file.js`, both seeded from a JSON
+  whose piece entries carry the flag. It also means this script never touches the app's real temp/cache folder
+  (only a merge does).
 - Full before/after directory-tree printouts (source, each disc's own contents before burning, and the final
   recovered result) via `lib/print-tree.js`.
 
@@ -316,12 +323,16 @@ normalizes the paths the same way the real burn-time flow does before saving (se
 that marks an empty directory and change that disc's computed ID hash). The result is structurally identical to
 what the app would have saved for real.
 
-It also covers the same large-file-split-across-discs scenario `test-recover-multi-disc.js` proves for the
-physical-disc-read path — one real split piece placed on each disc — but here the wizard's "Partial files
-detected" offer is **declined**: the wizard then shows one 7-Zip command per file for reassembling it by hand
-("How to reassemble manually"). The script checks the command names the parts' folder with `-o"<folder>"` and the
-first part by its full path, then runs exactly that command through `cmd.exe` from an unrelated folder (the way a
-user would paste it) and verifies the file comes out next to its parts with the original content.
+It also covers a large file split across two discs — one real split piece placed on each — but here the wizard's
+"Partial files detected" offer **is** shown, because this fixture's own JSON flags both piece entries
+`isPartial: true` (`normalizeForMetadata(..., { partialPiecePaths: [...] })`), exactly as a real burn writes them.
+That is the flag the wizard reads and the only thing it reads for this: a name is never consulted, and the
+physical-disc-read path (`test-recover-multi-disc.js`) has no metadata at all — so nothing there is ever flagged,
+nothing is merged, and the pieces simply come back as plain files. Here the offer is **declined** on purpose: the
+wizard then shows one 7-Zip command per file for reassembling it by hand ("How to reassemble manually"). The script
+checks the command names the parts' folder with `-o"<folder>"` and the first part by its full path, then runs
+exactly that command through `cmd.exe` from an unrelated folder (the way a user would paste it) and verifies the
+file comes out next to its parts with the original content.
 
 **A structural race worth knowing about if this script (or the wizard) is ever changed:** the mat-chip showing
 the chosen JSON path appears on screen the instant a path is picked — *before* `afterJSONpathIsGiven()` actually

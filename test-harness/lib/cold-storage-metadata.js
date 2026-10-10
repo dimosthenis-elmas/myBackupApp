@@ -26,19 +26,40 @@ const OPTICAL_DRIVE_LETTER_CONVENTION = 'D:\\';
  * computation and diffing the exact path lists byte for byte, while building
  * ui/test-recover-from-json-metadata.js. A path.relative()-based version of this function is what produced that
  * bug; see that script's own git history / test-harness/ui/README.md for the full diagnosis. */
-function normalizeForMetadata(listing, discDir, driveConvention = OPTICAL_DRIVE_LETTER_CONVENTION) {
+function normalizeForMetadata(listing, discDir, optionsOrDriveConvention = {}) {
+  // The 3rd argument was a bare drive-convention string before `partialPiecePaths` existed; still accepted that
+  // way so no existing call site has to change.
+  const options = typeof optionsOrDriveConvention === 'string'
+    ? { driveConvention: optionsOrDriveConvention }
+    : optionsOrDriveConvention;
+  const driveConvention = options.driveConvention || OPTICAL_DRIVE_LETTER_CONVENTION;
   const discDirWithSep = discDir.endsWith(path.sep) ? discDir : discDir + path.sep;
-  return listing.map((entry) => {
-    if (!entry.path.startsWith(discDirWithSep)) {
-      throw new Error(`Expected "${entry.path}" to start with "${discDirWithSep}"`);
+  const toMetadataPath = (absolutePath) => {
+    if (!absolutePath.startsWith(discDirWithSep)) {
+      throw new Error(`Expected "${absolutePath}" to start with "${discDirWithSep}"`);
     }
+    return driveConvention + absolutePath.slice(discDirWithSep.length);
+  };
+  // `options.partialPiecePaths`: real absolute paths (the same form `listing` entries have - under `discDir`) of the
+  // entries that are a large file's split pieces. Each matching entry is written with `isPartial: true`, LAST, and
+  // with nothing else added - byte-for-byte the shape the app itself writes for a piece
+  // (createOpticalMediaDiscPartials in worker.ts, carried through metadataEntriesForDisc in shortened-names.ts).
+  // That flag is the SOLE authority for "this entry is a split piece" (see ipc.interfaces.ts's ColdStorageMetadata
+  // and src/types/interface.d.ts): nothing in the app ever infers it from a name, so a fixture that wants the
+  // recovery wizard's "Partial files detected" merge offer MUST flag its pieces exactly this way. A fixture that
+  // leaves them unflagged gets what a plain file gets - and a disc read straight off a disc (no JSON at all) never
+  // has any metadata entry, so its pieces are always copied back as the plain files they are, never reassembled.
+  const partialPiecePaths = new Set((options.partialPiecePaths || []).map(toMetadataPath));
+  return listing.map((entry) => {
+    const metadataPath = toMetadataPath(entry.path);
     return {
-      path: driveConvention + entry.path.slice(discDirWithSep.length),
+      path: metadataPath,
       stats: {
         size: entry.stats.size,
         mtime: new Date(entry.stats.mtime).toISOString(),
         isDirectory: entry.stats.isDirectory,
       },
+      ...(partialPiecePaths.has(metadataPath) ? { isPartial: true } : {}),
     };
   });
 }

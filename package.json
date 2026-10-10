@@ -38,7 +38,8 @@
     "electron:local": "npm run build:prod && electron .",
     "electron:build": "npm run build:prod && electron-builder build --publish=never",
     "version": "conventional-changelog -i CHANGELOG.md -s -r 0 && git add CHANGELOG.md",
-    "lint": "ng lint"
+    "lint": "ng lint",
+    "repair-metadata": "node scripts/repair-metadata-json.js"
   },
   "dependencies": {
     "@angular/animations": "17.3.6",

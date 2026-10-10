@@ -25,15 +25,24 @@
  * real, just assembled directly instead of by burning two actual discs first.
  *
  * IT ALSO covers a large file's real split pieces spread across DIFFERENT discs, reassembled during recovery -
- * the same "Partial files detected" merge-offer flow test-recover-multi-disc.js proves for the physical-disc-read
- * path, but exercised here from a JSON-seeded disc listing instead. The genuinely new thing this checks that
- * nothing else does: does a JSON metadata file correctly describe split-file pieces distributed across discs (the
- * pieces are just ordinary files as far as get-file-paths-with-stats/seedFromExternalMetadata are concerned - no
- * special-casing anywhere), and does the merge-offer flow still work when the file tree came from JSON rather than
- * physical enumeration. Unlike test-recover-multi-disc.js, this one DECLINES the offer: the wizard then shows one
- * 7-Zip command per file for reassembling it by hand, and this script runs exactly that command - through cmd.exe,
- * from an unrelated folder, the way a user would paste it - and checks the file comes out next to its parts with
- * the original content. Same as test-recover-multi-disc.js, the real split pieces can come from either this
+ * the only place the wizard's own "Partial files detected" merge-offer flow is exercised from a JSON-seeded disc
+ * listing. The genuinely new thing this checks that nothing else does: does a JSON metadata file correctly
+ * describe split-file pieces distributed across discs (the pieces are just ordinary files as far as
+ * get-file-paths-with-stats/seedFromExternalMetadata are concerned - no special-casing anywhere), and does the
+ * merge-offer flow work when the file tree came from JSON rather than physical enumeration. This one DECLINES the
+ * offer: the wizard then shows one 7-Zip command per file for reassembling it by hand, and this script runs
+ * exactly that command - through cmd.exe, from an unrelated folder, the way a user would paste it - and checks the
+ * file comes out next to its parts with the original content.
+ *
+ * IMPORTANT - why this fixture has to FLAG its pieces: the wizard treats a file as a piece ONLY when its cold
+ * storage metadata entry says `isPartial: true` (see ipc.interfaces.ts's ColdStorageMetadata); the name is never
+ * consulted, by design. A real burn writes that flag itself (createOpticalMediaDiscPartials in worker.ts), so the
+ * JSON this script builds - from a disc folder's real listing, via normalizeForMetadata - must flag the two piece
+ * entries the same way (`partialPiecePaths`), or the wizard would read them as plain files and never offer to
+ * reassemble anything. There is deliberately NO such thing on the physical-disc-read path: a disc read carries no
+ * metadata at all, so nothing is ever flagged and its pieces are always copied back as the plain files they are
+ * (that is exactly what test-recover-multi-disc.js now asserts - see its own header). Same as that script, the
+ * real split pieces can come from either this
  * script splitting the file directly via real 7-Zip (random mode / --json-tree with no split-plan.json - see
  * test-recover-multi-disc.js's own comments for why this bypasses the app's own partitioning IPC entirely) OR
  * already be sitting in the tree from --json-tree's own split-plan.json (see tree-specs/
@@ -222,8 +231,8 @@ async function main() {
     // Plus two empty discs - planned, but never confirmed burned, so never recorded (see recordConfirmedDiscs in the
     // disc wizards). They share one disc id; the JSON must still load, and they are never asked for.
     const coldStorageMetadata = [
-      normalizeForMetadata(disc1Listing, disc1Dir),
-      normalizeForMetadata(disc2Listing, disc2Dir),
+      normalizeForMetadata(disc1Listing, disc1Dir, { partialPiecePaths: [disc1PartDest] }),
+      normalizeForMetadata(disc2Listing, disc2Dir, { partialPiecePaths: [disc2PartDest] }),
       [],
       [],
     ];

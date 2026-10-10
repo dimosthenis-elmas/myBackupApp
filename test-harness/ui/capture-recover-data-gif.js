@@ -239,9 +239,12 @@ async function main() {
     console.log('Asking the app for each disc\'s real file listing (get-file-paths-with-stats)...');
     const disc1Listing = (await callWorker(win, 'get-file-paths-with-stats', { dirPath: disc1Dir })).res;
     const disc2Listing = (await callWorker(win, 'get-file-paths-with-stats', { dirPath: disc2Dir })).res;
+    // `partialPiecePaths`: the wizard only ever reassembles files whose metadata entry says `isPartial: true` (the
+    // flag a real burn writes for a piece - see lib/cold-storage-metadata.js's own comment), so the two pieces
+    // placed above have to be flagged here or there would be no merge offer to film.
     const coldStorageMetadata = [
-      normalizeForMetadata(disc1Listing, disc1Dir),
-      normalizeForMetadata(disc2Listing, disc2Dir),
+      normalizeForMetadata(disc1Listing, disc1Dir, { partialPiecePaths: [disc1PartDest] }),
+      normalizeForMetadata(disc2Listing, disc2Dir, { partialPiecePaths: [disc2PartDest] }),
     ];
     fs.writeFileSync(metadataJsonPath, JSON.stringify(coldStorageMetadata, null, 2));
 

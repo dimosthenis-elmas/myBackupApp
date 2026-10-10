@@ -12,7 +12,7 @@ import { OPTICAL_DRIVE_LETTER_CONVENTION } from '../shared/utils/disc-id-hash';
 import { WorkerListener, WorkerResponse, CreatedIbbProject } from '../../../app/workers/ipc.interfaces';
 import { filesMetadata } from '../../types/interface';
 import { SerialQueue } from '../shared/utils/serial-queue';
-import { PIECE_ENDING, withoutPieceTotal } from '../../../app/workers/split-pieces';
+import { withoutPieceTotal } from '../../../app/workers/split-pieces';
 import { withLinksLeftOutNote } from '../shared/utils/links-note';
 import { discsLabel, splitFileOf } from '../shared/utils/split-files';
 import { OPTICAL_MEDIA, OpticalMedium, discContentBytes, mayBurnDisc } from '../shared/utils/optical-media';
@@ -908,8 +908,10 @@ export class BackupToOpticalMediaComponent implements OnInit, OnDestroy{
       loadingDialogRef.componentInstance.message = "Preparing ImgBurn project";
 
       // What this disc needed created in the temp folder - split partials - deleted again once the disc is confirmed
-      // burned (confirmDiscBurned).
-      this.sentDiscPartPaths[i] = finalStats.filter(e => PIECE_ENDING.test(e.path)).map(e => e.path);
+      // burned (confirmDiscBurned). Taken from createOpticalMediaDiscPartials's own output (isPartial: true on the
+      // pieces it really split), never from a name that merely looks like a piece - an ordinary file named
+      // "...part.001" must not be treated as a temp partial to delete.
+      this.sentDiscPartPaths[i] = finalStats.filter(e => e.isPartial === true).map(e => e.path);
 
       // Awaited (previously fired-and-forgotten): see sendingDiscs's own doc comment for why this guard needs
       // this chain's real completion, not just its start, to reset on.

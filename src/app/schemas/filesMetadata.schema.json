@@ -37,6 +37,9 @@
         },
         "originalNamesList": {
           "type": "boolean"
+        },
+        "isPartial": {
+          "type": "boolean"
         }
       },
       "required": [

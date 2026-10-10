@@ -93,7 +93,9 @@ Please note: This application is given to you AS IS, WITHOUT ANY WARRANTY OF ANY
 
   Choosing any piece of a split large file chooses all of its pieces. If any recovered files are parts of a large
   file that was split across discs, the app offers to reassemble the
-  original file with 7-Zip once every needed disc has been copied. If you decline, or reassembly fails (e.g. a
+  original file with 7-Zip once every needed disc has been copied. That offer comes from the cold storage metadata
+  (the saved JSON, or the disc the app itself burned): files read straight off a disc carry no metadata, so pieces
+  read that way are copied back exactly as they are, never reassembled. If you decline, or reassembly fails (e.g. a
   missing or corrupted part - a missing one is named, as the pieces' names say how many there are), nothing is
   deleted - you get the exact 7-Zip command to do it by hand later.
 

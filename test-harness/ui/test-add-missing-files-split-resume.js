@@ -111,9 +111,13 @@ async function main() {
     fs.copyFileSync(path.join(earlierSessionDir, piece1.path), burnedPiece1);
     fs.rmSync(earlierSessionDir, { recursive: true, force: true }); // what the app offers to clear at its next start
     const smallStats = fs.statSync(smallFile);
+    // The piece entry carries `isPartial: true`, exactly as a real burn writes it (createOpticalMediaDiscPartials in
+    // worker.ts, carried through metadataEntriesForDisc in shortened-names.ts) - that flag is the SOLE authority for
+    // "this entry is a split piece", never the name. Without it the app would read piece 1 as an ordinary file, not
+    // recognize "big.bin" as half-backed-up, and plan BOTH pieces again (two discs) instead of just the missing one.
     const existingJson = [[
       { path: `${OPTICAL_DRIVE_LETTER_CONVENTION}notes.txt`, stats: { size: smallStats.size, mtime: smallStats.mtime.toISOString(), isDirectory: false } },
-      { path: `${OPTICAL_DRIVE_LETTER_CONVENTION}${piece1.path}`, stats: { size: piece1.stats.size, mtime: new Date(piece1.stats.mtime).toISOString(), isDirectory: false, sha256: piece1Sha256 } },
+      { path: `${OPTICAL_DRIVE_LETTER_CONVENTION}${piece1.path}`, stats: { size: piece1.stats.size, mtime: new Date(piece1.stats.mtime).toISOString(), isDirectory: false, sha256: piece1Sha256 }, isPartial: true },
     ]];
     fs.writeFileSync(existingJsonPath, JSON.stringify(existingJson, null, 2));
     console.log(`  disc 1 in the JSON: ${existingJson[0].map((e) => e.path).join(', ')}`);

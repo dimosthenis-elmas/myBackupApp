@@ -1843,7 +1843,9 @@ const createOpticalMediaDiscPartials = async function (dirPath: string, paths: A
           // The known, rare boundary case - one real piece the plan never assigned to any disc. Surfaced so the
           // caller can attach it to the disc it just created for.
           const s = fs.statSync(node_path_module.join(partialDir, sliver));
-          surplusPartials.push({ path: inTempFolder(sliver), stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
+          // isPartial: this is a real piece of the split - the sole authority every reader uses to recognize a
+          // split piece (see ipc.interfaces.ts's ColdStorageMetadata), never the name.
+          surplusPartials.push({ path: inTempFolder(sliver), stats: { size: s.size, mtime: s.mtime, isDirectory: false }, isPartial: true });
         }
       }
     }
@@ -1853,7 +1855,9 @@ const createOpticalMediaDiscPartials = async function (dirPath: string, paths: A
       throw new Error(`createOpticalMediaDiscPartials: expected piece "${relPath}" was not produced by the real split.`);
     }
     const s = fs.statSync(node_path_module.join(partialDir, piece.name));
-    results.push({ path: inTempFolder(piece.name), stats: { size: s.size, mtime: s.mtime, isDirectory: false } });
+    // isPartial: a real piece of the split (the first branch above, an ordinary file, deliberately does NOT set
+    // it) - the sole authority every reader uses to recognize a split piece, never the name.
+    results.push({ path: inTempFolder(piece.name), stats: { size: s.size, mtime: s.mtime, isDirectory: false }, isPartial: true });
   }
 
   return results.concat(surplusPartials);
